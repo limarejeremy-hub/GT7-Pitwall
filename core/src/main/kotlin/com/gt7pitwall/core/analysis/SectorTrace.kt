@@ -44,6 +44,9 @@ class SectorTrace(private val sectorCount: Int = DEFAULT_SECTORS) {
     val tcsShare: Float get() = if (packets > 0) tcsPackets.toFloat() / packets else 0f
     val asmShare: Float get() = if (packets > 0) asmPackets.toFloat() / packets else 0f
 
+    /** Distance parcourue depuis la ligne (m), d'après les positions GT7. */
+    val lapDistance: Float get() = distance
+
     /** Vrai si le tour a été suivi depuis la ligne sans interruption. */
     val isComplete: Boolean get() = valid
     private var distance = 0f

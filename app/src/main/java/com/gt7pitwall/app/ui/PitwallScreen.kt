@@ -94,6 +94,7 @@ fun PitwallScreen(
     val running by engine.running.collectAsStateWithLifecycle()
     val radio by engine.radio.collectAsStateWithLifecycle()
     val voiceState by voice.state.collectAsStateWithLifecycle()
+    val rules by engine.rules.collectAsStateWithLifecycle()
     val modelState by voiceModels.state.collectAsStateWithLifecycle()
     val listenState by voiceInput.state.collectAsStateWithLifecycle()
     val heard by voiceInput.heard.collectAsStateWithLifecycle()
@@ -178,6 +179,7 @@ fun PitwallScreen(
                         connectionCard()
                     }
                     ScrollColumn(Modifier.weight(1f)) {
+                        RaceSetupCard(state, rules, engine.database, engine::setRules)
                         TrackMapCard(state.snapshot.trackOutline, state.snapshot.packet)
                         FuelCard(state.fuel, state.snapshot.packet)
                         RadioCard(radio, engine::command)
@@ -191,6 +193,7 @@ fun PitwallScreen(
                     DriveCard(state.snapshot.packet)
                     LapCard(state)
                     FuelCard(state.fuel, state.snapshot.packet)
+                    RaceSetupCard(state, rules, engine.database, engine::setRules)
                     CarCard(state.snapshot.packet, state.gForce)
                     TrackMapCard(state.snapshot.trackOutline, state.snapshot.packet)
                     RadioCard(radio, engine::command)
@@ -593,6 +596,10 @@ private fun RadioCard(messages: List<EngineerMessage>, onCommand: (DriverCommand
             QueryButton("Il pleut", Modifier.weight(1f)) { onCommand(DriverCommand.Rain) }
             QueryButton("Piste sèche", Modifier.weight(1f)) { onCommand(DriverCommand.Dry) }
             QueryButton("Pneus ?", Modifier.weight(1f)) { ask(DriverQuery.TYRES) }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            QueryButton("Stratégie ?", Modifier.weight(1f)) { ask(DriverQuery.PLAN) }
+            QueryButton("Position ?", Modifier.weight(1f)) { ask(DriverQuery.POSITION) }
         }
         if (messages.isEmpty()) {
             Text("Aucun message pour l'instant.", color = PitColors.Muted)

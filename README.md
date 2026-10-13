@@ -60,6 +60,23 @@ Quand une information manque, l'application le dit au lieu de l'estimer :
 - **Position** : GT7 ne transmet **ni la position en course ni les adversaires**. L'ingénieur part
   de la place sur la grille (transmise par GT7 avant le départ) puis suit ce que tu lui annonces.
 
+## Course & stratégie (0.4)
+
+- **Voiture reconnue automatiquement** grâce au code transmis par GT7 et à la base de la communauté
+  [gt7info](https://github.com/ddm999/gt7info) (ddm999, licence MIT-0, fichiers embarqués dans `app/src/main/assets/gt7db`).
+- **Circuit** : reconnu d'après la distance mesurée d'un tour (longueurs de la base), ou choisi dans la liste.
+- **Mémoire voiture × circuit** : meilleur tour, rythme typique, consommation ramenée à ×1. Permet un plan avant le départ.
+- **Règlement** (GT7 ne le transmet pas) : tours ou durée, consommation ×, usure ×, arrêts obligatoires, gommes imposées.
+  À l'écran (carte « Course & stratégie ») ou à la radio : « course de 30 minutes », « arrêt obligatoire »,
+  « deux arrêts obligatoires », « consommation fois deux », « usure fois trois », « stratégie ? ».
+- **Plan de course** (`RacePlanner`) : nombre d'arrêts minimal pour le carburant et le règlement, relais équilibrés,
+  litres à chaque arrêt, recalculé à chaque tour. Course au temps : tours estimés avec ton rythme réel.
+  L'ingénieur annonce le plan, le « Nouveau plan » s'il change, « Stand au prochain tour », puis « Box, box ! » avec les litres
+  et les gommes imposées. Arrêts détectés (ravitaillement ou voiture immobile 3 s) et décomptés.
+- Limites : GT7 ne transmet ni l'usure des pneus, ni le temps de ravitaillement ; le temps perdu dans la voie des stands
+  vient de la base (indicatif). Les courses quotidiennes du mode Sport ne sont plus publiées par gt7info depuis 2022 :
+  leur règlement se saisit à la main.
+
 ## Données GT7 utilisées (0.3)
 
 Référence du format : [PDTools](https://github.com/Nenkai/PDTools) (Nenkai, licence MIT). L'application demande le
@@ -141,6 +158,7 @@ une nouvelle version s'installe **par-dessus** l'ancienne, sans désinstaller.
 - [ ] la console répond au format `~` (sinon l'application repasse en `A`, visible dans la carte Connexion) ;
 - [ ] le sens de la carte du circuit (elle peut apparaître en miroir) et le sens gauche/droite des forces G ;
 - [ ] la détection blocage / patinage des roues ;
+- [ ] la reconnaissance du circuit, le plan de course et le décompte des arrêts (mode Sport) ;
 - [ ] les seuils pneus / adhérence (« en température », « l'adhérence baisse », « la galère », dégradation) ;
 - [ ] le niveau de carburant GT7 (souvent sur une échelle de 100) : la stratégie fonctionne dans l'unité du jeu ;
 - [ ] la réception continue **écran éteint** (service de premier plan + verrou Wi-Fi) ;

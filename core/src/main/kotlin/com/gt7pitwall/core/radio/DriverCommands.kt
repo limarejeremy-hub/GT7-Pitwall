@@ -30,6 +30,24 @@ sealed interface DriverCommand {
     /** "Piste sèche". */
     data object Dry : DriverCommand
 
+    /** Règlement dicté à la radio. */
+    sealed interface Rule : DriverCommand
+
+    /** "Course de 12 tours". */
+    data class SetLaps(val laps: Int) : Rule
+
+    /** "Course de 30 minutes". */
+    data class SetDuration(val minutes: Int) : Rule
+
+    /** "Arrêt obligatoire", "deux arrêts obligatoires", "pas d'arrêt obligatoire". */
+    data class SetMandatoryStops(val stops: Int) : Rule
+
+    /** "Consommation fois deux". */
+    data class SetFuelMultiplier(val factor: Int) : Rule
+
+    /** "Usure fois trois". */
+    data class SetTyreMultiplier(val factor: Int) : Rule
+
     /** "Répète". */
     data object Repeat : DriverCommand
 }
@@ -95,6 +113,8 @@ object DriverCommandParser {
         if (has(t, "silence", "tais-toi", "tais toi", "chut")) return DriverCommand.Quiet
         if (has(t, "tu peux parler", "reparle", "parle-moi", "parle moi")) return DriverCommand.Talk
 
+        ruleIn(t)?.let { return it }
+
         // "Il m'a doublé" avant "j'ai doublé". "adieu une place" : erreur réelle de reconnaissance de "perdu une place".
         if (has(
                 t, "fait doubler", "fait passer", "fait depasser", "m'a double", "m'a passe", "m'a depasse",
@@ -125,6 +145,7 @@ object DriverCommandParser {
             has(t, "essence", "carburant", "fuel", "reservoir", "conso") -> DriverQuery.FUEL
             has(t, "secteur") -> DriverQuery.SECTORS
             has(t, "pneu", "gomme", "temperature") -> DriverQuery.TYRES
+            has(t, "strategie", "plan") -> DriverQuery.PLAN
             has(t, "meilleur", "record") -> DriverQuery.BEST_LAP
             has(t, "dernier tour", "chrono", "temps") -> DriverQuery.LAST_LAP
             has(t, "rythme", "regularite", "moyenne") -> DriverQuery.PACE
@@ -132,6 +153,47 @@ object DriverCommandParser {
             else -> null
         }
         return query?.let { DriverCommand.Ask(it) }
+    }
+
+    private val BIG_NUMBERS = listOf(
+        "quarante cinq" to 45, "quarante" to 40, "cinquante" to 50, "soixante" to 60, "quatre vingt dix" to 90,
+    )
+
+    /** Nombre en chiffres ou en lettres au début de [s] ("30", "trente", "vingt deux", "quarante cinq"). */
+    private fun numberAt(s: String): Int? {
+        val padded = "${s.trim()} "
+        padded.substringBefore(' ').toIntOrNull()?.let { return it }
+        for ((phrase, n) in (BIG_NUMBERS + CARDINALS).sortedByDescending { it.first.length }) {
+            if (padded.startsWith("$phrase ")) return n
+        }
+        return null
+    }
+
+    /** Règlement : "course de 30 minutes", "une heure", "arrêt obligatoire", "consommation fois deux"… */
+    private fun ruleIn(t: String): DriverCommand.Rule? {
+        Regex("(consommation|essence|carburant|fuel) (fois|x) ?(.+)$").find(t)?.let { m ->
+            numberAt(m.groupValues[3])?.let { return DriverCommand.SetFuelMultiplier(it) }
+        }
+        Regex("(usure|pneus?|gommes?) (fois|x) ?(.+)$").find(t)?.let { m ->
+            numberAt(m.groupValues[3])?.let { return DriverCommand.SetTyreMultiplier(it) }
+        }
+        if (has(t, "obligatoire")) {
+            if (has(t, "pas d'arret", "pas d arret", "aucun arret", "sans arret")) return DriverCommand.SetMandatoryStops(0)
+            val before = t.substringBefore("arret").trim().split(' ').lastOrNull().orEmpty()
+            return DriverCommand.SetMandatoryStops(numberAt(before) ?: 1)
+        }
+        if (has(t, "deux heures")) return DriverCommand.SetDuration(120)
+        if (has(t, "heure et demie")) return DriverCommand.SetDuration(90)
+        if (has(t, "une heure")) return DriverCommand.SetDuration(60)
+        Regex("(^|\\s)(course de |course en )?(.+?) minutes?($|\\s)").find(t)?.let { m ->
+            val words = m.groupValues[3].split(' ')
+            // On cherche le nombre juste avant "minutes" (jusqu'à 3 mots : "quarante cinq").
+            for (n in minOf(3, words.size) downTo 1) numberAt(words.takeLast(n).joinToString(" "))?.let { return DriverCommand.SetDuration(it) }
+        }
+        Regex("course de (.+?) tours?($|\\s)").find(t)?.let { m ->
+            numberAt(m.groupValues[1])?.let { return DriverCommand.SetLaps(it) }
+        }
+        return null
     }
 
     /** "je suis troisième", "je suis dix-septième", "je suis 3e", "en position vingt deux", "P3". */
@@ -165,7 +227,9 @@ object DriverCommandParser {
             "dépasser", "dépassé", "perdu", "gagné", "pris", "une", "un", "place", "position", "quelle", "quel",
             "combien", "essence", "d'essence", "carburant", "réservoir", "secteur", "secteurs", "mes", "mon", "le", "la",
             "en", "de", "dernier", "dernière", "tour", "tours", "meilleur", "chrono", "temps", "rythme", "course",
-            "reste", "pleut", "pluie", "mouillé", "mouillée", "piste", "sèche", "sec", "plus", "arrête", "pneus", "pneu", "gommes", "température", "températures", "silence", "chut", "tu", "peux", "parler", "répète", "répéter",
+            "reste", "course", "minutes", "minute", "heure", "heures", "demie", "obligatoire", "obligatoires", "arrêt",
+            "arrêts", "d'arrêt", "pas", "aucun", "fois", "consommation", "usure", "stratégie", "plan", "quarante",
+            "cinquante", "soixante", "pleut", "pluie", "mouillé", "mouillée", "piste", "sèche", "sec", "plus", "arrête", "pneus", "pneu", "gommes", "température", "températures", "silence", "chut", "tu", "peux", "parler", "répète", "répéter",
             "premier", "première", "deuxième", "second", "troisième", "quatrième", "cinquième", "sixième", "septième",
             "huitième", "neuvième", "dixième", "onzième", "douzième", "treizième", "quatorzième", "quinzième",
             "seizième", "dix-septième", "dix-huitième", "dix-neuvième", "vingtième", "vingt", "et", "unième",

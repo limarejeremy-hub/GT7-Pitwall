@@ -23,6 +23,8 @@ data class LapRecord(
     val tcsShare: Float? = null,
     /** Température de surface moyenne des pneus sur le tour (°C). */
     val avgTyreTemp: Float? = null,
+    /** Distance du tour mesurée par les positions (m), pour reconnaître le circuit. */
+    val distanceM: Float? = null,
     /** Blocages de roue au freinage. */
     val lockups: Int? = null,
     /** Patinages à l'accélération. */
@@ -49,6 +51,9 @@ sealed interface SessionEvent {
 
     /** Place sur la grille transmise par GT7 avant le départ (une fois par session). */
     data class GridPosition(val position: Int, val cars: Int) : SessionEvent
+
+    /** Arrêt au stand détecté (ravitaillement, ou voiture immobile 3 s en course). Un par tour au plus. */
+    data class PitStopDetected(val stopsSoFar: Int) : SessionEvent
 }
 
 /** Photographie immuable de la session, partagée avec l'interface et l'ingénieur. */
@@ -60,6 +65,10 @@ data class SessionSnapshot(
     val refuelledThisLap: Boolean,
     /** Tracé du meilleur tour suivi en entier (carte du circuit). */
     val trackOutline: TrackOutline? = null,
+    /** Temps de course écoulé depuis le départ (ms, d'après les paquets à 60/s), null avant le départ. */
+    val raceElapsedMs: Long? = null,
+    /** Arrêts au stand détectés depuis le départ. */
+    val stops: Int = 0,
 ) {
     val bestRecordedLapMs: Int? get() = laps.mapNotNull { it.timeMs }.filter { it > 0 }.minOrNull()
 
@@ -94,6 +103,10 @@ class SessionTracker(
     private var trace = SectorTrace()
     private var outline: TrackOutline? = null
     private var outlineLapMs: Int? = null
+    private var raceTicks: Long? = null
+    private var stops = 0
+    private var stopCountedLap = -1
+    private var stationaryPackets = 0
 
     private data class PendingLap(
         val lapNumber: Int,
@@ -128,6 +141,19 @@ class SessionTracker(
             if (p.fuelLevel - before.fuelLevel > refuelThreshold) {
                 if (!refuelledThisLap) events += SessionEvent.RefuelDetected
                 refuelledThisLap = true
+                countStop(p, events)
+            }
+
+            // Chrono de course : démarre au passage du tour 0 au tour 1 (ou au premier tour observé).
+            val dId = p.packetId - before.packetId
+            raceTicks?.let { if (dId in 1..30 && !p.isPaused) raceTicks = it + dId }
+            if (raceTicks == null && p.currentLap >= 1 && p.currentLap > before.currentLap) raceTicks = 0
+
+            // Voiture immobile 3 s en course (hors pause) : arrêt au stand sans ravitaillement.
+            if (p.currentLap >= 1 && (raceTicks ?: 0) > 600 && p.speedKmh < 1f && !p.isPaused && !p.isLoading) {
+                if (++stationaryPackets == STATIONARY_PACKETS) countStop(p, events)
+            } else {
+                stationaryPackets = 0
             }
 
             if (p.currentLap > before.currentLap) {
@@ -171,8 +197,23 @@ class SessionTracker(
 
         if (before != null && p.currentLap == before.currentLap) trace.add(p)
         previous = p
-        snapshot = SessionSnapshot(p, laps.toList(), fuelAtLapStart, refuelledThisLap, outline)
+        snapshot = SessionSnapshot(
+            p,
+            laps.toList(),
+            fuelAtLapStart,
+            refuelledThisLap,
+            outline,
+            raceTicks?.let { it * 1000L / 60L },
+            stops,
+        )
         return events
+    }
+
+    private fun countStop(p: TelemetryPacket, events: MutableList<SessionEvent>) {
+        if (p.currentLap < 1 || stopCountedLap == p.currentLap) return
+        stopCountedLap = p.currentLap
+        stops++
+        events += SessionEvent.PitStopDetected(stops)
     }
 
     private fun finishPending(pl: PendingLap, timeMs: Int?, events: MutableList<SessionEvent>) {
@@ -190,6 +231,7 @@ class SessionTracker(
             avgTyreTemp = if (complete) pl.trace.avgTyreTemp else null,
             lockups = if (complete) pl.trace.lockups else null,
             wheelspins = if (complete) pl.trace.wheelspins else null,
+            distanceM = if (complete) pl.trace.lapDistance else null,
         )
         // La carte suit le meilleur tour complet (ou le premier disponible).
         if (complete && timeMs != null && (outlineLapMs == null || timeMs < outlineLapMs!!)) {
@@ -214,5 +256,14 @@ class SessionTracker(
         trace = SectorTrace()
         outline = null
         outlineLapMs = null
+        raceTicks = null
+        stops = 0
+        stopCountedLap = -1
+        stationaryPackets = 0
+    }
+
+    private companion object {
+        /** 3 s à 60 paquets/s. */
+        const val STATIONARY_PACKETS = 180
     }
 }

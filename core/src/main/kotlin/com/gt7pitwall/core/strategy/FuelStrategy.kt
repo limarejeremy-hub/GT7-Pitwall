@@ -56,7 +56,8 @@ object FuelStrategy {
     const val TIGHT_MARGIN_LAPS = 0.5f
     const val SAFETY_LAPS = 0.5f
 
-    fun compute(s: SessionSnapshot): FuelReport? {
+    /** [totalLapsOverride] : nombre de tours du règlement ou estimé (course au temps) quand GT7 n'en envoie pas. */
+    fun compute(s: SessionSnapshot, totalLapsOverride: Int? = null): FuelReport? {
         val p = s.packet ?: return null
         val level = p.fuelLevel
         val capacity = p.fuelCapacity
@@ -76,11 +77,12 @@ object FuelStrategy {
             1f // inconnu : hypothèse prudente d'un tour complet
         }
 
+        val totalLaps = if (p.totalLaps > 0) p.totalLaps else totalLapsOverride ?: 0
         val raceLapsRemaining: Float? = when {
-            p.totalLaps <= 0 -> null
-            p.currentLap > p.totalLaps -> 0f
-            p.currentLap <= 0 -> p.totalLaps.toFloat()
-            else -> (p.totalLaps - p.currentLap) + currentLapRemaining
+            totalLaps <= 0 -> null
+            p.currentLap > totalLaps -> 0f
+            p.currentLap <= 0 -> totalLaps.toFloat()
+            else -> (totalLaps - p.currentLap) + currentLapRemaining
         }
 
         val fuelToFinish = if (perLap != null && raceLapsRemaining != null) raceLapsRemaining * perLap else null
@@ -102,7 +104,7 @@ object FuelStrategy {
                         val latest = if (lapsOfFuel < currentLapRemaining) p.currentLap else p.currentLap + lapsAfterCurrent
                         FuelAdvice.PitRequired(
                             fuelToAdd = toAdd,
-                            latestPitLap = latest.coerceAtMost(p.totalLaps),
+                            latestPitLap = latest.coerceAtMost(totalLaps),
                             stopsNeeded = ceil(toAdd / capacity).toInt().coerceAtLeast(1),
                             savingNeeded = 1f - targetPerLap / perLap,
                             targetPerLap = targetPerLap,

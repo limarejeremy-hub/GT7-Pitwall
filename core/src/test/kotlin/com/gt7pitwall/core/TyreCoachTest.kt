@@ -58,7 +58,7 @@ class TyreCoachTest {
     }
 
     private fun lap(n: Int, ms: Int, temp: Float, tcs: Float, locks: Int = 1, spins: Int = 1, refuel: Boolean = false) =
-        LapRecord(n, ms, 2f, refuel, null, 250f, tcs, temp, locks, spins)
+        LapRecord(n, ms, 2f, refuel, null, 250f, tcs, avgTyreTemp = temp, lockups = locks, wheelspins = spins)
 
     @Test
     fun gripDropThenRecovery() {
