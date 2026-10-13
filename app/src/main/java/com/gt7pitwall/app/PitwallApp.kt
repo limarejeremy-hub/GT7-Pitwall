@@ -26,7 +26,10 @@ class PitwallApp : Application() {
         settings = SettingsStore(this)
         voice = TtsVoiceOutput(this).also { it.speechRate = settings.speechRate }
         voiceModels = VoiceModelManager(this)
-        voiceInput = VoskVoiceInput(voiceModels, voice).also { it.wakeWord = settings.wakeWord }
+        voiceInput = VoskVoiceInput(voiceModels, voice).also {
+            it.wakeWord = settings.wakeWord
+            it.limitedVocabulary = settings.limitedVocabulary
+        }
         engine = PitwallEngine(voice, voiceInput).also { it.voiceEnabled = settings.voiceEnabled }
     }
 

@@ -99,6 +99,7 @@ fun PitwallScreen(
     val heard by voiceInput.heard.collectAsStateWithLifecycle()
     val listenError by voiceInput.error.collectAsStateWithLifecycle()
     var wakeWord by rememberSaveable { mutableStateOf(settings.wakeWord) }
+    var limitedVocab by rememberSaveable { mutableStateOf(settings.limitedVocabulary) }
 
     val voiceRadioCard: @Composable () -> Unit = {
         VoiceRadioCard(
@@ -114,6 +115,12 @@ fun PitwallScreen(
             },
             onDownload = voiceModels::download,
             onToggle = onVoiceInputToggle,
+            limitedVocabulary = limitedVocab,
+            onLimitedVocabularyChange = {
+                limitedVocab = it
+                settings.limitedVocabulary = it
+                voiceInput.limitedVocabulary = it
+            },
         )
     }
 
@@ -636,6 +643,8 @@ private fun VoiceRadioCard(
     onWakeWordChange: (String) -> Unit,
     onDownload: () -> Unit,
     onToggle: (Boolean) -> Unit,
+    limitedVocabulary: Boolean,
+    onLimitedVocabularyChange: (Boolean) -> Unit,
 ) {
     PitCard("Radio vocale") {
         when (modelState) {
@@ -678,6 +687,17 @@ private fun VoiceRadioCard(
             label = { Text("Mot de réveil") },
             modifier = Modifier.fillMaxWidth(),
         )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Vocabulaire limité à la radio")
+                Text(
+                    "Plus fiable dans le bruit. À couper si ton mot de réveil n'est jamais reconnu. Réglable micro coupé.",
+                    color = PitColors.Muted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Switch(checked = limitedVocabulary, onCheckedChange = onLimitedVocabularyChange, enabled = !on)
+        }
         val (label, color) = when (listenState) {
             ListenState.OFF -> "Micro coupé." to PitColors.Muted
             ListenState.LOADING -> "Chargement du modèle…" to PitColors.Yellow
@@ -692,7 +712,7 @@ private fun VoiceRadioCard(
         }
         Text(
             "Exemples : « $wakeWord, combien d'essence ? » • « $wakeWord, je suis troisième » • " +
-                "« $wakeWord, j'ai doublé » • « $wakeWord, je me suis fait doubler » • « $wakeWord, mes secteurs » • " +
+                "« $wakeWord, je suis dernier » • « $wakeWord, j'ai doublé » • « $wakeWord, j'ai perdu une place » • « $wakeWord, mes secteurs » • " +
                 "« $wakeWord, silence » / « tu peux parler » • « $wakeWord, répète »",
             color = PitColors.Muted,
             style = MaterialTheme.typography.bodySmall,

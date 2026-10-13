@@ -43,6 +43,8 @@ Quand une information manque, l'application le dit au lieu de l'estimer :
   l'application. Le micro est coupé pendant que l'ingénieur parle.
   Exemples : « radio, combien d'essence ? », « radio, je suis troisième », « radio, j'ai doublé »,
   « radio, je me suis fait doubler », « radio, mes secteurs », « radio, silence », « radio, répète ».
+- **Vocabulaire limité** (activé par défaut) : la reconnaissance ne cherche que les mots de la radio,
+  ce qui évite les erreurs du type « adieu une place » au lieu de « perdu une place ».
 - **Position** : GT7 ne transmet **ni la position en course ni les adversaires**. L'ingénieur part
   de la place sur la grille (transmise par GT7 avant le départ) puis suit ce que tu lui annonces.
 

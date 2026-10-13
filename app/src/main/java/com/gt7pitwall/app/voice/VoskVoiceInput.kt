@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import org.vosk.Model
 import org.vosk.Recognizer
@@ -56,6 +57,13 @@ class VoskVoiceInput(
     @Volatile
     var wakeWord: String = "radio"
 
+    /**
+     * Reconnaissance limitée au vocabulaire de la radio (beaucoup plus fiable dans le bruit du jeu).
+     * Si le mot de réveil choisi n'existe pas dans le modèle, il faut la désactiver.
+     */
+    @Volatile
+    var limitedVocabulary: Boolean = true
+
     private var model: Model? = null
     private var recognizer: Recognizer? = null
     private var service: SpeechService? = null
@@ -78,7 +86,11 @@ class VoskVoiceInput(
         scope.launch {
             try {
                 val m = model ?: withContext(Dispatchers.IO) { Model(dir.absolutePath) }.also { model = it }
-                val rec = Recognizer(m, SAMPLE_RATE)
+                val rec = if (limitedVocabulary) {
+                    Recognizer(m, SAMPLE_RATE, JSONArray(DriverCommandParser.vocabulary(wakeWord)).toString())
+                } else {
+                    Recognizer(m, SAMPLE_RATE)
+                }
                 val s = SpeechService(rec, SAMPLE_RATE)
                 if (!s.startListening(listener)) error("Micro déjà utilisé")
                 recognizer = rec

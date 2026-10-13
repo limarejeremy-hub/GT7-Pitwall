@@ -38,6 +38,10 @@ class RaceEngineer {
     var driverPosition: Int? = null
         private set
 
+    /** Nombre de voitures au départ, transmis par GT7 avant la course. */
+    var carsInRace: Int? = null
+        private set
+
     /** Mode silence : seules les alertes et les réponses passent. */
     var quiet: Boolean = false
         private set
@@ -58,6 +62,7 @@ class RaceEngineer {
                     resetAlerts()
                     announcedNoConsumption = false
                     driverPosition = null
+                    carsInRace = null
                     out += msg("Nouvelle session détectée, je repars de zéro.", Priority.NORMAL, MessageCategory.RADIO)
                 }
 
@@ -75,6 +80,7 @@ class RaceEngineer {
 
                 is SessionEvent.GridPosition -> {
                     driverPosition = event.position
+                    carsInRace = event.cars
                     out += msg(
                         "Tu pars en position ${event.position} sur ${event.cars}. Bonne course !",
                         Priority.NORMAL,
@@ -100,13 +106,18 @@ class RaceEngineer {
                 driverPosition = command.position
                 "Bien reçu, P${command.position}."
             }
+            DriverCommand.ReportLast -> carsInRace?.let {
+                driverPosition = it
+                "Compris, dernier, P$it. On remonte."
+            } ?: "Compris, tu es dernier. Dis-moi ta place en chiffre, par exemple « je suis vingtième »."
+
             DriverCommand.Overtook -> {
                 val pos = driverPosition?.let { (it - 1).coerceAtLeast(1) }
                 driverPosition = pos
                 if (pos == null) "Bien joué ! Donne-moi ta position quand tu peux." else "Bien joué ! Tu es P$pos."
             }
             DriverCommand.Overtaken -> {
-                val pos = driverPosition?.let { it + 1 }
+                val pos = driverPosition?.let { p -> (p + 1).let { n -> carsInRace?.let { minOf(n, it) } ?: n } }
                 driverPosition = pos
                 if (pos == null) "Compris. Donne-moi ta position quand tu peux." else "Compris, tu es P$pos. On reste concentré."
             }

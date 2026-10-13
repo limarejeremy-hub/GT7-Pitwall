@@ -104,6 +104,18 @@ class SectorsAndRadioTest {
         assertEquals(DriverCommand.Quiet, DriverCommandParser.parse("silence"))
         assertEquals(DriverCommand.Repeat, DriverCommandParser.parse("tu peux répéter"))
         assertNull(DriverCommandParser.parse("bonjour"))
+        // Phrases réellement entendues lors du test du 13/10.
+        assertEquals(DriverCommand.ReportPosition(17), DriverCommandParser.parse("je suis dix-septieme"))
+        assertEquals(DriverCommand.Overtaken, DriverCommandParser.parse("adieu une place"))
+        assertEquals(DriverCommand.ReportLast, DriverCommandParser.parse("dernier"))
+        assertEquals(DriverCommand.ReportLast, DriverCommandParser.parse("je suis dernière"))
+        assertEquals(DriverCommand.Ask(DriverQuery.LAST_LAP), DriverCommandParser.parse("mon dernier tour"))
+        assertEquals(DriverCommand.ReportPosition(20), DriverCommandParser.parse("je suis vingtième"))
+        assertEquals(DriverCommand.ReportPosition(22), DriverCommandParser.parse("je suis vingt-deuxième"))
+        assertEquals(DriverCommand.ReportPosition(21), DriverCommandParser.parse("je suis vingt et unième"))
+        assertEquals(DriverCommand.ReportPosition(18), DriverCommandParser.parse("position dix-huit"))
+        assertEquals(DriverCommand.Overtook, DriverCommandParser.parse("j'ai gagné une place"))
+        assertTrue("radio" in DriverCommandParser.vocabulary("radio"))
     }
 
     @Test
@@ -121,6 +133,10 @@ class SectorsAndRadioTest {
         assertEquals("Compris, tu es P4. On reste concentré.", e.handle(DriverCommand.Overtaken, t.snapshot, null).text)
         assertEquals("Bien reçu, P2.", e.handle(DriverCommand.ReportPosition(2), t.snapshot, null).text)
         assertTrue("P2" in e.answer(DriverQuery.POSITION, t.snapshot, null).text)
+        assertEquals("Compris, dernier, P12. On remonte.", e.handle(DriverCommand.ReportLast, t.snapshot, null).text)
+        // On ne peut pas être plus loin que dernier.
+        assertEquals("Compris, tu es P12. On reste concentré.", e.handle(DriverCommand.Overtaken, t.snapshot, null).text)
+        e.handle(DriverCommand.ReportPosition(2), t.snapshot, null)
         // Le tour suivant rappelle la position.
         e.onUpdate(t.update(TestPackets.packet(lap = 1, totalLaps = 5)), t.snapshot, null)
         val lapMsgs = e.onUpdate(t.update(TestPackets.packet(lap = 2, totalLaps = 5, lastLapMs = 80_000)), t.snapshot, null)
