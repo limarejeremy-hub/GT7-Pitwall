@@ -30,9 +30,13 @@ data class EngineerMessage(
 class RaceEngineer {
     private var warnedTwoLaps = false
     private var warnedOneLap = false
+    private var announcedNoConsumption = false
 
     fun onUpdate(events: List<SessionEvent>, snapshot: SessionSnapshot, fuel: FuelReport?): List<EngineerMessage> {
         val out = mutableListOf<EngineerMessage>()
+        val lapCompletedNow = events.any { it is SessionEvent.LapCompleted }
+        val finalLapNext = events.any { it is SessionEvent.FinalLapStarted }
+        val finishedNow = events.any { it is SessionEvent.RaceFinished }
         for (event in events) {
             when (event) {
                 SessionEvent.FirstData ->
@@ -40,6 +44,7 @@ class RaceEngineer {
 
                 SessionEvent.SessionReset -> {
                     resetAlerts()
+                    announcedNoConsumption = false
                     out += msg("Nouvelle session détectée, je repars de zéro.", Priority.NORMAL, MessageCategory.RADIO)
                 }
 
@@ -48,10 +53,22 @@ class RaceEngineer {
                     out += msg("Ravitaillement détecté, je recalcule la stratégie au prochain tour.", Priority.NORMAL, MessageCategory.FUEL)
                 }
 
-                is SessionEvent.FinalLapStarted ->
+                // Annoncé dans le message du tour qui vient de se terminer, sinon seul.
+                is SessionEvent.FinalLapStarted -> if (!lapCompletedNow) {
                     out += msg("Dernier tour ! Donne tout.", Priority.HIGH, MessageCategory.LAP)
+                }
 
-                is SessionEvent.LapCompleted -> out += lapMessage(event, fuel)
+                is SessionEvent.RaceFinished -> out += finishMessage(snapshot)
+
+                is SessionEvent.GridPosition ->
+                    out += msg(
+                        "Tu pars en position ${event.position} sur ${event.cars}. Bonne course !",
+                        Priority.NORMAL,
+                        MessageCategory.RADIO,
+                    )
+
+                is SessionEvent.LapCompleted ->
+                    out += lapMessage(event, snapshot, fuel, finalLapNext, finishedNow)
             }
         }
         fuelAlert(fuel)?.let { out += it }
@@ -105,7 +122,13 @@ class RaceEngineer {
         return msg(text, Priority.HIGH, MessageCategory.ANSWER)
     }
 
-    private fun lapMessage(e: SessionEvent.LapCompleted, fuel: FuelReport?): EngineerMessage {
+    private fun lapMessage(
+        e: SessionEvent.LapCompleted,
+        snapshot: SessionSnapshot,
+        fuel: FuelReport?,
+        finalLapNext: Boolean,
+        finished: Boolean,
+    ): EngineerMessage {
         val lap = e.lap
         val sb = StringBuilder()
         val time = lap.timeMs
@@ -121,15 +144,49 @@ class RaceEngineer {
         } else {
             sb.append("Tour ${lap.lapNumber} bouclé. ")
         }
+        if (finished) return msg(sb.toString().trim(), Priority.NORMAL, MessageCategory.LAP)
+
+        val totalLaps = snapshot.packet?.totalLaps ?: 0
+        when {
+            finalLapNext -> sb.append("Dernier tour, donne tout ! ")
+            totalLaps > 0 && totalLaps - lap.lapNumber > 1 -> sb.append("Encore ${totalLaps - lap.lapNumber} tours. ")
+        }
+
+        // Point rythme tous les 3 tours, à partir des chronos réels.
+        val stats = LapAnalyzer.analyze(snapshot.laps)
+        if (!finalLapNext && lap.lapNumber % 3 == 0 && stats.recentAverageMs != null && stats.recentStdDevMs != null) {
+            sb.append("Rythme moyen ${lapTimeSpeech(stats.recentAverageMs)}, régularité à plus ou moins ${deltaSpeech(stats.recentStdDevMs)}. ")
+        }
+
         if (fuel != null) {
             when (fuel.advice) {
                 FuelAdvice.Measuring -> if (lap.fuelUsed == null) sb.append("Je mesure la consommation sur le prochain tour complet.")
+                FuelAdvice.NoConsumption -> if (!announcedNoConsumption) {
+                    announcedNoConsumption = true
+                    sb.append("Le niveau d'essence ne baisse pas : pas de consommation sur cette épreuve.")
+                }
                 FuelAdvice.NotAvailable, FuelAdvice.RaceFinished -> Unit
                 else -> sb.append(fuelSentence(fuel, verbose = false))
             }
         }
-        val priority = if (fuel?.advice is FuelAdvice.PitRequired) Priority.HIGH else Priority.NORMAL
+        val priority = if (fuel?.advice is FuelAdvice.PitRequired || finalLapNext) Priority.HIGH else Priority.NORMAL
         return msg(sb.toString().trim(), priority, MessageCategory.LAP)
+    }
+
+    private fun finishMessage(snapshot: SessionSnapshot): EngineerMessage {
+        val p = snapshot.packet
+        val best = p?.bestLapMs?.takeIf { it > 0 } ?: snapshot.bestRecordedLapMs
+        val bestLap = snapshot.laps.firstOrNull { it.timeMs != null && it.timeMs == best }?.lapNumber
+        val text = buildString {
+            append("Drapeau à damier, course terminée ! ")
+            if (best != null) {
+                append("Meilleur tour : ${lapTimeSpeech(best)}")
+                if (bestLap != null) append(", au tour $bestLap")
+                append(". ")
+            }
+            append("Beau boulot.")
+        }
+        return msg(text.trim(), Priority.HIGH, MessageCategory.RADIO)
     }
 
     private fun fuelSentence(f: FuelReport, verbose: Boolean): String {
@@ -141,6 +198,7 @@ class RaceEngineer {
         }
         val advice = when (val a = f.advice) {
             FuelAdvice.Measuring -> "Pas encore de tour complet mesuré, je calcule la consommation."
+            FuelAdvice.NoConsumption -> "Le niveau d'essence ne baisse pas : pas de consommation sur cette épreuve."
             FuelAdvice.NotAvailable -> "GT7 ne transmet pas de capacité de réservoir pour cette voiture."
             FuelAdvice.RaceFinished -> "Course terminée."
             is FuelAdvice.RangeOnly -> "Je ne connais pas la distance restante, seulement l'autonomie."

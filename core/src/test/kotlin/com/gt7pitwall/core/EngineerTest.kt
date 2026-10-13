@@ -26,7 +26,11 @@ class EngineerTest {
         assertEquals("-1.030", FrenchFormat.delta(-1030))
         assertEquals("1 minute 32 secondes 5", FrenchFormat.lapTimeSpeech(92_456))
         assertEquals("2 minutes 0 seconde 0", FrenchFormat.lapTimeSpeech(119_990))
-        assertEquals("0,4 seconde", FrenchFormat.deltaSpeech(412))
+        assertEquals("41 centièmes", FrenchFormat.deltaSpeech(412))
+        assertEquals("2 centièmes", FrenchFormat.deltaSpeech(22))
+        assertEquals("1 centième", FrenchFormat.deltaSpeech(-8))
+        assertEquals("moins d'un centième", FrenchFormat.deltaSpeech(3))
+        assertEquals("1 seconde", FrenchFormat.deltaSpeech(996))
         assertEquals("2,5 secondes", FrenchFormat.deltaSpeech(-2_480))
         assertEquals("3,5 tours", FrenchFormat.laps(3.46f))
         assertEquals("1 tour", FrenchFormat.laps(1f))
@@ -47,7 +51,7 @@ class EngineerTest {
 
         val lap2 = run(t, e, packet(lap = 3, totalLaps = 5, fuel = 80f, lastLapMs = 89_600))
         val text2 = lap2.single().text
-        assertTrue("Meilleur tour, 0,4 seconde de mieux" in text2, text2)
+        assertTrue("Meilleur tour, 40 centièmes de mieux" in text2, text2)
         assertTrue("Carburant pour 8 tours" in text2, text2)
         assertTrue("On finit la course" in text2, text2)
     }
@@ -94,5 +98,58 @@ class EngineerTest {
         assertEquals(DriverQuery.BEST_LAP, DriverQueryParser.parse("meilleur tour ?"))
         assertEquals(DriverQuery.RACE_STATUS, DriverQueryParser.parse("il reste combien de tours"))
         assertEquals(null, DriverQueryParser.parse("bonjour"))
+    }
+
+    /** Rejoue la course réelle de la capture d'écran : 5 tours, carburant bloqué à 100. */
+    @Test
+    fun replayOfRealFiveLapRaceWithoutFuelConsumption() {
+        val t = SessionTracker()
+        val e = RaceEngineer()
+        val laps = listOf(90_637, 100_007, 99_624, 90_615, 86_961)
+        val all = mutableListOf<com.gt7pitwall.core.engineer.EngineerMessage>()
+        all += run(t, e, packet(lap = 0, totalLaps = 5, fuel = 100f))
+        all += run(t, e, packet(lap = 1, totalLaps = 5, fuel = 100f))
+        var last = -1
+        laps.forEachIndexed { i, ms ->
+            all += run(t, e, packet(lap = i + 1, totalLaps = 5, fuel = 100f, lastLapMs = last))
+            all += run(t, e, packet(lap = i + 2, totalLaps = 5, fuel = 100f, lastLapMs = ms))
+            last = ms
+        }
+        val texts = all.map { it.text }
+        val lap1 = texts.first { it.startsWith("Tour 1 :") }
+        assertTrue("Encore 4 tours" in lap1, lap1)
+        assertTrue("pas de consommation sur cette épreuve" in lap1, lap1)
+        // Annonce "pas de consommation" une seule fois.
+        assertEquals(1, texts.count { "pas de consommation" in it })
+        val lap3 = texts.first { it.startsWith("Tour 3 :") }
+        assertTrue("Rythme moyen" in lap3, lap3)
+        val lap4 = texts.first { it.startsWith("Tour 4 :") }
+        assertTrue("Meilleur tour, 2 centièmes de mieux" in lap4, lap4)
+        assertTrue("Dernier tour, donne tout" in lap4, lap4)
+        assertTrue(texts.none { it == "Dernier tour ! Donne tout." })
+        // Chrono du tour 5 annoncé avant l'arrivée.
+        val i5 = texts.indexOfFirst { it.startsWith("Tour 5 :") }
+        val iFinish = texts.indexOfFirst { it.startsWith("Drapeau à damier") }
+        assertTrue(i5 in 0 until iFinish, texts.toString())
+        assertTrue("au tour 5" in texts[iFinish], texts[iFinish])
+        assertEquals(
+            com.gt7pitwall.core.strategy.FuelAdvice.RaceFinished,
+            FuelStrategy.compute(t.snapshot)!!.advice,
+        )
+    }
+
+    @Test
+    fun announcesGridPositionOnce() {
+        val t = SessionTracker()
+        val e = RaceEngineer()
+        val plain = TestPackets.plain(lap = 0, totalLaps = 5)
+        java.nio.ByteBuffer.wrap(plain).order(java.nio.ByteOrder.LITTLE_ENDIAN).apply {
+            putShort(0x84, 8)
+            putShort(0x86, 16)
+        }
+        val p = com.gt7pitwall.core.telemetry.TelemetryParser.parseDecrypted(plain)!!
+        val first = run(t, e, p).map { it.text }
+        assertTrue("Tu pars en position 8 sur 16. Bonne course !" in first, first.toString())
+        assertTrue(run(t, e, p).isEmpty())
     }
 }

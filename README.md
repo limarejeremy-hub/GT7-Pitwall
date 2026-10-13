@@ -72,7 +72,10 @@ une nouvelle version s'installe **par-dessus** l'ancienne, sans désinstaller.
 - [ ] la **recherche automatique** (champ IP vide) fonctionne ; sinon, saisir l'IP ;
 - [ ] les valeurs affichées correspondent au jeu : vitesse, tours, chronos, carburant ;
 - [ ] le **rapport 0 affiché « R »** correspond bien à la marche arrière ;
-- [ ] le moment exact où GT7 met à jour le compteur de tours et le « dernier tour » (départ arrêté / lancé) ;
+- [x] réception en direct, chronos au tour, détection de fin de course (GT7 passe à « tour 6 / 5 ») — vérifié le 13/10 ;
+- [x] épreuve sans consommation (niveau bloqué à 100) — vérifié le 13/10 ;
+- [ ] l'annonce de la place sur la grille avant le départ (champ GT7 « position de départ ») ;
+- [ ] la stratégie carburant sur une épreuve **avec** consommation ;
 - [ ] le niveau de carburant GT7 (souvent sur une échelle de 100) : la stratégie fonctionne dans l'unité du jeu ;
 - [ ] la réception continue **écran éteint** (service de premier plan + verrou Wi-Fi) ;
 - [ ] la lisibilité de l'interface plié / déplié, et le volume de la voix pendant la course.

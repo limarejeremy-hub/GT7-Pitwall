@@ -170,4 +170,26 @@ class SessionAndFuelTest {
         t.update(packet(lap = 1, fuel = 0f, capacity = 0f))
         assertEquals(FuelAdvice.NotAvailable, FuelStrategy.compute(t.snapshot)!!.advice)
     }
+
+    @Test
+    fun zeroConsumptionDetected() {
+        val t = SessionTracker()
+        t.update(packet(lap = 0, totalLaps = 5, fuel = 100f))
+        t.drive(1, 100f, 100f, 90_000, -1, totalLaps = 5)
+        assertEquals(FuelAdvice.NoConsumption, FuelStrategy.compute(t.snapshot)!!.advice)
+    }
+
+    @Test
+    fun finalLapAndFinishComeAfterLapTime() {
+        val t = SessionTracker()
+        t.update(packet(lap = 1, totalLaps = 2, fuel = 50f))
+        // Le chrono arrive un paquet après le passage de ligne.
+        assertTrue(t.update(packet(lap = 2, totalLaps = 2, fuel = 45f, lastLapMs = -1)).isEmpty())
+        val ev = t.update(packet(lap = 2, totalLaps = 2, fuel = 45f, lastLapMs = 80_000))
+        assertIs<SessionEvent.LapCompleted>(ev[0])
+        assertIs<SessionEvent.FinalLapStarted>(ev[1])
+        val end = t.update(packet(lap = 3, totalLaps = 2, fuel = 40f, lastLapMs = 79_000))
+        assertIs<SessionEvent.LapCompleted>(end[0])
+        assertIs<SessionEvent.RaceFinished>(end[1])
+    }
 }

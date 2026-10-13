@@ -35,9 +35,21 @@ object FrenchFormat {
         return sb.toString()
     }
 
-    /** "0,4 seconde" / "1,2 secondes" pour la voix (valeur absolue). */
+    /**
+     * Écart pour la voix (valeur absolue) : "2 centièmes" / "41 centièmes" sous la seconde,
+     * puis "1,2 seconde" / "3,7 secondes".
+     */
     fun deltaSpeech(ms: Int): String {
-        val tenths = (abs(ms) / 100.0).roundToInt()
+        val a = abs(ms)
+        if (a < 995) {
+            val hundredths = (a / 10.0).roundToInt()
+            return when (hundredths) {
+                0 -> "moins d'un centième"
+                1 -> "1 centième"
+                else -> "$hundredths centièmes"
+            }
+        }
+        val tenths = (a / 100.0).roundToInt()
         val value = decimal(tenths / 10f)
         return if (tenths >= 20) "$value secondes" else "$value seconde"
     }

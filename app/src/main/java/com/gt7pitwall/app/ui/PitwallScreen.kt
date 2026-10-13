@@ -337,6 +337,7 @@ private fun LapCard(state: PitwallUiState) {
         }
         val lapText = when {
             p.currentLap <= 0 -> "Avant départ"
+            p.totalLaps > 0 && p.currentLap > p.totalLaps -> "Terminée"
             p.totalLaps > 0 -> "${p.currentLap} / ${p.totalLaps}"
             else -> "${p.currentLap}"
         }
@@ -415,6 +416,7 @@ private fun FuelCard(fuel: FuelReport?, p: TelemetryPacket?) {
 private fun AdviceBox(advice: FuelAdvice) {
     val (text, color) = when (advice) {
         FuelAdvice.Measuring -> "Mesure en cours : il faut un tour complet observé depuis la ligne." to PitColors.Muted
+        FuelAdvice.NoConsumption -> "Le niveau ne baisse pas : pas de consommation sur cette épreuve." to PitColors.Green
         FuelAdvice.NotAvailable -> "Pas de données de réservoir." to PitColors.Muted
         FuelAdvice.RaceFinished -> "Course terminée." to PitColors.Muted
         is FuelAdvice.RangeOnly ->
@@ -448,7 +450,7 @@ private fun RadioCard(messages: List<EngineerMessage>, onAsk: (DriverQuery) -> U
             QueryButton("Course ?", Modifier.weight(1f)) { onAsk(DriverQuery.RACE_STATUS) }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            QueryButton("Dernier tour ?", Modifier.weight(1f)) { onAsk(DriverQuery.LAST_LAP) }
+            QueryButton("Dernier ?", Modifier.weight(1f)) { onAsk(DriverQuery.LAST_LAP) }
             QueryButton("Meilleur ?", Modifier.weight(1f)) { onAsk(DriverQuery.BEST_LAP) }
             QueryButton("Rythme ?", Modifier.weight(1f)) { onAsk(DriverQuery.PACE) }
         }

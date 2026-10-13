@@ -27,7 +27,14 @@ sealed interface SessionEvent {
     /** Le niveau de carburant a augmenté pendant le tour en cours. Émis une fois par tour. */
     data object RefuelDetected : SessionEvent
 
+    /** Émis juste après le [LapCompleted] du tour précédent (le chrono est annoncé d'abord). */
     data class FinalLapStarted(val lap: Int) : SessionEvent
+
+    /** Dernier tour bouclé : GT7 passe alors le compteur à "total + 1". Émis après son [LapCompleted]. */
+    data class RaceFinished(val totalLaps: Int) : SessionEvent
+
+    /** Place sur la grille transmise par GT7 avant le départ (une fois par session). */
+    data class GridPosition(val position: Int, val cars: Int) : SessionEvent
 }
 
 /** Photographie immuable de la session, partagée avec l'interface et l'ingénieur. */
@@ -41,10 +48,14 @@ data class SessionSnapshot(
     val bestRecordedLapMs: Int? get() = laps.mapNotNull { it.timeMs }.filter { it > 0 }.minOrNull()
 
     /** Consommations mesurées sur des tours complets sans ravitaillement. */
-    val fuelSamples: List<Float> get() = laps.mapNotNull { it.fuelUsed }.filter { it > 0f }
+    val fuelSamples: List<Float> get() = laps.mapNotNull { it.fuelUsed }.filter { it > ZERO_FUEL }
+
+    /** Tours complets mesurés où le niveau n'a pas baissé (épreuve sans consommation). */
+    val zeroFuelLaps: Int get() = laps.count { it.fuelUsed != null && it.fuelUsed <= ZERO_FUEL }
 
     companion object {
         val EMPTY = SessionSnapshot(null, emptyList(), null, false)
+        const val ZERO_FUEL = 0.01f
     }
 }
 
@@ -63,12 +74,15 @@ class SessionTracker(
     private var fuelAtLapStart: Float? = null
     private var refuelledThisLap = false
     private var pending: PendingLap? = null
+    private var gridAnnounced = false
 
     private data class PendingLap(
         val lapNumber: Int,
         val lastLapMsBefore: Int,
         val fuelUsed: Float?,
         val refuelled: Boolean,
+        val finalLapStarts: Int?,
+        val finishesRace: Int?,
         var waited: Int = 0,
     )
 
@@ -107,14 +121,20 @@ class SessionTracker(
                         lastLapMsBefore = before.lastLapMs,
                         fuelUsed = used?.takeIf { it >= 0f },
                         refuelled = refuelledThisLap,
+                        finalLapStarts = p.currentLap.takeIf { p.totalLaps > 0 && it == p.totalLaps },
+                        finishesRace = p.totalLaps.takeIf { it > 0 && completed == it },
                     )
+                } else if (p.totalLaps > 0 && p.currentLap == p.totalLaps) {
+                    events += SessionEvent.FinalLapStarted(p.currentLap)
                 }
                 fuelAtLapStart = p.fuelLevel
                 refuelledThisLap = false
-                if (p.totalLaps > 0 && p.currentLap == p.totalLaps) {
-                    events += SessionEvent.FinalLapStarted(p.currentLap)
-                }
             }
+        }
+
+        if (!gridAnnounced && p.preRacePosition > 0 && p.preRaceCarCount > 0) {
+            gridAnnounced = true
+            events += SessionEvent.GridPosition(p.preRacePosition, p.preRaceCarCount)
         }
 
         pending?.let { pl ->
@@ -136,6 +156,8 @@ class SessionTracker(
         laps += record
         pending = null
         events += SessionEvent.LapCompleted(record, previousBest)
+        pl.finalLapStarts?.let { events += SessionEvent.FinalLapStarted(it) }
+        pl.finishesRace?.let { events += SessionEvent.RaceFinished(it) }
     }
 
     private fun reset() {
@@ -143,5 +165,6 @@ class SessionTracker(
         fuelAtLapStart = null
         refuelledThisLap = false
         pending = null
+        gridAnnounced = false
     }
 }

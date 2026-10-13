@@ -9,6 +9,9 @@ sealed interface FuelAdvice {
     /** Pas encore de tour complet mesuré. */
     data object Measuring : FuelAdvice
 
+    /** Le niveau n'a pas baissé sur les tours complets mesurés : épreuve sans consommation. */
+    data object NoConsumption : FuelAdvice
+
     /** GT7 ne fournit pas de capacité de réservoir (ex. véhicule électrique). */
     data object NotAvailable : FuelAdvice
 
@@ -84,6 +87,7 @@ object FuelStrategy {
 
         val advice: FuelAdvice = when {
             raceLapsRemaining == 0f -> FuelAdvice.RaceFinished
+            perLap == null && s.zeroFuelLaps > 0 -> FuelAdvice.NoConsumption
             perLap == null || lapsOfFuel == null -> FuelAdvice.Measuring
             raceLapsRemaining == null || fuelToFinish == null -> FuelAdvice.RangeOnly(lapsOfFuel)
             else -> {
