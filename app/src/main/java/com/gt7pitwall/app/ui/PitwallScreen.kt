@@ -179,7 +179,7 @@ fun PitwallScreen(
                         connectionCard()
                     }
                     ScrollColumn(Modifier.weight(1f)) {
-                        RaceSetupCard(state, rules, engine.database, engine::setRules)
+                        RaceSetupCard(state, rules, engine.database, engine::setRules, engine::command)
                         TrackMapCard(state.snapshot.trackOutline, state.snapshot.packet)
                         FuelCard(state.fuel, state.snapshot.packet)
                         RadioCard(radio, engine::command)
@@ -193,7 +193,7 @@ fun PitwallScreen(
                     DriveCard(state.snapshot.packet)
                     LapCard(state)
                     FuelCard(state.fuel, state.snapshot.packet)
-                    RaceSetupCard(state, rules, engine.database, engine::setRules)
+                    RaceSetupCard(state, rules, engine.database, engine::setRules, engine::command)
                     CarCard(state.snapshot.packet, state.gForce)
                     TrackMapCard(state.snapshot.trackOutline, state.snapshot.packet)
                     RadioCard(radio, engine::command)
@@ -599,7 +599,13 @@ private fun RadioCard(messages: List<EngineerMessage>, onCommand: (DriverCommand
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             QueryButton("Stratégie ?", Modifier.weight(1f)) { ask(DriverQuery.PLAN) }
-            QueryButton("Position ?", Modifier.weight(1f)) { ask(DriverQuery.POSITION) }
+            QueryButton("Obligations ?", Modifier.weight(1f)) { ask(DriverQuery.OBLIGATIONS) }
+            QueryButton("Détails", Modifier.weight(1f)) { ask(DriverQuery.DETAILS) }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            QueryButton("Radio complète", Modifier.weight(1f)) { onCommand(DriverCommand.Talk) }
+            QueryButton("Essentielle", Modifier.weight(1f)) { onCommand(DriverCommand.Essential) }
+            QueryButton("Critique", Modifier.weight(1f)) { onCommand(DriverCommand.Quiet) }
         }
         if (messages.isEmpty()) {
             Text("Aucun message pour l'instant.", color = PitColors.Muted)
@@ -779,7 +785,8 @@ private fun VoiceRadioCard(
         Text(
             "Exemples : « $wakeWord, combien d'essence ? » • « $wakeWord, je suis troisième » • " +
                 "« $wakeWord, je suis dernier » • « $wakeWord, j'ai doublé » • « $wakeWord, j'ai perdu une place » • « $wakeWord, mes secteurs » • " +
-                "« $wakeWord, silence » / « tu peux parler » • « $wakeWord, répète »",
+                "« $wakeWord, silence » / « radio essentielle » / « tu peux parler » • « $wakeWord, répète » • " +
+                "« $wakeWord, arrêt fait » / « annule l'arrêt » • « $wakeWord, j'ai mis les durs » • « $wakeWord, obligations » • « $wakeWord, détails »",
             color = PitColors.Muted,
             style = MaterialTheme.typography.bodySmall,
         )

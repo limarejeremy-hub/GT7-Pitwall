@@ -52,8 +52,11 @@ sealed interface SessionEvent {
     /** Place sur la grille transmise par GT7 avant le départ (une fois par session). */
     data class GridPosition(val position: Int, val cars: Int) : SessionEvent
 
-    /** Arrêt au stand détecté (ravitaillement, ou voiture immobile 3 s en course). Un par tour au plus. */
-    data class PitStopDetected(val stopsSoFar: Int) : SessionEvent
+    /**
+     * Fin d'un passage où la voiture a ravitaillé ou s'est immobilisée (un événement par passage).
+     * Seul [PitAssessment.REFUEL] prouve un arrêt aux stands ; un arrêt sans essence doit être confirmé par le pilote.
+     */
+    data class PitVisitEnded(val visit: PitDetector.Visit) : SessionEvent
 }
 
 /** Photographie immuable de la session, partagée avec l'interface et l'ingénieur. */
@@ -67,8 +70,6 @@ data class SessionSnapshot(
     val trackOutline: TrackOutline? = null,
     /** Temps de course écoulé depuis le départ (ms, d'après les paquets à 60/s), null avant le départ. */
     val raceElapsedMs: Long? = null,
-    /** Arrêts au stand détectés depuis le départ. */
-    val stops: Int = 0,
 ) {
     val bestRecordedLapMs: Int? get() = laps.mapNotNull { it.timeMs }.filter { it > 0 }.minOrNull()
 
@@ -104,9 +105,7 @@ class SessionTracker(
     private var outline: TrackOutline? = null
     private var outlineLapMs: Int? = null
     private var raceTicks: Long? = null
-    private var stops = 0
-    private var stopCountedLap = -1
-    private var stationaryPackets = 0
+    private val pitDetector = PitDetector(refuelThreshold)
 
     private data class PendingLap(
         val lapNumber: Int,
@@ -141,7 +140,6 @@ class SessionTracker(
             if (p.fuelLevel - before.fuelLevel > refuelThreshold) {
                 if (!refuelledThisLap) events += SessionEvent.RefuelDetected
                 refuelledThisLap = true
-                countStop(p, events)
             }
 
             // Chrono de course : démarre au passage du tour 0 au tour 1 (ou au premier tour observé).
@@ -149,12 +147,9 @@ class SessionTracker(
             raceTicks?.let { if (dId in 1..30 && !p.isPaused) raceTicks = it + dId }
             if (raceTicks == null && p.currentLap >= 1 && p.currentLap > before.currentLap) raceTicks = 0
 
-            // Voiture immobile 3 s en course (hors pause) : arrêt au stand sans ravitaillement.
-            if (p.currentLap >= 1 && (raceTicks ?: 0) > 600 && p.speedKmh < 1f && !p.isPaused && !p.isLoading) {
-                if (++stationaryPackets == STATIONARY_PACKETS) countStop(p, events)
-            } else {
-                stationaryPackets = 0
-            }
+            // Passages aux stands : un événement par passage, jamais sur un simple arrêt à 0 km/h.
+            val visit = pitDetector.update(p, before, raceStarted = (raceTicks ?: 0) > RACE_START_GRACE_TICKS, outline = outline)
+            visit?.let { events += SessionEvent.PitVisitEnded(it) }
 
             if (p.currentLap > before.currentLap) {
                 val completed = before.currentLap
@@ -204,16 +199,8 @@ class SessionTracker(
             refuelledThisLap,
             outline,
             raceTicks?.let { it * 1000L / 60L },
-            stops,
         )
         return events
-    }
-
-    private fun countStop(p: TelemetryPacket, events: MutableList<SessionEvent>) {
-        if (p.currentLap < 1 || stopCountedLap == p.currentLap) return
-        stopCountedLap = p.currentLap
-        stops++
-        events += SessionEvent.PitStopDetected(stops)
     }
 
     private fun finishPending(pl: PendingLap, timeMs: Int?, events: MutableList<SessionEvent>) {
@@ -257,13 +244,11 @@ class SessionTracker(
         outline = null
         outlineLapMs = null
         raceTicks = null
-        stops = 0
-        stopCountedLap = -1
-        stationaryPackets = 0
+        pitDetector.reset()
     }
 
     private companion object {
-        /** 3 s à 60 paquets/s. */
-        const val STATIONARY_PACKETS = 180
+        /** Pas de passage aux stands dans les 10 premières secondes (départ arrêté, grille). */
+        const val RACE_START_GRACE_TICKS = 600L
     }
 }

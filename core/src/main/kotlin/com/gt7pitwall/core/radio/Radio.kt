@@ -20,6 +20,12 @@ enum class DriverQuery {
     POSITION,
     TYRES,
     PLAN,
+
+    /** Détail complet du dernier tour (statistiques, secteurs, carburant). */
+    DETAILS,
+
+    /** État des obligations du règlement (arrêts, gommes), avec leurs preuves. */
+    OBLIGATIONS,
 }
 
 /** Événements de l'entrée vocale (mot de réveil puis phrase du pilote). */

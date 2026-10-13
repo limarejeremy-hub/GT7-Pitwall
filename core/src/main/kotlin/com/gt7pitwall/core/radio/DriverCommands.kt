@@ -18,11 +18,29 @@ sealed interface DriverCommand {
     /** "Je me suis fait doubler". */
     data object Overtaken : DriverCommand
 
-    /** "Silence" : plus d'annonces automatiques, seulement les alertes et les réponses. */
+    /** "Silence" : seulement les messages critiques et les réponses. */
     data object Quiet : DriverCommand
 
-    /** "Tu peux parler" : annonces automatiques réactivées. */
+    /** "Radio essentielle" : critiques + changements de stratégie, sans statistiques. */
+    data object Essential : DriverCommand
+
+    /** "Tu peux parler" : toutes les annonces. */
     data object Talk : DriverCommand
+
+    /** "Oui" (réponse à une question de l'ingénieur). */
+    data object Yes : DriverCommand
+
+    /** "Non". */
+    data object No : DriverCommand
+
+    /** "J'ai fait mon arrêt". */
+    data object DeclareStop : DriverCommand
+
+    /** "Annule l'arrêt". */
+    data object CancelStop : DriverCommand
+
+    /** "J'ai mis les durs" / "je pars en mediums" : gommes déclarées (le texte est interprété avec le règlement). */
+    data class Tyres(val text: String, val atStart: Boolean) : DriverCommand
 
     /** "Il pleut" : le pilote signale la pluie (GT7 ne transmet pas la météo). */
     data object Rain : DriverCommand
@@ -104,6 +122,9 @@ object DriverCommandParser {
         if (t.isEmpty()) return null
 
         if (has(t, "repete", "repeter", "redis")) return DriverCommand.Repeat
+        if (t == "oui" || t == "affirmatif" || t == "confirme" || t == "c'est ca" || t == "exact") return DriverCommand.Yes
+        if (t == "non" || t == "negatif" || t == "non non") return DriverCommand.No
+        tyresIn(t)?.let { return it }
         if (has(t, "plus de pluie", "pluie s'arrete", "pluie arrete", "ca seche", "piste seche", "seche") ||
             Regex("(^|\\s)sec($|\\s)").containsMatchIn(t)
         ) {
@@ -111,9 +132,16 @@ object DriverCommandParser {
         }
         if (has(t, "pleut", "pluie", "mouille", "humide", "averse")) return DriverCommand.Rain
         if (has(t, "silence", "tais-toi", "tais toi", "chut")) return DriverCommand.Quiet
-        if (has(t, "tu peux parler", "reparle", "parle-moi", "parle moi")) return DriverCommand.Talk
+        if (has(t, "essentiel", "moins de messages", "moins de radio")) return DriverCommand.Essential
+        if (has(t, "tu peux parler", "reparle", "parle-moi", "parle moi", "radio complete", "plus de messages")) return DriverCommand.Talk
 
         ruleIn(t)?.let { return it }
+        if (has(t, "annule l'arret", "annule arret", "annuler l'arret", "pas fait d'arret", "pas d'arret fait", "pas arrete")) {
+            return DriverCommand.CancelStop
+        }
+        if (has(t, "arret fait", "arret effectue", "fait mon arret", "fait l'arret", "je me suis arrete", "j'ai fait l'arret", "stand fait")) {
+            return DriverCommand.DeclareStop
+        }
 
         // "Il m'a doublé" avant "j'ai doublé". "adieu une place" : erreur réelle de reconnaissance de "perdu une place".
         if (has(
@@ -146,6 +174,8 @@ object DriverCommandParser {
             has(t, "secteur") -> DriverQuery.SECTORS
             has(t, "pneu", "gomme", "temperature") -> DriverQuery.TYRES
             has(t, "strategie", "plan") -> DriverQuery.PLAN
+            has(t, "obligation", "reglement") -> DriverQuery.OBLIGATIONS
+            has(t, "detail") -> DriverQuery.DETAILS
             has(t, "meilleur", "record") -> DriverQuery.BEST_LAP
             has(t, "dernier tour", "chrono", "temps") -> DriverQuery.LAST_LAP
             has(t, "rythme", "regularite", "moyenne") -> DriverQuery.PACE
@@ -153,6 +183,16 @@ object DriverCommandParser {
             else -> null
         }
         return query?.let { DriverCommand.Ask(it) }
+    }
+
+    /** Gommes déclarées : il faut un mot de dureté / type de gomme ET un verbe ou le mot pneus. */
+    private fun tyresIn(t: String): DriverCommand.Tyres? {
+        val compound = Regex("(^|\\s)(durs?|dures?|hard|mediums?|moyens?|moyennes?|tendres?|softs?|intermediaires?|ch|cm|cs|sh|sm|ss|rh|rm|rs|im)($|\\s)")
+            .containsMatchIn(t) || Regex("(pneus?|gommes?) (pluie|wet)").containsMatchIn(t)
+        if (!compound) return null
+        val context = has(t, "mis ", "monte", "chausse", "pneus", "pneu ", "gomme", "depart", "je pars", "change")
+        if (!context) return null
+        return DriverCommand.Tyres(t, atStart = has(t, "depart", "je pars", "on part"))
     }
 
     private val BIG_NUMBERS = listOf(
@@ -229,7 +269,9 @@ object DriverCommandParser {
             "en", "de", "dernier", "dernière", "tour", "tours", "meilleur", "chrono", "temps", "rythme", "course",
             "reste", "course", "minutes", "minute", "heure", "heures", "demie", "obligatoire", "obligatoires", "arrêt",
             "arrêts", "d'arrêt", "pas", "aucun", "fois", "consommation", "usure", "stratégie", "plan", "quarante",
-            "cinquante", "soixante", "pleut", "pluie", "mouillé", "mouillée", "piste", "sèche", "sec", "plus", "arrête", "pneus", "pneu", "gommes", "température", "températures", "silence", "chut", "tu", "peux", "parler", "répète", "répéter",
+            "cinquante", "soixante", "oui", "non", "fait", "effectué", "annule", "mis", "monté", "montés", "départ",
+            "pars", "durs", "dures", "mediums", "medium", "moyens", "tendres", "softs", "intermédiaires", "obligations",
+            "règlement", "détails", "essentielle", "pleut", "pluie", "mouillé", "mouillée", "piste", "sèche", "sec", "plus", "arrête", "pneus", "pneu", "gommes", "température", "températures", "silence", "chut", "tu", "peux", "parler", "répète", "répéter",
             "premier", "première", "deuxième", "second", "troisième", "quatrième", "cinquième", "sixième", "septième",
             "huitième", "neuvième", "dixième", "onzième", "douzième", "treizième", "quatorzième", "quinzième",
             "seizième", "dix-septième", "dix-huitième", "dix-neuvième", "vingtième", "vingt", "et", "unième",

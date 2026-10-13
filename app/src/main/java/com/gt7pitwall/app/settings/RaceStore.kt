@@ -1,9 +1,10 @@
 package com.gt7pitwall.app.settings
 
 import android.content.Context
-import com.gt7pitwall.app.engine.RaceStorage
+import com.gt7pitwall.core.race.RaceStorage
 import com.gt7pitwall.core.knowledge.CarTrackRecord
 import com.gt7pitwall.core.strategy.RaceRules
+import com.gt7pitwall.core.strategy.TyreCompound
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -20,7 +21,10 @@ class RaceStore(context: Context) : RaceStorage {
                 fuelMultiplier = o.optInt("fuelMultiplier", 1).coerceAtLeast(1),
                 tyreMultiplier = o.optInt("tyreMultiplier", 1).coerceAtLeast(1),
                 mandatoryStops = o.optInt("mandatoryStops", 0).coerceAtLeast(0),
-                requiredTyres = o.optString("requiredTyres", ""),
+                allowedTyres = TyreCompound.parseCodes(o.optString("allowedTyres", "")),
+                // Ancien format : texte libre ; seuls les codes reconnus (RH, RM…) sont repris.
+                requiredTyres = TyreCompound.parseCodes(o.optString("requiredTyres", "")),
+                startTyre = TyreCompound.parseCodes(o.optString("startTyre", "")).firstOrNull(),
                 trackId = o.optInt("trackId", 0).takeIf { it > 0 },
             )
         } ?: RaceRules()
@@ -35,7 +39,9 @@ class RaceStore(context: Context) : RaceStorage {
             .put("fuelMultiplier", r.fuelMultiplier)
             .put("tyreMultiplier", r.tyreMultiplier)
             .put("mandatoryStops", r.mandatoryStops)
-            .put("requiredTyres", r.requiredTyres)
+            .put("allowedTyres", TyreCompound.codes(r.allowedTyres))
+            .put("requiredTyres", TyreCompound.codes(r.requiredTyres))
+            .put("startTyre", r.startTyre?.name ?: "")
             .put("trackId", r.trackId ?: 0)
         prefs.edit().putString(KEY_RULES, o.toString()).apply()
     }

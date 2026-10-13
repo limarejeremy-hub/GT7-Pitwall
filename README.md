@@ -60,6 +60,30 @@ Quand une information manque, l'application le dit au lieu de l'estimer :
 - **Position** : GT7 ne transmet **ni la position en course ni les adversaires**. L'ingénieur part
   de la place sur la grille (transmise par GT7 avant le départ) puis suit ce que tu lui annonces.
 
+## Fiabilisation Sport (0.5)
+
+Toute la logique de course est dans `core/race/RaceController.kt` (testée) : boutons, voix et écran passent
+par le même chemin — le règlement dicté est appliqué, enregistré et la stratégie recalculée.
+
+- **Arrêts aux stands** (`PitDetector`, `PitLedger`) : un arrêt n'est compté que sur **preuve**.
+  Ravitaillement (GT7 ne ravitaille qu'aux stands) = arrêt prouvé. Immobilisation sans essence : seulement si elle
+  ressemble à un passage aux stands (approche au limiteur, pas de choc, près de la ligne et hors de la trajectoire
+  de course enregistrée) — et alors l'ingénieur **demande confirmation** (« Tu as bien effectué ton arrêt ? »,
+  réponse « oui » / « non »). Accident, tête-à-queue, arrêt en piste : jamais comptés. Un passage = un arrêt, même
+  s'il chevauche la ligne. À la voix : « arrêt fait », « annule l'arrêt ».
+- **Gommes** : autorisées / imposées / départ dans le règlement ; gommes montées **déclarées** par le pilote
+  (« je pars en mediums », « j'ai mis les durs ») — GT7 ne les transmet pas. Un ravitaillement ne valide jamais une
+  obligation de gomme. Avertissement avant le dernier arrêt s'il manque une gomme. L'ingénieur ne dit jamais
+  « règlement respecté » : il donne l'état avec ses preuves (« radio, obligations »).
+- **Plan** (`RacePlanner`) : tient compte de la partie du tour déjà faite, ne planifie jamais d'arrêt à la fin du
+  dernier tour, sépare arrêts carburant / réglementaires / gommes, garde les tours d'arrêt annoncés tant qu'ils restent
+  tenables (un plan qui glisse ne déclencherait jamais le « Box »), indique la source des chiffres (GT7, règlement,
+  mesuré, historique, estimé) et avertit : carburant insuffisant pour rejoindre les stands, arrêts ou gommes
+  impossibles à caser. Le multiplicateur de consommation ne s'applique qu'à l'historique, jamais aux mesures GT7.
+- **Radio à trois niveaux** : critique (stands, panne, obligations — toujours diffusé, en premier), utile
+  (stratégie, adhérence), information (chronos, statistiques). « radio essentielle », « silence », « tu peux parler »,
+  « détails ». Anti-répétition sur 60 s. Les chiffres carburant de la radio sont ceux du plan.
+
 ## Course & stratégie (0.4)
 
 - **Voiture reconnue automatiquement** grâce au code transmis par GT7 et à la base de la communauté
@@ -159,6 +183,7 @@ une nouvelle version s'installe **par-dessus** l'ancienne, sans désinstaller.
 - [ ] le sens de la carte du circuit (elle peut apparaître en miroir) et le sens gauche/droite des forces G ;
 - [ ] la détection blocage / patinage des roues ;
 - [ ] la reconnaissance du circuit, le plan de course et le décompte des arrêts (mode Sport) ;
+- [ ] la détection « ressemble à un passage aux stands » sur de vrais circuits (vitesse du limiteur, position de la voie des stands) ;
 - [ ] les seuils pneus / adhérence (« en température », « l'adhérence baisse », « la galère », dégradation) ;
 - [ ] le niveau de carburant GT7 (souvent sur une échelle de 100) : la stratégie fonctionne dans l'unité du jeu ;
 - [ ] la réception continue **écran éteint** (service de premier plan + verrou Wi-Fi) ;

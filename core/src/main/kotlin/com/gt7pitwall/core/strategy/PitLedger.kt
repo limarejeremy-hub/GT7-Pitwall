@@ -1,0 +1,93 @@
+package com.gt7pitwall.core.strategy
+
+/** Ce qui prouve un arrêt aux stands. */
+enum class StopEvidence {
+    /** Le niveau d'essence a augmenté : GT7 ne ravitaille qu'aux stands. */
+    REFUEL,
+
+    /** Arrêt sans ravitaillement ressemblant à un passage aux stands, confirmé par le pilote. */
+    DRIVER_CONFIRMED,
+
+    /** Arrêt déclaré par le pilote sans détection. */
+    DRIVER_DECLARED,
+}
+
+data class PitStopRecord(val number: Int, val lap: Int, val evidence: StopEvidence, val litersAdded: Float?)
+
+/** Arrêt possible (sans ravitaillement) en attente de confirmation du pilote. */
+data class StopCandidate(val lap: Int, val locationKnown: Boolean)
+
+data class TyreChange(val lap: Int, val compound: TyreCompound)
+
+/**
+ * Registre de course : arrêts aux stands avec leur preuve, et gommes déclarées.
+ * Un arrêt n'est compté que sur preuve (ravitaillement) ou confirmation / déclaration du pilote.
+ * Les gommes ne sont jamais déduites de la télémétrie : GT7 ne les transmet pas.
+ */
+class PitLedger {
+    private val stops = mutableListOf<PitStopRecord>()
+    private val tyreChanges = mutableListOf<TyreChange>()
+
+    var pending: StopCandidate? = null
+        private set
+
+    /** Après un arrêt, on attend la déclaration des gommes montées (si le règlement en impose). */
+    var awaitingTyreDeclaration: Boolean = false
+
+    val stopList: List<PitStopRecord> get() = stops.toList()
+    val stopCount: Int get() = stops.size
+    val changes: List<TyreChange> get() = tyreChanges.toList()
+
+    fun reset() {
+        stops.clear()
+        tyreChanges.clear()
+        pending = null
+        awaitingTyreDeclaration = false
+    }
+
+    fun recordRefuel(lap: Int, liters: Float): PitStopRecord {
+        pending = null
+        return add(lap, StopEvidence.REFUEL, liters)
+    }
+
+    fun propose(lap: Int, locationKnown: Boolean): StopCandidate =
+        StopCandidate(lap, locationKnown).also { pending = it }
+
+    /** Le pilote confirme l'arrêt proposé. null si rien n'était en attente. */
+    fun confirmPending(): PitStopRecord? {
+        val c = pending ?: return null
+        pending = null
+        return add(c.lap, StopEvidence.DRIVER_CONFIRMED, null)
+    }
+
+    fun rejectPending(): Boolean {
+        val had = pending != null
+        pending = null
+        return had
+    }
+
+    /** « J'ai fait mon arrêt » : confirme l'arrêt en attente, sinon l'enregistre comme déclaré. */
+    fun declare(lap: Int): PitStopRecord = confirmPending() ?: add(lap, StopEvidence.DRIVER_DECLARED, null)
+
+    /** « Annule l'arrêt » : retire le dernier arrêt (ou l'arrêt en attente). */
+    fun cancelLast(): PitStopRecord? {
+        if (rejectPending()) return null
+        return stops.removeLastOrNull()
+    }
+
+    fun fitTyres(lap: Int, compound: TyreCompound) {
+        tyreChanges += TyreChange(lap, compound)
+        awaitingTyreDeclaration = false
+    }
+
+    /** Gommes utilisées d'après les déclarations du pilote (départ + changements). */
+    fun tyresUsed(start: TyreCompound?): Set<TyreCompound> =
+        (listOfNotNull(start) + tyreChanges.map { it.compound }).toCollection(linkedSetOf())
+
+    fun currentTyre(start: TyreCompound?): TyreCompound? = tyreChanges.lastOrNull()?.compound ?: start
+
+    fun missingRequired(rules: RaceRules): Set<TyreCompound> = rules.requiredTyres - tyresUsed(rules.startTyre)
+
+    private fun add(lap: Int, evidence: StopEvidence, liters: Float?): PitStopRecord =
+        PitStopRecord(stops.size + 1, lap, evidence, liters).also { stops += it }
+}

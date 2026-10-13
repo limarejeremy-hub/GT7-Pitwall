@@ -202,12 +202,17 @@ class SectorsAndRadioTest {
             fuel -= 14.5f
         }
         go(7, fuel, 120_000)
-        val text = said.joinToString("\n")
+        val text = said.withIndex().joinToString("\n") { "${it.index}: ${it.value}" }
         // 100 L / 14,5 = 6,9 tours : dernier tour possible = 6 ; prévenu au début du tour 5.
-        assertTrue(said.any { it.startsWith("Tour 4 :") && "Stand au prochain tour" in it }, text)
-        val box = said.first { it.startsWith("Tour 5 :") }
-        assertTrue("Box, box ! Rentre au stand à la fin de ce tour, ajoute environ" in box && "litres" in box, box)
-        assertTrue("Il faudra ravitailler" !in box, box)
+        // Les appels au stand sont des messages séparés, juste avant le compte rendu du tour.
+        val warn = said.indexOfFirst { it.startsWith("Stand au prochain tour") }
+        assertEquals(said.indexOfFirst { it.startsWith("Tour 4 :") } - 1, warn, text)
+        // Au tour suivant, l'appel au stand (et l'alerte carburant, critique aussi) précèdent le compte rendu du tour 5.
+        val boxIdx = said.indexOfFirst { it.startsWith("Box, box ! Rentre au stand à la fin de ce tour, ajoute environ") }
+        assertTrue(boxIdx in (said.indexOfFirst { it.startsWith("Tour 4 :") } + 1) until said.indexOfFirst { it.startsWith("Tour 5 :") }, text)
+        assertTrue("litres" in said[boxIdx])
+        val lap5 = said.first { it.startsWith("Tour 5 :") }
+        assertTrue("Il faudra ravitailler" !in lap5, lap5)
     }
 
     @Test

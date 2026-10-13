@@ -63,12 +63,15 @@ class EngineerTest {
         run(t, e, packet(lap = 1, totalLaps = 10, fuel = 30f))
         run(t, e, packet(lap = 2, totalLaps = 10, fuel = 20f, lastLapMs = 90_000))
         val msgs = run(t, e, packet(lap = 3, totalLaps = 10, fuel = 10f, lastLapMs = 91_000))
+        // Il ne reste qu'un tour de carburant : c'est le tour où il faut rentrer. L'appel au stand est un
+        // message critique séparé, placé avant le compte rendu du tour.
+        val box = msgs.first()
+        assertEquals(Priority.CRITICAL, box.priority)
+        assertTrue(box.text.startsWith("Box, box ! Rentre au stand à la fin de ce tour"), box.text)
         val lapMsg = msgs.first { it.category == MessageCategory.LAP }
-        assertEquals(Priority.HIGH, lapMsg.priority)
-        // Il ne reste qu'un tour de carburant : c'est le tour où il faut rentrer.
-        assertTrue("Box, box ! Rentre au stand à la fin de ce tour" in lapMsg.text, lapMsg.text)
-        // 10 restants à 10/tour => moins de 2 tours : une seule alerte.
-        assertTrue(msgs.any { it.category == MessageCategory.ALERT && it.priority == Priority.HIGH })
+        assertTrue("Box" !in lapMsg.text, lapMsg.text)
+        // 10 restants à 10/tour => moins de 2 tours : une seule alerte, critique (risque de panne).
+        assertTrue(msgs.any { it.category == MessageCategory.ALERT && it.priority == Priority.CRITICAL && "moins de deux tours" in it.text })
         val again = run(t, e, packet(lap = 3, totalLaps = 10, fuel = 10f, lastLapMs = 91_000))
         assertTrue(again.none { it.category == MessageCategory.ALERT })
         val critical = run(t, e, packet(lap = 3, totalLaps = 10, fuel = 9f, lastLapMs = 91_000))
