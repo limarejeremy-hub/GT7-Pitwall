@@ -19,6 +19,11 @@ class MainActivity : ComponentActivity() {
     private val notificationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* facultative */ }
 
+    private val micPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) (application as PitwallApp).setVoiceInput(true)
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -33,17 +38,34 @@ class MainActivity : ComponentActivity() {
         }
 
         val app = application as PitwallApp
+        // Reprend l'écoute si elle était active (et toujours autorisée).
+        if (app.settings.voiceInputEnabled && app.voiceModels.installedDir() != null &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        ) {
+            app.voiceInput.start()
+        }
         setContent {
             PitwallTheme {
                 PitwallScreen(
                     engine = app.engine,
                     voice = app.voice,
                     settings = app.settings,
+                    voiceModels = app.voiceModels,
+                    voiceInput = app.voiceInput,
                     onStart = { address ->
                         app.settings.ps5Address = address
                         TelemetryService.start(this, address)
                     },
                     onStop = { TelemetryService.stop(this) },
+                    onVoiceInputToggle = { enabled ->
+                        if (enabled && ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
+                            PackageManager.PERMISSION_GRANTED
+                        ) {
+                            micPermission.launch(Manifest.permission.RECORD_AUDIO)
+                        } else {
+                            app.setVoiceInput(enabled)
+                        }
+                    },
                 )
             }
         }

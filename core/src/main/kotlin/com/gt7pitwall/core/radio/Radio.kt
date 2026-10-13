@@ -16,33 +16,29 @@ enum class DriverQuery {
     BEST_LAP,
     RACE_STATUS,
     PACE,
+    SECTORS,
+    POSITION,
+}
+
+/** Événements de l'entrée vocale (mot de réveil puis phrase du pilote). */
+sealed interface VoiceInputEvent {
+    /** Mot de réveil entendu seul : l'ingénieur écoute la phrase suivante. */
+    data object Wake : VoiceInputEvent
+
+    /** Phrase du pilote adressée à l'ingénieur. */
+    data class Utterance(val text: String) : VoiceInputEvent
 }
 
 /**
- * Entrée vocale du pilote, pour la future radio bidirectionnelle.
- *
- * Implémentation prévue : android.speech.SpeechRecognizer (gratuit, reconnaissance française),
- * déclenché par un bouton "push-to-talk" ou un bouton de volant / casque Bluetooth.
- * Le texte reconnu est converti en [DriverQuery] puis traité par
- * [com.gt7pitwall.core.engineer.RaceEngineer.answer], déjà utilisé par les boutons de l'écran.
+ * Entrée vocale du pilote (radio bidirectionnelle).
+ * Implémentation Android : reconnaissance hors ligne Vosk, avec mot de réveil.
  */
 interface VoiceInput {
-    val queries: Flow<DriverQuery>
-    fun startListening()
-    fun stopListening()
+    val events: Flow<VoiceInputEvent>
 }
 
-/** Conversion d'une phrase reconnue en question. Simple et extensible. */
+/** Conversion d'une phrase reconnue en question (compatibilité). */
 object DriverQueryParser {
-    fun parse(text: String): DriverQuery? {
-        val t = text.lowercase()
-        return when {
-            listOf("essence", "carburant", "fuel", "réservoir").any { it in t } -> DriverQuery.FUEL
-            listOf("meilleur", "record").any { it in t } -> DriverQuery.BEST_LAP
-            listOf("dernier tour", "chrono", "temps").any { it in t } -> DriverQuery.LAST_LAP
-            listOf("rythme", "régularité", "moyenne").any { it in t } -> DriverQuery.PACE
-            listOf("tour", "course", "reste").any { it in t } -> DriverQuery.RACE_STATUS
-            else -> null
-        }
-    }
+    fun parse(text: String): DriverQuery? =
+        (DriverCommandParser.parse(text) as? DriverCommand.Ask)?.query
 }

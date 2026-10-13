@@ -5,8 +5,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.net.wifi.WifiManager
 import android.os.Build
@@ -33,30 +35,40 @@ class TelemetryService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val engine = (application as PitwallApp).engine
-        if (intent?.action == ACTION_STOP) {
-            engine.stop()
-            stopSelf()
-            return START_NOT_STICKY
+        when (intent?.action) {
+            ACTION_STOP -> {
+                engine.stop()
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            ACTION_REFRESH -> {
+                goForeground()
+                return START_NOT_STICKY
+            }
         }
 
+        goForeground()
+        acquireLocks()
+        engine.start(intent?.getStringExtra(EXTRA_HOST))
+        return START_NOT_STICKY
+    }
+
+    private fun goForeground() {
+        val app = application as PitwallApp
+        val mic = app.settings.voiceInputEnabled &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        val micType = if (mic && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0
+        val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or micType
+        } else {
+            micType
+        }
         try {
-            ServiceCompat.startForeground(
-                this,
-                NOTIFICATION_ID,
-                buildNotification(),
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
-                } else {
-                    0
-                },
-            )
+            ServiceCompat.startForeground(this, NOTIFICATION_ID, buildNotification(), type)
         } catch (e: Exception) {
             // L'écoute fonctionne quand même tant que l'application est affichée.
             Log.w(TAG, "Service de premier plan refusé", e)
         }
-        acquireLocks()
-        engine.start(intent?.getStringExtra(EXTRA_HOST))
-        return START_NOT_STICKY
     }
 
     override fun onDestroy() {
@@ -129,12 +141,18 @@ class TelemetryService : Service() {
         private const val CHANNEL_ID = "telemetry"
         private const val NOTIFICATION_ID = 7
         private const val ACTION_STOP = "com.gt7pitwall.app.STOP"
+        private const val ACTION_REFRESH = "com.gt7pitwall.app.REFRESH"
         private const val EXTRA_HOST = "host"
         private const val MAX_WAKE_MS = 6L * 60 * 60 * 1000
 
         fun start(context: Context, host: String) {
             val intent = Intent(context, TelemetryService::class.java).putExtra(EXTRA_HOST, host)
             ContextCompat.startForegroundService(context, intent)
+        }
+
+        /** Met à jour les usages déclarés (micro) du service déjà démarré. */
+        fun refresh(context: Context) {
+            context.startService(Intent(context, TelemetryService::class.java).setAction(ACTION_REFRESH))
         }
 
         fun stop(context: Context) {

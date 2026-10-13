@@ -1,10 +1,12 @@
 package com.gt7pitwall.core.engineer
 
 import com.gt7pitwall.core.analysis.LapAnalyzer
+import com.gt7pitwall.core.analysis.SectorComparison
 import com.gt7pitwall.core.engineer.FrenchFormat.decimal
 import com.gt7pitwall.core.engineer.FrenchFormat.deltaSpeech
 import com.gt7pitwall.core.engineer.FrenchFormat.lapTimeSpeech
 import com.gt7pitwall.core.engineer.FrenchFormat.laps
+import com.gt7pitwall.core.radio.DriverCommand
 import com.gt7pitwall.core.radio.DriverQuery
 import com.gt7pitwall.core.session.SessionEvent
 import com.gt7pitwall.core.session.SessionSnapshot
@@ -14,7 +16,7 @@ import kotlin.math.roundToInt
 
 enum class Priority { INFO, NORMAL, HIGH, CRITICAL }
 
-enum class MessageCategory { RADIO, LAP, FUEL, ALERT, ANSWER }
+enum class MessageCategory { RADIO, LAP, FUEL, ALERT, ANSWER, DRIVER }
 
 data class EngineerMessage(
     val text: String,
@@ -32,6 +34,16 @@ class RaceEngineer {
     private var warnedOneLap = false
     private var announcedNoConsumption = false
 
+    /** Position annoncée par GT7 sur la grille, puis tenue à jour d'après ce que dit le pilote. */
+    var driverPosition: Int? = null
+        private set
+
+    /** Mode silence : seules les alertes et les réponses passent. */
+    var quiet: Boolean = false
+        private set
+
+    private var lastSpoken: EngineerMessage? = null
+
     fun onUpdate(events: List<SessionEvent>, snapshot: SessionSnapshot, fuel: FuelReport?): List<EngineerMessage> {
         val out = mutableListOf<EngineerMessage>()
         val lapCompletedNow = events.any { it is SessionEvent.LapCompleted }
@@ -45,6 +57,7 @@ class RaceEngineer {
                 SessionEvent.SessionReset -> {
                     resetAlerts()
                     announcedNoConsumption = false
+                    driverPosition = null
                     out += msg("Nouvelle session détectée, je repars de zéro.", Priority.NORMAL, MessageCategory.RADIO)
                 }
 
@@ -60,20 +73,60 @@ class RaceEngineer {
 
                 is SessionEvent.RaceFinished -> out += finishMessage(snapshot)
 
-                is SessionEvent.GridPosition ->
+                is SessionEvent.GridPosition -> {
+                    driverPosition = event.position
                     out += msg(
                         "Tu pars en position ${event.position} sur ${event.cars}. Bonne course !",
                         Priority.NORMAL,
                         MessageCategory.RADIO,
                     )
+                }
 
                 is SessionEvent.LapCompleted ->
                     out += lapMessage(event, snapshot, fuel, finalLapNext, finishedNow)
             }
         }
         fuelAlert(fuel)?.let { out += it }
-        return out
+        val result = if (quiet) out.filter { it.category == MessageCategory.ALERT } else out
+        result.lastOrNull()?.let { lastSpoken = it }
+        return result
     }
+
+    /** Ce que le pilote dit à la radio. */
+    fun handle(command: DriverCommand, snapshot: SessionSnapshot, fuel: FuelReport?): EngineerMessage {
+        val reply = when (command) {
+            is DriverCommand.Ask -> return answer(command.query, snapshot, fuel).also { lastSpoken = it }
+            is DriverCommand.ReportPosition -> {
+                driverPosition = command.position
+                "Bien reçu, P${command.position}."
+            }
+            DriverCommand.Overtook -> {
+                val pos = driverPosition?.let { (it - 1).coerceAtLeast(1) }
+                driverPosition = pos
+                if (pos == null) "Bien joué ! Donne-moi ta position quand tu peux." else "Bien joué ! Tu es P$pos."
+            }
+            DriverCommand.Overtaken -> {
+                val pos = driverPosition?.let { it + 1 }
+                driverPosition = pos
+                if (pos == null) "Compris. Donne-moi ta position quand tu peux." else "Compris, tu es P$pos. On reste concentré."
+            }
+            DriverCommand.Quiet -> {
+                quiet = true
+                "Compris, je ne parle que pour les alertes ou si tu m'appelles."
+            }
+            DriverCommand.Talk -> {
+                quiet = false
+                "Je reprends les annonces."
+            }
+            DriverCommand.Repeat -> return lastSpoken?.copy(timestampMs = System.currentTimeMillis())
+                ?: msg("Je n'ai encore rien dit.", Priority.HIGH, MessageCategory.ANSWER)
+        }
+        return msg(reply, Priority.HIGH, MessageCategory.ANSWER).also { lastSpoken = it }
+    }
+
+    /** Phrase non comprise : on le dit franchement plutôt que d'improviser. */
+    fun notUnderstood(text: String): EngineerMessage =
+        msg("Je n'ai pas compris : « $text ».", Priority.HIGH, MessageCategory.ANSWER)
 
     /** Réponse à une question du pilote (boutons de l'écran, et demain la voix). */
     fun answer(query: DriverQuery, snapshot: SessionSnapshot, fuel: FuelReport?): EngineerMessage {
@@ -106,6 +159,12 @@ class RaceEngineer {
                 p.currentLap >= 1 -> "Tour ${p.currentLap}. GT7 n'indique pas de nombre de tours pour cette épreuve."
                 else -> "En attente du départ."
             }
+
+            DriverQuery.POSITION -> driverPosition?.let {
+                "D'après ce que tu m'as dit, tu es P$it. GT7 ne me transmet pas les positions en course."
+            } ?: "GT7 ne me transmet pas les positions en course. Dis-moi par exemple « je suis troisième »."
+
+            DriverQuery.SECTORS -> sectorReport(snapshot)
 
             DriverQuery.PACE -> {
                 val stats = LapAnalyzer.analyze(snapshot.laps)
@@ -144,7 +203,11 @@ class RaceEngineer {
         } else {
             sb.append("Tour ${lap.lapNumber} bouclé. ")
         }
+        sectorFeedback(lap.sectorsMs, lap.lapNumber, snapshot, isNewBest = time != null && e.previousBestMs != null && time < e.previousBestMs)
+            ?.let { sb.append(it).append(' ') }
         if (finished) return msg(sb.toString().trim(), Priority.NORMAL, MessageCategory.LAP)
+
+        driverPosition?.let { sb.append("Tu es P$it. ") }
 
         val totalLaps = snapshot.packet?.totalLaps ?: 0
         when {
@@ -171,6 +234,40 @@ class RaceEngineer {
         }
         val priority = if (fuel?.advice is FuelAdvice.PitRequired || finalLapNext) Priority.HIGH else Priority.NORMAL
         return msg(sb.toString().trim(), priority, MessageCategory.LAP)
+    }
+
+    /** Meilleur tour ayant des secteurs (référence de comparaison), hors tour [excludeLap]. */
+    private fun referenceSectors(snapshot: SessionSnapshot, excludeLap: Int?): List<Int>? =
+        snapshot.laps
+            .filter { it.sectorsMs != null && it.timeMs != null && it.lapNumber != excludeLap }
+            .minByOrNull { it.timeMs!! }
+            ?.sectorsMs
+
+    /** "Tu perds surtout dans le secteur 2, 45 centièmes." — seulement si l'écart est significatif. */
+    private fun sectorFeedback(sectors: List<Int>?, lapNumber: Int, snapshot: SessionSnapshot, isNewBest: Boolean): String? {
+        if (sectors == null || isNewBest) return null
+        val deltas = SectorComparison.deltas(sectors, referenceSectors(snapshot, lapNumber)) ?: return null
+        val worst = deltas.withIndex().maxByOrNull { it.value } ?: return null
+        if (worst.value < SECTOR_THRESHOLD_MS) return null
+        val best = deltas.withIndex().minByOrNull { it.value }!!
+        val gain = if (best.value <= -SECTOR_THRESHOLD_MS) {
+            " Tu gagnes ${deltaSpeech(best.value)} dans le ${best.index + 1}."
+        } else {
+            ""
+        }
+        return "Tu perds surtout dans le secteur ${worst.index + 1}, ${deltaSpeech(worst.value)}.$gain"
+    }
+
+    private fun sectorReport(snapshot: SessionSnapshot): String {
+        val last = snapshot.laps.lastOrNull { it.sectorsMs != null }
+            ?: return "Pas encore de tour complet découpé en secteurs. Il faut un tour suivi depuis la ligne."
+        val deltas = SectorComparison.deltas(last.sectorsMs, referenceSectors(snapshot, last.lapNumber))
+            ?: return "Tour ${last.lapNumber} enregistré, il me faut un deuxième tour pour comparer les secteurs."
+        val parts = deltas.mapIndexed { i, d ->
+            val sign = if (d > 0) "plus" else if (d < 0) "moins" else ""
+            "secteur ${i + 1} ${if (d == 0) "identique" else "$sign ${deltaSpeech(d)}"}"
+        }
+        return "Tour ${last.lapNumber} contre ton meilleur : ${parts.joinToString(", ")}."
     }
 
     private fun finishMessage(snapshot: SessionSnapshot): EngineerMessage {
@@ -246,5 +343,6 @@ class RaceEngineer {
 
     companion object {
         const val NO_DATA = "Je n'ai pas encore de télémétrie."
+        const val SECTOR_THRESHOLD_MS = 100
     }
 }

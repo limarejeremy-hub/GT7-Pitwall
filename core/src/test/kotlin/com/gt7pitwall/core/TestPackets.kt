@@ -19,9 +19,13 @@ object TestPackets {
         carCode: Int = 1000,
         packetId: Int = 1,
         flags: Int = TelemetryPacket.FLAG_ON_TRACK,
+        posX: Float = 0f,
+        posZ: Float = 0f,
     ): ByteArray {
         val b = ByteBuffer.allocate(GT7Crypto.PACKET_SIZE_A).order(ByteOrder.LITTLE_ENDIAN)
         b.putInt(0x00, GT7Crypto.MAGIC)
+        b.putFloat(0x04, posX)
+        b.putFloat(0x0C, posZ)
         b.putFloat(0x44, fuel)
         b.putFloat(0x48, capacity)
         b.putFloat(0x4C, speedMps)

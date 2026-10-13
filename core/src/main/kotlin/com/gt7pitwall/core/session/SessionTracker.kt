@@ -1,5 +1,6 @@
 package com.gt7pitwall.core.session
 
+import com.gt7pitwall.core.analysis.SectorTrace
 import com.gt7pitwall.core.telemetry.TelemetryPacket
 
 /** Un tour bouclé, tel qu'observé dans la télémétrie. */
@@ -13,6 +14,8 @@ data class LapRecord(
      */
     val fuelUsed: Float?,
     val refuelled: Boolean,
+    /** Secteurs Pitwall en ms (voir [SectorTrace]), null si le tour n'a pas été suivi en entier. */
+    val sectorsMs: List<Int>? = null,
 )
 
 sealed interface SessionEvent {
@@ -75,6 +78,7 @@ class SessionTracker(
     private var refuelledThisLap = false
     private var pending: PendingLap? = null
     private var gridAnnounced = false
+    private var trace = SectorTrace()
 
     private data class PendingLap(
         val lapNumber: Int,
@@ -83,6 +87,7 @@ class SessionTracker(
         val refuelled: Boolean,
         val finalLapStarts: Int?,
         val finishesRace: Int?,
+        val trace: SectorTrace,
         var waited: Int = 0,
     )
 
@@ -116,7 +121,10 @@ class SessionTracker(
                     val start = fuelAtLapStart
                     val used = if (start != null && !refuelledThisLap) start - p.fuelLevel else null
                     pending?.let { finishPending(it, null, events) }
+                    // Le tracé du tour terminé est conservé jusqu'à l'arrivée du chrono officiel.
+                    trace.add(p)
                     pending = PendingLap(
+                        trace = trace,
                         lapNumber = completed,
                         lastLapMsBefore = before.lastLapMs,
                         fuelUsed = used?.takeIf { it >= 0f },
@@ -129,6 +137,7 @@ class SessionTracker(
                 }
                 fuelAtLapStart = p.fuelLevel
                 refuelledThisLap = false
+                trace = SectorTrace().also { it.startLap(p) }
             }
         }
 
@@ -145,6 +154,7 @@ class SessionTracker(
             }
         }
 
+        if (before != null && p.currentLap == before.currentLap) trace.add(p)
         previous = p
         snapshot = SessionSnapshot(p, laps.toList(), fuelAtLapStart, refuelledThisLap)
         return events
@@ -152,7 +162,8 @@ class SessionTracker(
 
     private fun finishPending(pl: PendingLap, timeMs: Int?, events: MutableList<SessionEvent>) {
         val previousBest = laps.mapNotNull { it.timeMs }.filter { it > 0 }.minOrNull()
-        val record = LapRecord(pl.lapNumber, timeMs, pl.fuelUsed, pl.refuelled)
+        val sectors = timeMs?.let { pl.trace.finish(it) }
+        val record = LapRecord(pl.lapNumber, timeMs, pl.fuelUsed, pl.refuelled, sectors)
         laps += record
         pending = null
         events += SessionEvent.LapCompleted(record, previousBest)
@@ -166,5 +177,6 @@ class SessionTracker(
         refuelledThisLap = false
         pending = null
         gridAnnounced = false
+        trace = SectorTrace()
     }
 }

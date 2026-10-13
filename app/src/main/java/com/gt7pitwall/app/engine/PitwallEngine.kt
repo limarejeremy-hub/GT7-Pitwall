@@ -6,7 +6,11 @@ import com.gt7pitwall.core.engineer.EngineerMessage
 import com.gt7pitwall.core.engineer.MessageCategory
 import com.gt7pitwall.core.engineer.Priority
 import com.gt7pitwall.core.engineer.RaceEngineer
+import com.gt7pitwall.core.radio.DriverCommand
+import com.gt7pitwall.core.radio.DriverCommandParser
 import com.gt7pitwall.core.radio.DriverQuery
+import com.gt7pitwall.core.radio.VoiceInput
+import com.gt7pitwall.core.radio.VoiceInputEvent
 import com.gt7pitwall.core.radio.VoiceOutput
 import com.gt7pitwall.core.session.SessionSnapshot
 import com.gt7pitwall.core.session.SessionTracker
@@ -32,13 +36,16 @@ data class PitwallUiState(
     val snapshot: SessionSnapshot = SessionSnapshot.EMPTY,
     val fuel: FuelReport? = null,
     val stats: LapStats = LapAnalyzer.analyze(emptyList()),
+    /** Position annoncée (grille GT7 puis déclarations du pilote). */
+    val driverPosition: Int? = null,
+    val quiet: Boolean = false,
 )
 
 /**
  * Chaîne complète : réception UDP -> suivi de session -> stratégie carburant -> ingénieur -> voix.
  * Indépendant de l'interface : le service de premier plan le maintient en vie écran éteint.
  */
-class PitwallEngine(private val voice: VoiceOutput) {
+class PitwallEngine(private val voice: VoiceOutput, voiceInput: VoiceInput? = null) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val client = TelemetryClient()
@@ -63,6 +70,10 @@ class PitwallEngine(private val voice: VoiceOutput) {
     private var collectJob: Job? = null
     private var lastPublishMs = 0L
 
+    init {
+        voiceInput?.let { input -> scope.launch { input.events.collect { onVoice(it) } } }
+    }
+
     @Synchronized
     fun start(ps5Host: String?) {
         stop()
@@ -81,15 +92,37 @@ class PitwallEngine(private val voice: VoiceOutput) {
         _running.value = false
     }
 
-    /** Question du pilote (boutons de l'écran aujourd'hui, reconnaissance vocale demain). */
-    fun ask(query: DriverQuery) {
+    /** Question du pilote via les boutons de l'écran. */
+    fun ask(query: DriverQuery) = command(DriverCommand.Ask(query))
+
+    fun command(command: DriverCommand) {
         scope.launch {
             val message = mutex.withLock {
                 val snap = tracker.snapshot
-                engineer.answer(query, snap, FuelStrategy.compute(snap))
+                engineer.handle(command, snap, FuelStrategy.compute(snap)).also { publishDriverState() }
             }
             deliver(message)
         }
+    }
+
+    private suspend fun onVoice(event: VoiceInputEvent) {
+        when (event) {
+            VoiceInputEvent.Wake -> deliver(EngineerMessage("Je t'écoute.", Priority.HIGH, MessageCategory.ANSWER))
+            is VoiceInputEvent.Utterance -> {
+                deliver(EngineerMessage("Toi : ${event.text}", Priority.INFO, MessageCategory.DRIVER))
+                val message = mutex.withLock {
+                    val snap = tracker.snapshot
+                    val cmd = DriverCommandParser.parse(event.text)
+                    (if (cmd == null) engineer.notUnderstood(event.text) else engineer.handle(cmd, snap, FuelStrategy.compute(snap)))
+                        .also { publishDriverState() }
+                }
+                deliver(message)
+            }
+        }
+    }
+
+    private fun publishDriverState() {
+        _state.update { it.copy(driverPosition = engineer.driverPosition, quiet = engineer.quiet) }
     }
 
     fun testVoice() {
@@ -111,7 +144,13 @@ class PitwallEngine(private val voice: VoiceOutput) {
             val now = System.currentTimeMillis()
             // ~20 rafraîchissements d'écran par seconde suffisent (GT7 envoie ~60 paquets/s).
             if (events.isNotEmpty() || now - lastPublishMs >= UI_REFRESH_MS) {
-                _state.value = PitwallUiState(snap, fuel, LapAnalyzer.analyze(snap.laps))
+                _state.value = PitwallUiState(
+                    snap,
+                    fuel,
+                    LapAnalyzer.analyze(snap.laps),
+                    engineer.driverPosition,
+                    engineer.quiet,
+                )
                 lastPublishMs = now
             }
             messages.forEach(::deliver)
@@ -120,7 +159,8 @@ class PitwallEngine(private val voice: VoiceOutput) {
 
     private fun deliver(message: EngineerMessage) {
         _radio.update { (listOf(message) + it).take(MAX_RADIO_LOG) }
-        if (voiceEnabled) voice.speak(message)
+        // Les paroles du pilote sont seulement affichées.
+        if (voiceEnabled && message.category != MessageCategory.DRIVER) voice.speak(message)
     }
 
     private companion object {

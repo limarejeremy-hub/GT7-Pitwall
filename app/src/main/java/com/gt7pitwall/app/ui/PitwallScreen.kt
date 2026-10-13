@@ -54,11 +54,18 @@ import com.gt7pitwall.app.engine.PitwallEngine
 import com.gt7pitwall.app.engine.PitwallUiState
 import com.gt7pitwall.app.settings.SettingsStore
 import com.gt7pitwall.app.ui.theme.PitColors
+import com.gt7pitwall.app.voice.ListenState
+import com.gt7pitwall.app.voice.ModelState
 import com.gt7pitwall.app.voice.TtsVoiceOutput
+import com.gt7pitwall.app.voice.VoiceModelManager
 import com.gt7pitwall.app.voice.VoiceState
+import com.gt7pitwall.app.voice.VoskVoiceInput
+import com.gt7pitwall.core.analysis.SectorComparison
 import com.gt7pitwall.core.engineer.EngineerMessage
 import com.gt7pitwall.core.engineer.FrenchFormat
+import com.gt7pitwall.core.engineer.MessageCategory
 import com.gt7pitwall.core.engineer.Priority
+import com.gt7pitwall.core.radio.DriverCommand
 import com.gt7pitwall.core.radio.DriverQuery
 import com.gt7pitwall.core.session.LapRecord
 import com.gt7pitwall.core.strategy.FuelAdvice
@@ -76,14 +83,39 @@ fun PitwallScreen(
     engine: PitwallEngine,
     voice: TtsVoiceOutput,
     settings: SettingsStore,
+    voiceModels: VoiceModelManager,
+    voiceInput: VoskVoiceInput,
     onStart: (String) -> Unit,
     onStop: () -> Unit,
+    onVoiceInputToggle: (Boolean) -> Unit,
 ) {
     val state by engine.state.collectAsStateWithLifecycle()
     val connection by engine.connection.collectAsStateWithLifecycle()
     val running by engine.running.collectAsStateWithLifecycle()
     val radio by engine.radio.collectAsStateWithLifecycle()
     val voiceState by voice.state.collectAsStateWithLifecycle()
+    val modelState by voiceModels.state.collectAsStateWithLifecycle()
+    val listenState by voiceInput.state.collectAsStateWithLifecycle()
+    val heard by voiceInput.heard.collectAsStateWithLifecycle()
+    val listenError by voiceInput.error.collectAsStateWithLifecycle()
+    var wakeWord by rememberSaveable { mutableStateOf(settings.wakeWord) }
+
+    val voiceRadioCard: @Composable () -> Unit = {
+        VoiceRadioCard(
+            modelState = modelState,
+            listenState = listenState,
+            heard = heard,
+            error = listenError,
+            wakeWord = wakeWord,
+            onWakeWordChange = {
+                wakeWord = it
+                settings.wakeWord = it
+                voiceInput.wakeWord = settings.wakeWord
+            },
+            onDownload = voiceModels::download,
+            onToggle = onVoiceInputToggle,
+        )
+    }
 
     var address by rememberSaveable { mutableStateOf(settings.ps5Address) }
     var voiceOn by rememberSaveable { mutableStateOf(settings.voiceEnabled) }
@@ -133,7 +165,8 @@ fun PitwallScreen(
                     }
                     ScrollColumn(Modifier.weight(1f)) {
                         FuelCard(state.fuel, state.snapshot.packet)
-                        RadioCard(radio, engine::ask)
+                        RadioCard(radio, engine::command)
+                        voiceRadioCard()
                     }
                 }
             } else {
@@ -143,7 +176,8 @@ fun PitwallScreen(
                     DriveCard(state.snapshot.packet)
                     LapCard(state)
                     FuelCard(state.fuel, state.snapshot.packet)
-                    RadioCard(radio, engine::ask)
+                    RadioCard(radio, engine::command)
+                    voiceRadioCard()
                     LapHistoryCard(state.snapshot.laps)
                     if (running) connectionCard()
                 }
@@ -344,6 +378,13 @@ private fun LapCard(state: PitwallUiState) {
         Row(verticalAlignment = Alignment.Bottom) {
             Text("Tour ", color = PitColors.Muted)
             Text(lapText, fontSize = 34.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.weight(1f))
+            state.driverPosition?.let {
+                Column(horizontalAlignment = Alignment.End) {
+                    Text("POSITION*", style = MaterialTheme.typography.labelSmall, color = PitColors.Muted)
+                    Text("P$it", fontSize = 34.sp, fontWeight = FontWeight.Bold, color = PitColors.Cyan)
+                }
+            }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Metric("Dernier", FrenchFormat.lapTime(p.lastLapMs.takeIf { it > 0 }), Modifier.weight(1f))
@@ -357,12 +398,60 @@ private fun LapCard(state: PitwallUiState) {
                 fontFamily = FontFamily.Monospace,
             )
         }
+        SectorRow(state.snapshot.laps)
+        if (state.driverPosition != null) {
+            Text(
+                "* position de départ GT7 puis d'après tes annonces radio (GT7 ne la transmet pas en course)",
+                color = PitColors.Muted,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
         state.stats.recentAverageMs?.let { avg ->
             Text(
                 "Moyenne récente ${FrenchFormat.lapTime(avg)} • régularité ±${FrenchFormat.delta(state.stats.recentStdDevMs ?: 0).drop(1)}",
                 color = PitColors.Muted,
                 style = MaterialTheme.typography.bodySmall,
             )
+        }
+    }
+}
+
+/** Secteurs Pitwall du dernier tour comparés au meilleur tour. */
+@Composable
+private fun SectorRow(laps: List<LapRecord>) {
+    val last = laps.lastOrNull { it.sectorsMs != null } ?: return
+    val reference = laps
+        .filter { it.sectorsMs != null && it.timeMs != null && it.lapNumber != last.lapNumber }
+        .minByOrNull { it.timeMs!! }
+    val deltas = SectorComparison.deltas(last.sectorsMs, reference?.sectorsMs)
+    Text(
+        if (deltas == null) "Secteurs du tour ${last.lapNumber}" else "Secteurs tour ${last.lapNumber} vs meilleur (tour ${reference!!.lapNumber})",
+        style = MaterialTheme.typography.labelSmall,
+        color = PitColors.Muted,
+    )
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        last.sectorsMs!!.forEachIndexed { i, ms ->
+            val d = deltas?.get(i)
+            val color = when {
+                d == null -> MaterialTheme.colorScheme.onSurface
+                d <= -50 -> PitColors.Green
+                d >= 50 -> PitColors.Red
+                else -> PitColors.Yellow
+            }
+            Column(
+                Modifier
+                    .weight(1f)
+                    .background(color.copy(alpha = 0.12f), RoundedCornerShape(8.dp))
+                    .padding(6.dp),
+            ) {
+                Text("S${i + 1}", style = MaterialTheme.typography.labelSmall, color = PitColors.Muted)
+                Text(
+                    if (d == null) FrenchFormat.lapTime(ms).substringAfter(':').trimStart('0') else FrenchFormat.delta(d),
+                    color = color,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
         }
     }
 }
@@ -443,16 +532,23 @@ private fun AdviceBox(advice: FuelAdvice) {
 }
 
 @Composable
-private fun RadioCard(messages: List<EngineerMessage>, onAsk: (DriverQuery) -> Unit) {
+private fun RadioCard(messages: List<EngineerMessage>, onCommand: (DriverCommand) -> Unit) {
+    val ask: (DriverQuery) -> Unit = { onCommand(DriverCommand.Ask(it)) }
     PitCard("Radio ingénieur") {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            QueryButton("Carburant ?", Modifier.weight(1f)) { onAsk(DriverQuery.FUEL) }
-            QueryButton("Course ?", Modifier.weight(1f)) { onAsk(DriverQuery.RACE_STATUS) }
+            QueryButton("Essence ?", Modifier.weight(1f)) { ask(DriverQuery.FUEL) }
+            QueryButton("Course ?", Modifier.weight(1f)) { ask(DriverQuery.RACE_STATUS) }
+            QueryButton("Secteurs ?", Modifier.weight(1f)) { ask(DriverQuery.SECTORS) }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            QueryButton("Dernier ?", Modifier.weight(1f)) { onAsk(DriverQuery.LAST_LAP) }
-            QueryButton("Meilleur ?", Modifier.weight(1f)) { onAsk(DriverQuery.BEST_LAP) }
-            QueryButton("Rythme ?", Modifier.weight(1f)) { onAsk(DriverQuery.PACE) }
+            QueryButton("Dernier ?", Modifier.weight(1f)) { ask(DriverQuery.LAST_LAP) }
+            QueryButton("Meilleur ?", Modifier.weight(1f)) { ask(DriverQuery.BEST_LAP) }
+            QueryButton("Rythme ?", Modifier.weight(1f)) { ask(DriverQuery.PACE) }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            QueryButton("J'ai doublé", Modifier.weight(1f)) { onCommand(DriverCommand.Overtook) }
+            QueryButton("Doublé", Modifier.weight(1f)) { onCommand(DriverCommand.Overtaken) }
+            QueryButton("Répète", Modifier.weight(1f)) { onCommand(DriverCommand.Repeat) }
         }
         if (messages.isEmpty()) {
             Text("Aucun message pour l'instant.", color = PitColors.Muted)
@@ -469,9 +565,10 @@ private fun RadioCard(messages: List<EngineerMessage>, onAsk: (DriverQuery) -> U
                 )
                 Text(
                     m.text,
-                    color = when (m.priority) {
-                        Priority.CRITICAL -> PitColors.Red
-                        Priority.HIGH -> PitColors.Orange
+                    color = when {
+                        m.category == MessageCategory.DRIVER -> PitColors.Cyan
+                        m.priority == Priority.CRITICAL -> PitColors.Red
+                        m.priority == Priority.HIGH -> PitColors.Orange
                         else -> MaterialTheme.colorScheme.onSurface
                     },
                     style = MaterialTheme.typography.bodyMedium,
@@ -492,7 +589,7 @@ private fun QueryButton(label: String, modifier: Modifier, onClick: () -> Unit) 
         ),
         contentPadding = ButtonDefaults.TextButtonContentPadding,
     ) {
-        Text(label, maxLines = 1, style = MaterialTheme.typography.labelLarge)
+        Text(label, maxLines = 1, style = MaterialTheme.typography.labelMedium)
     }
 }
 
@@ -526,5 +623,79 @@ private fun LapHistoryCard(laps: List<LapRecord>) {
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun VoiceRadioCard(
+    modelState: ModelState,
+    listenState: ListenState,
+    heard: String,
+    error: String?,
+    wakeWord: String,
+    onWakeWordChange: (String) -> Unit,
+    onDownload: () -> Unit,
+    onToggle: (Boolean) -> Unit,
+) {
+    PitCard("Radio vocale") {
+        when (modelState) {
+            ModelState.NotInstalled, is ModelState.Failed -> {
+                Text(
+                    "Parle à ton ingénieur avec un mot de réveil. Reconnaissance hors ligne et gratuite (Vosk) : " +
+                        "le modèle français (~${VoiceModelManager.MODEL_SIZE_MB} Mo) se télécharge une seule fois, en Wi-Fi de préférence.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                if (modelState is ModelState.Failed) {
+                    Text("Échec : ${modelState.message}", color = PitColors.Red, style = MaterialTheme.typography.bodySmall)
+                }
+                Button(onClick = onDownload, modifier = Modifier.fillMaxWidth()) { Text("Télécharger la voix française") }
+                return@PitCard
+            }
+            is ModelState.Downloading -> {
+                Text("Téléchargement du modèle vocal…")
+                val p = modelState.progress
+                if (p == null) {
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                } else {
+                    Bar(p, PitColors.Cyan)
+                    Text("${(p * 100).roundToInt()} %", color = PitColors.Muted)
+                }
+                return@PitCard
+            }
+            ModelState.Installed -> Unit
+        }
+
+        val on = listenState != ListenState.OFF && listenState != ListenState.ERROR
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Écoute du mot de réveil", Modifier.weight(1f))
+            Switch(checked = on, onCheckedChange = onToggle)
+        }
+        OutlinedTextField(
+            value = wakeWord,
+            onValueChange = onWakeWordChange,
+            enabled = !on,
+            singleLine = true,
+            label = { Text("Mot de réveil") },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        val (label, color) = when (listenState) {
+            ListenState.OFF -> "Micro coupé." to PitColors.Muted
+            ListenState.LOADING -> "Chargement du modèle…" to PitColors.Yellow
+            ListenState.WAITING_WAKE_WORD -> "En attente de « $wakeWord »" to PitColors.Green
+            ListenState.AWAKE -> "Je t'écoute…" to PitColors.Cyan
+            ListenState.PAUSED -> "L'ingénieur parle (micro en pause)" to PitColors.Muted
+            ListenState.ERROR -> "Erreur : ${error ?: "micro indisponible"}" to PitColors.Red
+        }
+        Text(label, color = color, fontWeight = FontWeight.Bold)
+        if (heard.isNotBlank()) {
+            Text("Entendu : « $heard »", color = PitColors.Muted, style = MaterialTheme.typography.bodySmall)
+        }
+        Text(
+            "Exemples : « $wakeWord, combien d'essence ? » • « $wakeWord, je suis troisième » • " +
+                "« $wakeWord, j'ai doublé » • « $wakeWord, je me suis fait doubler » • « $wakeWord, mes secteurs » • " +
+                "« $wakeWord, silence » / « tu peux parler » • « $wakeWord, répète »",
+            color = PitColors.Muted,
+            style = MaterialTheme.typography.bodySmall,
+        )
     }
 }

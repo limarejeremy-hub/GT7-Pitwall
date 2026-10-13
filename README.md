@@ -32,6 +32,20 @@ Quand une information manque, l'application le dit au lieu de l'estimer :
 - GT7 **n'envoie rien sur les adversaires**, ni les secteurs, ni la position en course :
   ces fonctions ne sont donc pas affichées (voir *Architecture*).
 
+## Nouveautés 0.2
+
+- **Secteurs Pitwall** : GT7 ne transmet pas de temps de secteurs. L'application les reconstruit
+  à partir de la position de la voiture (60 fois/s) et du chrono officiel : le tour est coupé en
+  3 parts de distance égale (ce ne sont pas les secteurs officiels du circuit). À chaque tour,
+  l'ingénieur dit où tu perds du temps par rapport à ton meilleur tour.
+- **Radio vocale avec mot de réveil** (« radio » par défaut, modifiable) : reconnaissance française
+  **hors ligne** avec Vosk (gratuit, open source). Le modèle (~41 Mo) se télécharge une fois depuis
+  l'application. Le micro est coupé pendant que l'ingénieur parle.
+  Exemples : « radio, combien d'essence ? », « radio, je suis troisième », « radio, j'ai doublé »,
+  « radio, je me suis fait doubler », « radio, mes secteurs », « radio, silence », « radio, répète ».
+- **Position** : GT7 ne transmet **ni la position en course ni les adversaires**. L'ingénieur part
+  de la place sur la grille (transmise par GT7 avant le départ) puis suit ce que tu lui annonces.
+
 ## Installer l'APK sur le Galaxy Fold (sans ordinateur)
 
 1. Sur GitHub (application ou navigateur), ouvrir l'onglet **Actions** du dépôt.
@@ -76,6 +90,10 @@ une nouvelle version s'installe **par-dessus** l'ancienne, sans désinstaller.
 - [x] épreuve sans consommation (niveau bloqué à 100) — vérifié le 13/10 ;
 - [ ] l'annonce de la place sur la grille avant le départ (champ GT7 « position de départ ») ;
 - [ ] la stratégie carburant sur une épreuve **avec** consommation ;
+- [ ] les secteurs Pitwall : cohérents d'un tour à l'autre (un tour avec pause ou retour en piste n'est pas découpé) ;
+- [ ] la radio vocale : téléchargement du modèle, détection du mot de réveil avec le bruit du jeu,
+      micro d'un casque **filaire / USB-C** (le micro d'un casque **Bluetooth** n'est pas encore géré) ;
+- [ ] l'écoute vocale écran éteint (service avec usage micro) ;
 - [ ] le niveau de carburant GT7 (souvent sur une échelle de 100) : la stratégie fonctionne dans l'unité du jeu ;
 - [ ] la réception continue **écran éteint** (service de premier plan + verrou Wi-Fi) ;
 - [ ] la lisibilité de l'interface plié / déplié, et le volume de la voix pendant la course.
