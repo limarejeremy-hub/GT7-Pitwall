@@ -177,6 +177,12 @@ class RaceEngineer {
 
             DriverQuery.SECTORS -> sectorReport(snapshot)
 
+            DriverQuery.TYRES -> p?.let {
+                val t = it.tyreTemps
+                "Température de surface des pneus : avant gauche ${t.fl.roundToInt()}, avant droit ${t.fr.roundToInt()}, " +
+                    "arrière gauche ${t.rl.roundToInt()}, arrière droit ${t.rr.roundToInt()} degrés."
+            } ?: NO_DATA
+
             DriverQuery.PACE -> {
                 val stats = LapAnalyzer.analyze(snapshot.laps)
                 val avg = stats.recentAverageMs

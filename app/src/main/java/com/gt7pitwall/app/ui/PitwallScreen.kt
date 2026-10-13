@@ -167,10 +167,12 @@ fun PitwallScreen(
                     ScrollColumn(Modifier.weight(1f)) {
                         DriveCard(state.snapshot.packet)
                         LapCard(state)
+                        CarCard(state.snapshot.packet, state.gForce)
                         LapHistoryCard(state.snapshot.laps)
                         connectionCard()
                     }
                     ScrollColumn(Modifier.weight(1f)) {
+                        TrackMapCard(state.snapshot.trackOutline, state.snapshot.packet)
                         FuelCard(state.fuel, state.snapshot.packet)
                         RadioCard(radio, engine::command)
                         voiceRadioCard()
@@ -183,6 +185,8 @@ fun PitwallScreen(
                     DriveCard(state.snapshot.packet)
                     LapCard(state)
                     FuelCard(state.fuel, state.snapshot.packet)
+                    CarCard(state.snapshot.packet, state.gForce)
+                    TrackMapCard(state.snapshot.trackOutline, state.snapshot.packet)
                     RadioCard(radio, engine::command)
                     voiceRadioCard()
                     LapHistoryCard(state.snapshot.laps)
@@ -247,7 +251,8 @@ private fun describe(status: ConnectionStatus): String = when (status) {
     ConnectionStatus.Stopped -> "Réception arrêtée."
     is ConnectionStatus.Searching ->
         if (status.target == null) "Recherche automatique de la PS5 sur le Wi-Fi…" else "Connexion à ${status.target}…"
-    is ConnectionStatus.Receiving -> "PS5 ${status.ps5Address} • ${status.packetsPerSecond} paquets/s"
+    is ConnectionStatus.Receiving ->
+        "PS5 ${status.ps5Address} • ${status.packetsPerSecond} paquets/s • format ${status.format.label}"
     is ConnectionStatus.NoData ->
         "PS5 ${status.ps5Address} : plus de données depuis ${status.silenceMs / 1000} s (menu ou rediffusion ?)"
     is ConnectionStatus.Error -> status.message
@@ -324,7 +329,11 @@ private fun DriveCard(p: TelemetryPacket?) {
             Text(" km/h", color = PitColors.Muted, modifier = Modifier.padding(bottom = 12.dp))
             Spacer(Modifier.weight(1f))
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("RAPPORT", style = MaterialTheme.typography.labelSmall, color = PitColors.Muted)
+                Text(
+                    p.suggestedGearOrNull?.let { "CONSEIL $it" } ?: "RAPPORT",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (p.suggestedGearOrNull != null) PitColors.Yellow else PitColors.Muted,
+                )
                 Text(
                     gearLabel(p.currentGear),
                     fontSize = 48.sp,
@@ -340,7 +349,16 @@ private fun DriveCard(p: TelemetryPacket?) {
             if (p.isPaused) Text("PAUSE", color = PitColors.Yellow, fontWeight = FontWeight.Bold)
         }
         if (rpmMax != null) {
-            Bar(p.engineRpm / rpmMax, if (p.isRevLimiterAlert) PitColors.Red else PitColors.Orange)
+            // Témoin de passage : jaune à partir du seuil d'alerte bas transmis par GT7, rouge au limiteur.
+            val shift = p.rpmAlertMin > 0 && p.engineRpm >= p.rpmAlertMin
+            Bar(
+                p.engineRpm / rpmMax,
+                when {
+                    p.isRevLimiterAlert -> PitColors.Red
+                    shift -> PitColors.Yellow
+                    else -> PitColors.Orange
+                },
+            )
         }
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Column(Modifier.weight(1f)) {
@@ -489,11 +507,11 @@ private fun FuelCard(fuel: FuelReport?, p: TelemetryPacket?) {
         Row(verticalAlignment = Alignment.Bottom) {
             Text("${(fraction * 100).roundToInt()} %", fontSize = 34.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.width(8.dp))
-            Text("${f1(fuel.fuelLevel)} / ${f1(fuel.fuelCapacity)}", color = PitColors.Muted, modifier = Modifier.padding(bottom = 6.dp))
+            Text("${f1(fuel.fuelLevel)} L / ${f1(fuel.fuelCapacity)} L", color = PitColors.Muted, modifier = Modifier.padding(bottom = 6.dp))
         }
         Bar(fraction, if (fraction < 0.15f) PitColors.Red else PitColors.Cyan)
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Metric("Conso / tour", fuel.perLap?.let { f2(it) } ?: "—", Modifier.weight(1f))
+            Metric("Conso / tour", fuel.perLap?.let { "${f2(it)} L" } ?: "—", Modifier.weight(1f))
             Metric("Autonomie", fuel.lapsOfFuel?.let { "${f1(it)} t" } ?: "—", Modifier.weight(1f))
             Metric("Reste course", fuel.raceLapsRemaining?.let { "${f1(it)} t" } ?: "—", Modifier.weight(1f))
         }
@@ -606,18 +624,27 @@ private fun LapHistoryCard(laps: List<LapRecord>) {
     val best = laps.mapNotNull { it.timeMs }.filter { it > 0 }.minOrNull()
     PitCard("Historique des tours") {
         Row {
-            Text("Tour", Modifier.weight(0.6f), color = PitColors.Muted)
-            Text("Temps", Modifier.weight(1.4f), color = PitColors.Muted)
-            Text("Carburant", Modifier.weight(1f), color = PitColors.Muted)
+            Text("Tour", Modifier.weight(0.5f), color = PitColors.Muted)
+            Text("Temps", Modifier.weight(1.3f), color = PitColors.Muted)
+            Text("Vmax", Modifier.weight(0.8f), color = PitColors.Muted)
+            Text("TCS", Modifier.weight(0.6f), color = PitColors.Muted)
+            Text("Carb.", Modifier.weight(0.8f), color = PitColors.Muted)
         }
         laps.asReversed().take(30).forEach { lap ->
             Row {
-                Text("${lap.lapNumber}", Modifier.weight(0.6f), fontFamily = FontFamily.Monospace)
+                Text("${lap.lapNumber}", Modifier.weight(0.5f), fontFamily = FontFamily.Monospace)
                 Text(
                     FrenchFormat.lapTime(lap.timeMs),
-                    Modifier.weight(1.4f),
+                    Modifier.weight(1.3f),
                     fontFamily = FontFamily.Monospace,
                     color = if (lap.timeMs != null && lap.timeMs == best) PitColors.Purple else Color.Unspecified,
+                )
+                Text(lap.maxSpeedKmh?.roundToInt()?.toString() ?: "—", Modifier.weight(0.8f), fontFamily = FontFamily.Monospace)
+                Text(
+                    lap.tcsShare?.let { "${(it * 100).roundToInt()}%" } ?: "—",
+                    Modifier.weight(0.6f),
+                    fontFamily = FontFamily.Monospace,
+                    color = if ((lap.tcsShare ?: 0f) >= 0.05f) PitColors.Yellow else Color.Unspecified,
                 )
                 Text(
                     when {
@@ -625,7 +652,7 @@ private fun LapHistoryCard(laps: List<LapRecord>) {
                         lap.fuelUsed != null -> f2(lap.fuelUsed!!)
                         else -> "—"
                     },
-                    Modifier.weight(1f),
+                    Modifier.weight(0.8f),
                     fontFamily = FontFamily.Monospace,
                 )
             }

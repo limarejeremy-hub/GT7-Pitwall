@@ -48,6 +48,35 @@ Quand une information manque, l'application le dit au lieu de l'estimer :
 - **Position** : GT7 ne transmet **ni la position en course ni les adversaires**. L'ingénieur part
   de la place sur la grille (transmise par GT7 avant le départ) puis suit ce que tu lui annonces.
 
+## Données GT7 utilisées (0.3)
+
+Référence du format : [PDTools](https://github.com/Nenkai/PDTools) (Nenkai, licence MIT). L'application demande le
+format le plus complet (heartbeat `~`, 344 octets) et repasse automatiquement au format `A` (296 octets) si la
+console ne répond pas. Le format reçu est affiché dans la carte Connexion.
+
+| Donnée transmise par GT7 | Utilisation dans l'application |
+|---|---|
+| Vitesse, régime, rapport, rapport conseillé | Pilotage (rapport conseillé en jaune) |
+| Seuils d'alerte régime, limiteur | Témoin de passage de rapport (jaune puis rouge) |
+| Accélérateur, frein | Barres de pédales |
+| Tours, total, dernier / meilleur tour | Chronos, ingénieur, stratégie |
+| Carburant (litres) et capacité | Stratégie carburant |
+| Position X/Y/Z de la voiture | Secteurs Pitwall + **carte du circuit** |
+| Températures de surface des 4 pneus | Carte Voiture + question « radio, pneus ? » |
+| Vitesse de rotation et rayon de chaque roue | Détection **roue qui bloque / patine** |
+| Vitesse de lacet (rotation) + vitesse | **Forces G** latérales ; G longitudinal = variation de vitesse |
+| TCS, ASM, limiteur, frein à main, phares | Témoins ; % du tour avec TCS actif dans l'historique |
+| Pression turbo (si turbo), pression d'huile | Carte Voiture |
+| Vitesse max de la boîte, rapports de boîte | Carte Voiture |
+| Heure en piste, code voiture | Carte Voiture |
+| Angle du volant (formats B / ~) | Carte Voiture |
+| Récupération d'énergie (format ~, électriques) | Carte Voiture |
+| Place sur la grille et nombre de voitures (avant départ) | Ingénieur (position de départ) |
+
+Non affichées volontairement : **température d'eau et d'huile** (GT7 envoie toujours 85 et 110, ce ne sont pas
+des mesures), hauteur de caisse et de suspension, embrayage, valeurs "sway / heave / surge" (unités non documentées)
+et champs inconnus du format `~`. GT7 ne transmet **ni les adversaires, ni la position en course, ni les secteurs officiels**.
+
 ## Installer l'APK sur le Galaxy Fold (sans ordinateur)
 
 1. Sur GitHub (application ou navigateur), ouvrir l'onglet **Actions** du dépôt.
@@ -96,6 +125,10 @@ une nouvelle version s'installe **par-dessus** l'ancienne, sans désinstaller.
 - [ ] la radio vocale : téléchargement du modèle, détection du mot de réveil avec le bruit du jeu,
       micro d'un casque **filaire / USB-C** (le micro d'un casque **Bluetooth** n'est pas encore géré) ;
 - [ ] l'écoute vocale écran éteint (service avec usage micro) ;
+- [x] place sur la grille transmise par GT7 avant le départ — vérifié le 13/10 (11e) ;
+- [ ] la console répond au format `~` (sinon l'application repasse en `A`, visible dans la carte Connexion) ;
+- [ ] le sens de la carte du circuit (elle peut apparaître en miroir) et le sens gauche/droite des forces G ;
+- [ ] la détection blocage / patinage des roues ;
 - [ ] le niveau de carburant GT7 (souvent sur une échelle de 100) : la stratégie fonctionne dans l'unité du jeu ;
 - [ ] la réception continue **écran éteint** (service de premier plan + verrou Wi-Fi) ;
 - [ ] la lisibilité de l'interface plié / déplié, et le volume de la voix pendant la course.

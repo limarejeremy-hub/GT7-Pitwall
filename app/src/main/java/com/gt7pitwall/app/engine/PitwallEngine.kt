@@ -1,5 +1,7 @@
 package com.gt7pitwall.app.engine
 
+import com.gt7pitwall.core.analysis.GForce
+import com.gt7pitwall.core.analysis.GForceMeter
 import com.gt7pitwall.core.analysis.LapAnalyzer
 import com.gt7pitwall.core.analysis.LapStats
 import com.gt7pitwall.core.engineer.EngineerMessage
@@ -39,6 +41,7 @@ data class PitwallUiState(
     /** Position annoncée (grille GT7 puis déclarations du pilote). */
     val driverPosition: Int? = null,
     val quiet: Boolean = false,
+    val gForce: GForce? = null,
 )
 
 /**
@@ -50,6 +53,8 @@ class PitwallEngine(private val voice: VoiceOutput, voiceInput: VoiceInput? = nu
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val client = TelemetryClient()
     private val tracker = SessionTracker()
+    private val gMeter = GForceMeter()
+    private var lastG: GForce? = null
     private val engineer = RaceEngineer()
     private val mutex = Mutex()
 
@@ -138,6 +143,7 @@ class PitwallEngine(private val voice: VoiceOutput, voiceInput: VoiceInput? = nu
     private suspend fun onPacket(p: TelemetryPacket) {
         mutex.withLock {
             val events = tracker.update(p)
+            gMeter.update(p)?.let { lastG = it }
             val snap = tracker.snapshot
             val fuel = FuelStrategy.compute(snap)
             val messages = engineer.onUpdate(events, snap, fuel)
@@ -150,6 +156,7 @@ class PitwallEngine(private val voice: VoiceOutput, voiceInput: VoiceInput? = nu
                     LapAnalyzer.analyze(snap.laps),
                     engineer.driverPosition,
                     engineer.quiet,
+                    lastG,
                 )
                 lastPublishMs = now
             }

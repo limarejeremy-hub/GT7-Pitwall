@@ -21,8 +21,9 @@ object TestPackets {
         flags: Int = TelemetryPacket.FLAG_ON_TRACK,
         posX: Float = 0f,
         posZ: Float = 0f,
+        size: Int = GT7Crypto.PACKET_SIZE_A,
     ): ByteArray {
-        val b = ByteBuffer.allocate(GT7Crypto.PACKET_SIZE_A).order(ByteOrder.LITTLE_ENDIAN)
+        val b = ByteBuffer.allocate(size).order(ByteOrder.LITTLE_ENDIAN)
         b.putInt(0x00, GT7Crypto.MAGIC)
         b.putFloat(0x04, posX)
         b.putFloat(0x0C, posZ)

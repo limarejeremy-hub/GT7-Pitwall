@@ -26,7 +26,11 @@ sealed interface ConnectionStatus {
     /** Heartbeats envoyés, en attente des premiers paquets. [target] = null en recherche automatique. */
     data class Searching(val target: String?) : ConnectionStatus
 
-    data class Receiving(val ps5Address: String, val packetsPerSecond: Int) : ConnectionStatus
+    data class Receiving(
+        val ps5Address: String,
+        val packetsPerSecond: Int,
+        val format: PacketFormat = PacketFormat.A,
+    ) : ConnectionStatus
 
     /** Des paquets ont été reçus, puis plus rien depuis [silenceMs]. */
     data class NoData(val ps5Address: String, val silenceMs: Long) : ConnectionStatus
@@ -52,6 +56,10 @@ class TelemetryClient(
         val heartbeatIntervalMs: Long = 3_000,
         val noDataAfterMs: Long = 2_000,
         val receiveTimeoutMs: Int = 500,
+        /** Format demandé en premier : le plus complet. */
+        val preferredFormat: PacketFormat = PacketFormat.TILDE,
+        /** Sans réponse dans ce délai, on essaie l'autre format (anciennes versions de GT7). */
+        val formatFallbackMs: Long = 4_000,
     )
 
     private val _status = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Stopped)
@@ -110,6 +118,9 @@ class TelemetryClient(
                 return
             }
             var locked = !discovery
+            var format = config.preferredFormat
+            var formatSince = clock()
+            var gotValidPacket = false
             val buffer = ByteArray(4096)
             var lastHeartbeatAt = Long.MIN_VALUE / 2
             var packetsSinceHeartbeat = 0
@@ -120,10 +131,15 @@ class TelemetryClient(
 
             while (isActive) {
                 val now = clock()
+                if (!gotValidPacket && now - formatSince >= config.formatFallbackMs) {
+                    format = if (format == PacketFormat.A) config.preferredFormat else PacketFormat.A
+                    formatSince = now
+                    lastHeartbeatAt = Long.MIN_VALUE / 2
+                }
                 if (packetsSinceHeartbeat >= config.heartbeatEveryPackets ||
                     now - lastHeartbeatAt >= config.heartbeatIntervalMs
                 ) {
-                    sendHeartbeat(sock, target)
+                    sendHeartbeat(sock, target, format)
                     lastHeartbeatAt = now
                     packetsSinceHeartbeat = 0
                 }
@@ -146,6 +162,7 @@ class TelemetryClient(
                     invalidPackets++
                     continue
                 }
+                gotValidPacket = true
                 if (!locked) {
                     // Recherche automatique : on adopte l'adresse de la machine qui répond.
                     target = datagram.address
@@ -159,7 +176,7 @@ class TelemetryClient(
                     rateCount = 0
                     rateWindowStart = lastPacketAt
                 }
-                _status.value = ConnectionStatus.Receiving(target.hostAddress ?: "?", currentRate)
+                _status.value = ConnectionStatus.Receiving(target.hostAddress ?: "?", currentRate, packet.format)
                 _packets.emit(packet)
             }
         } catch (e: SocketException) {
@@ -170,9 +187,9 @@ class TelemetryClient(
         }
     }
 
-    private fun sendHeartbeat(sock: DatagramSocket, target: InetAddress) {
+    private fun sendHeartbeat(sock: DatagramSocket, target: InetAddress, format: PacketFormat) {
         try {
-            val data = byteArrayOf(GT7Crypto.HEARTBEAT_A)
+            val data = byteArrayOf(format.heartbeat)
             sock.send(DatagramPacket(data, data.size, target, config.ps5Port))
         } catch (e: Exception) {
             _status.value = ConnectionStatus.Error("Envoi du heartbeat impossible : ${e.message}")

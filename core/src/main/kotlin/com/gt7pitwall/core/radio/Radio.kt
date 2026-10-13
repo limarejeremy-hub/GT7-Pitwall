@@ -18,6 +18,7 @@ enum class DriverQuery {
     PACE,
     SECTORS,
     POSITION,
+    TYRES,
 }
 
 /** Événements de l'entrée vocale (mot de réveil puis phrase du pilote). */

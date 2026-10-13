@@ -16,6 +16,22 @@ class SectorTrace(private val sectorCount: Int = DEFAULT_SECTORS) {
 
     private val distances = FloatArrayList()
     private val ticks = IntArrayList()
+    private val xs = FloatArrayList()
+    private val zs = FloatArrayList()
+
+    /** Vitesse maximale du tour (km/h). */
+    var maxSpeedKmh = 0f
+        private set
+    private var packets = 0
+    private var tcsPackets = 0
+    private var asmPackets = 0
+
+    /** Part du tour où l'antipatinage (TCS) était actif (0..1). */
+    val tcsShare: Float get() = if (packets > 0) tcsPackets.toFloat() / packets else 0f
+    val asmShare: Float get() = if (packets > 0) asmPackets.toFloat() / packets else 0f
+
+    /** Vrai si le tour a été suivi depuis la ligne sans interruption. */
+    val isComplete: Boolean get() = valid
     private var distance = 0f
     private var tick = 0
     private var last: TelemetryPacket? = null
@@ -25,12 +41,17 @@ class SectorTrace(private val sectorCount: Int = DEFAULT_SECTORS) {
     fun startLap(p: TelemetryPacket) {
         distances.clear()
         ticks.clear()
+        xs.clear()
+        zs.clear()
         distance = 0f
         tick = 0
         last = p
         valid = true
-        distances.add(0f)
-        ticks.add(0)
+        maxSpeedKmh = p.speedKmh
+        packets = 0
+        tcsPackets = 0
+        asmPackets = 0
+        record(p)
     }
 
     /** Le tour en cours ne pourra pas être découpé (pause, téléportation, connexion en cours de tour). */
@@ -58,9 +79,34 @@ class SectorTrace(private val sectorCount: Int = DEFAULT_SECTORS) {
         }
         distance += step
         tick += dId
+        record(p)
+        last = p
+        if (p.speedKmh > maxSpeedKmh) maxSpeedKmh = p.speedKmh
+        packets++
+        if (p.isTcsActive) tcsPackets++
+        if (p.isAsmActive) asmPackets++
+    }
+
+    private fun record(p: TelemetryPacket) {
         distances.add(distance)
         ticks.add(tick)
-        last = p
+        xs.add(p.positionX)
+        zs.add(p.positionZ)
+    }
+
+    /** Tracé du tour (un point sur [step]) avec le début des secteurs, si le tour est complet. */
+    fun outline(lapNumber: Int, step: Int = 4): TrackOutline? {
+        if (!valid || distance < MIN_LAP_DISTANCE) return null
+        val n = (distances.size + step - 1) / step
+        val ox = FloatArray(n) { xs[minOf(it * step, xs.size - 1)] }
+        val oz = FloatArray(n) { zs[minOf(it * step, zs.size - 1)] }
+        val starts = IntArray(sectorCount - 1) { k ->
+            val target = distance * (k + 1) / sectorCount
+            var i = 0
+            while (i < distances.size && distances[i] < target) i++
+            minOf(i / step, n - 1)
+        }
+        return TrackOutline(ox, oz, starts, lapNumber)
     }
 
     /**
@@ -78,7 +124,6 @@ class SectorTrace(private val sectorCount: Int = DEFAULT_SECTORS) {
             previous = b
         }
         result += officialLapMs - result.sum()
-        valid = false
         return result
     }
 

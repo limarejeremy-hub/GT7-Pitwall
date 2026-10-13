@@ -2,6 +2,7 @@ package com.gt7pitwall.core
 
 import com.gt7pitwall.core.TestPackets.hex
 import com.gt7pitwall.core.telemetry.GT7Crypto
+import com.gt7pitwall.core.telemetry.PacketFormat
 import com.gt7pitwall.core.telemetry.Salsa20
 import com.gt7pitwall.core.telemetry.TelemetryParser
 import kotlin.test.Test
@@ -66,6 +67,49 @@ class CryptoAndParserTest {
         assertNull(TelemetryParser.parseEncrypted(enc))
         assertNull(TelemetryParser.parseEncrypted(ByteArray(100)))
         assertNull(TelemetryParser.parseEncrypted(ByteArray(0x128)))
+    }
+
+    @Test
+    fun decodesExtendedTildeFields() {
+        val plain = TestPackets.plain(lap = 2, fuel = 40f, packetId = 9, speedMps = 30f, size = PacketFormat.TILDE.size)
+        java.nio.ByteBuffer.wrap(plain).order(java.nio.ByteOrder.LITTLE_ENDIAN).apply {
+            putFloat(0x30, 0.5f) // vitesse angulaire Y
+            putFloat(0x50, 1.8f) // turbo
+            putShort(0x8E, (1 or (1 shl 4) or (1 shl 11)).toShort()) // en piste, turbo, TCS
+            put(0x90, ((15 shl 4) or 3).toByte()) // 3e, pas de rapport conseillé
+            putFloat(0x60, 82f)
+            putFloat(0xA4, 100f) // roue AVG : 100 rad/s
+            putFloat(0xB4, 0.3f) // rayon 0,30 m
+            putFloat(0x104, 3.1f) // 1er rapport
+            putFloat(0x128, -0.25f) // volant
+            putFloat(0x130, 1.5f)
+            put(0x13E, 4.toByte())
+            putFloat(0x150, 12f)
+        }
+        val p = assertNotNull(TelemetryParser.parseEncrypted(GT7Crypto.encrypt(plain, iv = 77)))
+        assertEquals(PacketFormat.TILDE, p.format)
+        assertEquals(0.5f, p.angularVelocityY)
+        assertEquals(0.8f, p.turboBar!!, 0.0001f)
+        assertTrue(p.isTcsActive)
+        assertEquals(3, p.currentGear)
+        assertNull(p.suggestedGearOrNull)
+        assertEquals(82f, p.tyreTemps.fl)
+        assertEquals(1f, p.wheelSlip!!.fl, 0.0001f) // 100 × 0,30 = 30 m/s = vitesse voiture
+        assertEquals(3.1f, p.gearRatios.first())
+        assertEquals(-0.25f, p.steeringRad)
+        assertEquals(1.5f, p.sway)
+        assertEquals(4, p.carType)
+        assertTrue(p.isElectric)
+        assertEquals(12f, p.energyRecovery)
+    }
+
+    @Test
+    fun formatADoesNotInventExtendedFields() {
+        val p = assertNotNull(TelemetryParser.parseEncrypted(hex(REFERENCE_PACKET)))
+        assertEquals(PacketFormat.A, p.format)
+        assertNull(p.steeringRad)
+        assertNull(p.energyRecovery)
+        assertNull(p.carType)
     }
 
     companion object {

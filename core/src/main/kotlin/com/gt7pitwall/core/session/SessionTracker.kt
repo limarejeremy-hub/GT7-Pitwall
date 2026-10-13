@@ -1,6 +1,7 @@
 package com.gt7pitwall.core.session
 
 import com.gt7pitwall.core.analysis.SectorTrace
+import com.gt7pitwall.core.analysis.TrackOutline
 import com.gt7pitwall.core.telemetry.TelemetryPacket
 
 /** Un tour bouclé, tel qu'observé dans la télémétrie. */
@@ -16,6 +17,10 @@ data class LapRecord(
     val refuelled: Boolean,
     /** Secteurs Pitwall en ms (voir [SectorTrace]), null si le tour n'a pas été suivi en entier. */
     val sectorsMs: List<Int>? = null,
+    /** Vitesse maximale du tour (km/h), null si le tour n'a pas été suivi en entier. */
+    val maxSpeedKmh: Float? = null,
+    /** Part du tour avec antipatinage (TCS) actif, 0..1. */
+    val tcsShare: Float? = null,
 )
 
 sealed interface SessionEvent {
@@ -47,6 +52,8 @@ data class SessionSnapshot(
     /** Carburant au passage de la ligne au début du tour en cours (null si non observé). */
     val fuelAtLapStart: Float?,
     val refuelledThisLap: Boolean,
+    /** Tracé du meilleur tour suivi en entier (carte du circuit). */
+    val trackOutline: TrackOutline? = null,
 ) {
     val bestRecordedLapMs: Int? get() = laps.mapNotNull { it.timeMs }.filter { it > 0 }.minOrNull()
 
@@ -79,6 +86,8 @@ class SessionTracker(
     private var pending: PendingLap? = null
     private var gridAnnounced = false
     private var trace = SectorTrace()
+    private var outline: TrackOutline? = null
+    private var outlineLapMs: Int? = null
 
     private data class PendingLap(
         val lapNumber: Int,
@@ -156,14 +165,30 @@ class SessionTracker(
 
         if (before != null && p.currentLap == before.currentLap) trace.add(p)
         previous = p
-        snapshot = SessionSnapshot(p, laps.toList(), fuelAtLapStart, refuelledThisLap)
+        snapshot = SessionSnapshot(p, laps.toList(), fuelAtLapStart, refuelledThisLap, outline)
         return events
     }
 
     private fun finishPending(pl: PendingLap, timeMs: Int?, events: MutableList<SessionEvent>) {
         val previousBest = laps.mapNotNull { it.timeMs }.filter { it > 0 }.minOrNull()
         val sectors = timeMs?.let { pl.trace.finish(it) }
-        val record = LapRecord(pl.lapNumber, timeMs, pl.fuelUsed, pl.refuelled, sectors)
+        val complete = pl.trace.isComplete
+        val record = LapRecord(
+            pl.lapNumber,
+            timeMs,
+            pl.fuelUsed,
+            pl.refuelled,
+            sectors,
+            maxSpeedKmh = if (complete) pl.trace.maxSpeedKmh else null,
+            tcsShare = if (complete) pl.trace.tcsShare else null,
+        )
+        // La carte suit le meilleur tour complet (ou le premier disponible).
+        if (complete && timeMs != null && (outlineLapMs == null || timeMs < outlineLapMs!!)) {
+            pl.trace.outline(pl.lapNumber)?.let {
+                outline = it
+                outlineLapMs = timeMs
+            }
+        }
         laps += record
         pending = null
         events += SessionEvent.LapCompleted(record, previousBest)
@@ -178,5 +203,7 @@ class SessionTracker(
         pending = null
         gridAnnounced = false
         trace = SectorTrace()
+        outline = null
+        outlineLapMs = null
     }
 }

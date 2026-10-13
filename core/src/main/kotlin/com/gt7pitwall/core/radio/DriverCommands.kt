@@ -112,6 +112,7 @@ object DriverCommandParser {
             has(t, "position", "quelle place", "je suis combien") -> DriverQuery.POSITION
             has(t, "essence", "carburant", "fuel", "reservoir", "conso") -> DriverQuery.FUEL
             has(t, "secteur") -> DriverQuery.SECTORS
+            has(t, "pneu", "gomme", "temperature") -> DriverQuery.TYRES
             has(t, "meilleur", "record") -> DriverQuery.BEST_LAP
             has(t, "dernier tour", "chrono", "temps") -> DriverQuery.LAST_LAP
             has(t, "rythme", "regularite", "moyenne") -> DriverQuery.PACE
@@ -148,7 +149,7 @@ object DriverCommandParser {
             "dépasser", "dépassé", "perdu", "gagné", "pris", "une", "un", "place", "position", "quelle", "quel",
             "combien", "essence", "d'essence", "carburant", "réservoir", "secteur", "secteurs", "mes", "mon", "le", "la",
             "en", "de", "dernier", "dernière", "tour", "tours", "meilleur", "chrono", "temps", "rythme", "course",
-            "reste", "il", "silence", "chut", "tu", "peux", "parler", "répète", "répéter",
+            "reste", "pneus", "pneu", "gommes", "température", "températures", "silence", "chut", "tu", "peux", "parler", "répète", "répéter",
             "premier", "première", "deuxième", "second", "troisième", "quatrième", "cinquième", "sixième", "septième",
             "huitième", "neuvième", "dixième", "onzième", "douzième", "treizième", "quatorzième", "quinzième",
             "seizième", "dix-septième", "dix-huitième", "dix-neuvième", "vingtième", "vingt", "et", "unième",

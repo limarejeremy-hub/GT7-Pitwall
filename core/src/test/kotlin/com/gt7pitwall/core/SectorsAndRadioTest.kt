@@ -25,9 +25,11 @@ class SectorsAndRadioTest {
         var lastLap = -1
         val said = mutableListOf<String>()
 
-        fun send(lap: Int, lastLapMs: Int, paused: Boolean = false) {
+        fun send(lap: Int, lastLapMs: Int, paused: Boolean = false, speed: Float = 0f) {
             val flags = 1 or (if (paused) 2 else 0)
-            val plain = TestPackets.plain(lap = lap, totalLaps = 10, packetId = ++id, lastLapMs = lastLapMs, flags = flags, posX = x)
+            val plain = TestPackets.plain(
+                lap = lap, totalLaps = 10, packetId = ++id, lastLapMs = lastLapMs, flags = flags, posX = x, speedMps = speed,
+            )
             val p = TelemetryParser.parseDecrypted(plain)!!
             val events = tracker.update(p)
             said += engineer.onUpdate(events, tracker.snapshot, FuelStrategy.compute(tracker.snapshot)).map { it.text }
@@ -40,7 +42,7 @@ class SectorsAndRadioTest {
                 val packets = (1000f / v * 60f).toInt()
                 repeat(packets) { i ->
                     x += v / 60f
-                    send(lap, lastLap, paused = pauseMidLap && s == 1 && i == 10)
+                    send(lap, lastLap, paused = pauseMidLap && s == 1 && i == 10, speed = v)
                 }
                 ms += packets * 1000.0 / 60.0
             }
@@ -61,6 +63,12 @@ class SectorsAndRadioTest {
         assertEquals(3, s1.size)
         s1.forEach { assertEquals(20_000.0, it.toDouble(), 30.0) }
         assertEquals(ref.timeMs, s1.sum())
+        assertEquals(180f, ref.maxSpeedKmh!!, 0.5f) // 50 m/s
+        assertEquals(0f, ref.tcsShare)
+        val map = assertNotNull(t.tracker.snapshot.trackOutline)
+        assertEquals(2, map.sectorStarts.size)
+        assertTrue(map.xs.size > 100)
+        assertTrue(map.sectorStarts[0] < map.sectorStarts[1])
 
         t.lap(2, listOf(50f, 40f, 50f)) // secteur 2 : 25 s
         val lap2 = t.tracker.snapshot.laps.last()
@@ -116,6 +124,7 @@ class SectorsAndRadioTest {
         assertEquals(DriverCommand.ReportPosition(18), DriverCommandParser.parse("position dix-huit"))
         assertEquals(DriverCommand.Overtook, DriverCommandParser.parse("j'ai gagné une place"))
         assertTrue("radio" in DriverCommandParser.vocabulary("radio"))
+        assertEquals(DriverCommand.Ask(DriverQuery.TYRES), DriverCommandParser.parse("mes pneus"))
     }
 
     @Test
@@ -154,5 +163,19 @@ class SectorsAndRadioTest {
         e.handle(DriverCommand.Talk, t.snapshot, null)
         val answer = e.handle(DriverCommand.Ask(DriverQuery.LAST_LAP), t.snapshot, null)
         assertEquals(answer.text, e.handle(DriverCommand.Repeat, t.snapshot, null).text)
+    }
+
+    @Test
+    fun gForcesFromSpeedAndYawRate() {
+        val meter = com.gt7pitwall.core.analysis.GForceMeter(smoothing = 1f)
+        fun pk(id: Int, speed: Float, yaw: Float): com.gt7pitwall.core.telemetry.TelemetryPacket {
+            val plain = TestPackets.plain(packetId = id, speedMps = speed)
+            java.nio.ByteBuffer.wrap(plain).order(java.nio.ByteOrder.LITTLE_ENDIAN).putFloat(0x30, yaw)
+            return TelemetryParser.parseDecrypted(plain)!!
+        }
+        assertNull(meter.update(pk(1, 20f, 0f)))
+        val g = assertNotNull(meter.update(pk(2, 20.1f, 0.4905f)))
+        assertEquals(0.6116f, g.longitudinal, 0.01f) // 0,1 m/s en 1/60 s
+        assertEquals(1.0f, g.lateral, 0.01f) // 20,1 × 0,4905 / 9,81
     }
 }
