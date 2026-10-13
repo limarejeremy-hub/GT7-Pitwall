@@ -21,6 +21,12 @@ data class LapRecord(
     val maxSpeedKmh: Float? = null,
     /** Part du tour avec antipatinage (TCS) actif, 0..1. */
     val tcsShare: Float? = null,
+    /** Température de surface moyenne des pneus sur le tour (°C). */
+    val avgTyreTemp: Float? = null,
+    /** Blocages de roue au freinage. */
+    val lockups: Int? = null,
+    /** Patinages à l'accélération. */
+    val wheelspins: Int? = null,
 )
 
 sealed interface SessionEvent {
@@ -181,6 +187,9 @@ class SessionTracker(
             sectors,
             maxSpeedKmh = if (complete) pl.trace.maxSpeedKmh else null,
             tcsShare = if (complete) pl.trace.tcsShare else null,
+            avgTyreTemp = if (complete) pl.trace.avgTyreTemp else null,
+            lockups = if (complete) pl.trace.lockups else null,
+            wheelspins = if (complete) pl.trace.wheelspins else null,
         )
         // La carte suit le meilleur tour complet (ou le premier disponible).
         if (complete && timeMs != null && (outlineLapMs == null || timeMs < outlineLapMs!!)) {

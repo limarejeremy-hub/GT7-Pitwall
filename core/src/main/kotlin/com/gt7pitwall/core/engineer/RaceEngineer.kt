@@ -49,6 +49,12 @@ class RaceEngineer {
         private set
 
     private var lastSpoken: EngineerMessage? = null
+    private val tyres = TyreCoach()
+
+    /** Pluie signalée par le pilote, et tour où elle a commencé. */
+    var raining: Boolean = false
+        private set
+    private var rainSinceLap = 0
 
     /** Demander la position au pilote à chaque tour (GT7 ne la transmet pas). */
     var askPositionEachLap: Boolean = false
@@ -68,11 +74,14 @@ class RaceEngineer {
                     announcedNoConsumption = false
                     driverPosition = null
                     carsInRace = null
+                    tyres.reset()
+                    raining = false
                     out += msg("Nouvelle session détectée, je repars de zéro.", Priority.NORMAL, MessageCategory.RADIO)
                 }
 
                 SessionEvent.RefuelDetected -> {
                     resetAlerts()
+                    tyres.pitStop()
                     out += msg("Ravitaillement détecté, je recalcule la stratégie au prochain tour.", Priority.NORMAL, MessageCategory.FUEL)
                 }
 
@@ -98,6 +107,7 @@ class RaceEngineer {
             }
         }
         fuelAlert(fuel)?.let { out += it }
+        snapshot.packet?.let { p -> tyres.onPacket(p)?.let { out += msg(it, Priority.HIGH, MessageCategory.LAP) } }
         val result = if (quiet) out.filter { it.category == MessageCategory.ALERT } else out
         result.lastOrNull()?.let { lastSpoken = it }
         return result
@@ -125,6 +135,15 @@ class RaceEngineer {
                 val pos = driverPosition?.let { p -> (p + 1).let { n -> carsInRace?.let { minOf(n, it) } ?: n } }
                 driverPosition = pos
                 if (pos == null) "Compris. Donne-moi ta position quand tu peux." else "Compris, tu es P$pos. On reste concentré."
+            }
+            DriverCommand.Rain -> {
+                raining = true
+                rainSinceLap = snapshot.packet?.currentLap ?: 0
+                "Compris, piste mouillée. Je compare maintenant tes chronos aux tours sous la pluie. Sois doux sur les pédales."
+            }
+            DriverCommand.Dry -> {
+                raining = false
+                "Compris, la piste sèche. Je reviens aux références sur le sec."
             }
             DriverCommand.Quiet -> {
                 quiet = true
@@ -215,8 +234,14 @@ class RaceEngineer {
         val time = lap.timeMs
         if (time != null) {
             sb.append("Tour ${lap.lapNumber} : ${lapTimeSpeech(time)}. ")
-            val best = e.previousBestMs
+            // Sous la pluie, on compare aux tours sous la pluie, pas au meilleur tour sur le sec.
+            val best = if (raining) {
+                snapshot.laps.filter { it.lapNumber in rainSinceLap until lap.lapNumber }.mapNotNull { it.timeMs }.filter { it > 0 }.minOrNull()
+            } else {
+                e.previousBestMs
+            }
             when {
+                best == null && raining -> sb.append("Premier tour de référence sous la pluie. ")
                 best == null -> Unit
                 time < best -> sb.append("Meilleur tour, ${deltaSpeech(best - time)} de mieux ! ")
                 time == best -> sb.append("Égalité avec ton meilleur. ")
@@ -225,8 +250,11 @@ class RaceEngineer {
         } else {
             sb.append("Tour ${lap.lapNumber} bouclé. ")
         }
-        sectorFeedback(lap.sectorsMs, lap.lapNumber, snapshot, isNewBest = time != null && e.previousBestMs != null && time < e.previousBestMs)
-            ?.let { sb.append(it).append(' ') }
+        if (!raining) {
+            sectorFeedback(lap.sectorsMs, lap.lapNumber, snapshot, isNewBest = time != null && e.previousBestMs != null && time < e.previousBestMs)
+                ?.let { sb.append(it).append(' ') }
+        }
+        tyres.onLap(snapshot.laps, raining)?.let { sb.append(it).append(' ') }
         if (finished) return msg(sb.toString().trim(), Priority.NORMAL, MessageCategory.LAP)
 
         driverPosition?.let { sb.append("Tu es P$it. ") }

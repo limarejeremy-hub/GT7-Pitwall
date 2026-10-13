@@ -434,6 +434,9 @@ private fun LapCard(state: PitwallUiState) {
                 fontFamily = FontFamily.Monospace,
             )
         }
+        if (state.raining) {
+            Text("Pluie signalée : chronos comparés aux tours sous la pluie", color = PitColors.Cyan, fontWeight = FontWeight.Bold)
+        }
         SectorRow(state.snapshot.laps)
         if (state.driverPosition != null) {
             Text(
@@ -585,6 +588,11 @@ private fun RadioCard(messages: List<EngineerMessage>, onCommand: (DriverCommand
             QueryButton("J'ai doublé", Modifier.weight(1f)) { onCommand(DriverCommand.Overtook) }
             QueryButton("Doublé", Modifier.weight(1f)) { onCommand(DriverCommand.Overtaken) }
             QueryButton("Répète", Modifier.weight(1f)) { onCommand(DriverCommand.Repeat) }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            QueryButton("Il pleut", Modifier.weight(1f)) { onCommand(DriverCommand.Rain) }
+            QueryButton("Piste sèche", Modifier.weight(1f)) { onCommand(DriverCommand.Dry) }
+            QueryButton("Pneus ?", Modifier.weight(1f)) { ask(DriverQuery.TYRES) }
         }
         if (messages.isEmpty()) {
             Text("Aucun message pour l'instant.", color = PitColors.Muted)

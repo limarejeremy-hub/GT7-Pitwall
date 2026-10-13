@@ -47,6 +47,14 @@ Quand une information manque, l'application le dit au lieu de l'estimer :
   ce qui évite les erreurs du type « adieu une place » au lieu de « perdu une place ».
 - **Position à chaque tour** : à la fin de chaque tour, l'ingénieur demande « Ta position ? » et la radio écoute
   la réponse sans mot de réveil (« huitième »). Désactivable dans la carte Radio vocale.
+- **Pneus et adhérence** (mesures GT7 uniquement, seuils prudents regroupés dans `TyreCoach.kt`) :
+  « Pneus en température, tu peux attaquer » quand la température de surface se stabilise ;
+  « Tes pneus chauffent » (+15 °C) ; « Attention, l'adhérence baisse » (au moins deux signaux sur un tour :
+  pneus −10 °C, TCS +10 points, +4 blocages/patinages) ; « C'est la galère » (TCS ≥ 30 % du tour ou ≥ 10
+  blocages/patinages) ; « L'adhérence revient » ; « Tes chronos se dégradent » (+1 s sur les meilleurs tours
+  du relais avec plus de TCS ou de glisse). GT7 ne transmet **ni l'usure des pneus ni la météo**.
+- **Pluie** : « radio, il pleut » / « radio, piste sèche » (ou boutons). Sous la pluie, les chronos sont
+  comparés aux tours sous la pluie et les secteurs ne sont pas comparés au sec.
 - **Appel au stand** : un tour avant le dernier tour possible, « Stand au prochain tour » ; sur ce tour,
   « Box, box ! Rentre au stand à la fin de ce tour, ajoute environ N litres ».
 - **Position** : GT7 ne transmet **ni la position en course ni les adversaires**. L'ingénieur part
@@ -133,6 +141,7 @@ une nouvelle version s'installe **par-dessus** l'ancienne, sans désinstaller.
 - [ ] la console répond au format `~` (sinon l'application repasse en `A`, visible dans la carte Connexion) ;
 - [ ] le sens de la carte du circuit (elle peut apparaître en miroir) et le sens gauche/droite des forces G ;
 - [ ] la détection blocage / patinage des roues ;
+- [ ] les seuils pneus / adhérence (« en température », « l'adhérence baisse », « la galère », dégradation) ;
 - [ ] le niveau de carburant GT7 (souvent sur une échelle de 100) : la stratégie fonctionne dans l'unité du jeu ;
 - [ ] la réception continue **écran éteint** (service de premier plan + verrou Wi-Fi) ;
 - [ ] la lisibilité de l'interface plié / déplié, et le volume de la voix pendant la course.

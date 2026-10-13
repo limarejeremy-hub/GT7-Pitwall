@@ -42,6 +42,8 @@ data class PitwallUiState(
     val driverPosition: Int? = null,
     val quiet: Boolean = false,
     val gForce: GForce? = null,
+    /** Pluie signalée par le pilote (GT7 ne transmet pas la météo). */
+    val raining: Boolean = false,
 )
 
 /**
@@ -131,7 +133,7 @@ class PitwallEngine(private val voice: VoiceOutput, private val voiceInput: Voic
     }
 
     private fun publishDriverState() {
-        _state.update { it.copy(driverPosition = engineer.driverPosition, quiet = engineer.quiet) }
+        _state.update { it.copy(driverPosition = engineer.driverPosition, quiet = engineer.quiet, raining = engineer.raining) }
     }
 
     fun testVoice() {
@@ -162,6 +164,7 @@ class PitwallEngine(private val voice: VoiceOutput, private val voiceInput: Voic
                     engineer.driverPosition,
                     engineer.quiet,
                     lastG,
+                    engineer.raining,
                 )
                 lastPublishMs = now
             }

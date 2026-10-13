@@ -24,6 +24,12 @@ sealed interface DriverCommand {
     /** "Tu peux parler" : annonces automatiques réactivées. */
     data object Talk : DriverCommand
 
+    /** "Il pleut" : le pilote signale la pluie (GT7 ne transmet pas la météo). */
+    data object Rain : DriverCommand
+
+    /** "Piste sèche". */
+    data object Dry : DriverCommand
+
     /** "Répète". */
     data object Repeat : DriverCommand
 }
@@ -80,6 +86,12 @@ object DriverCommandParser {
         if (t.isEmpty()) return null
 
         if (has(t, "repete", "repeter", "redis")) return DriverCommand.Repeat
+        if (has(t, "plus de pluie", "pluie s'arrete", "pluie arrete", "ca seche", "piste seche", "seche") ||
+            Regex("(^|\\s)sec($|\\s)").containsMatchIn(t)
+        ) {
+            return DriverCommand.Dry
+        }
+        if (has(t, "pleut", "pluie", "mouille", "humide", "averse")) return DriverCommand.Rain
         if (has(t, "silence", "tais-toi", "tais toi", "chut")) return DriverCommand.Quiet
         if (has(t, "tu peux parler", "reparle", "parle-moi", "parle moi")) return DriverCommand.Talk
 
@@ -153,7 +165,7 @@ object DriverCommandParser {
             "dépasser", "dépassé", "perdu", "gagné", "pris", "une", "un", "place", "position", "quelle", "quel",
             "combien", "essence", "d'essence", "carburant", "réservoir", "secteur", "secteurs", "mes", "mon", "le", "la",
             "en", "de", "dernier", "dernière", "tour", "tours", "meilleur", "chrono", "temps", "rythme", "course",
-            "reste", "pneus", "pneu", "gommes", "température", "températures", "silence", "chut", "tu", "peux", "parler", "répète", "répéter",
+            "reste", "pleut", "pluie", "mouillé", "mouillée", "piste", "sèche", "sec", "plus", "arrête", "pneus", "pneu", "gommes", "température", "températures", "silence", "chut", "tu", "peux", "parler", "répète", "répéter",
             "premier", "première", "deuxième", "second", "troisième", "quatrième", "cinquième", "sixième", "septième",
             "huitième", "neuvième", "dixième", "onzième", "douzième", "treizième", "quatorzième", "quinzième",
             "seizième", "dix-septième", "dix-huitième", "dix-neuvième", "vingtième", "vingt", "et", "unième",
