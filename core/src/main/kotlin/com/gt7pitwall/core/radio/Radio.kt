@@ -36,6 +36,9 @@ sealed interface VoiceInputEvent {
  */
 interface VoiceInput {
     val events: Flow<VoiceInputEvent>
+
+    /** L'ingénieur vient de poser une question : écouter la réponse sans mot de réveil. */
+    fun expectReply() {}
 }
 
 /** Conversion d'une phrase reconnue en question (compatibilité). */

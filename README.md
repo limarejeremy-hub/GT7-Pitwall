@@ -45,6 +45,10 @@ Quand une information manque, l'application le dit au lieu de l'estimer :
   « radio, je me suis fait doubler », « radio, mes secteurs », « radio, silence », « radio, répète ».
 - **Vocabulaire limité** (activé par défaut) : la reconnaissance ne cherche que les mots de la radio,
   ce qui évite les erreurs du type « adieu une place » au lieu de « perdu une place ».
+- **Position à chaque tour** : à la fin de chaque tour, l'ingénieur demande « Ta position ? » et la radio écoute
+  la réponse sans mot de réveil (« huitième »). Désactivable dans la carte Radio vocale.
+- **Appel au stand** : un tour avant le dernier tour possible, « Stand au prochain tour » ; sur ce tour,
+  « Box, box ! Rentre au stand à la fin de ce tour, ajoute environ N litres ».
 - **Position** : GT7 ne transmet **ni la position en course ni les adversaires**. L'ingénieur part
   de la place sur la grille (transmise par GT7 avant le départ) puis suit ce que tu lui annonces.
 

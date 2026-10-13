@@ -125,6 +125,12 @@ class SectorsAndRadioTest {
         assertEquals(DriverCommand.Overtook, DriverCommandParser.parse("j'ai gagné une place"))
         assertTrue("radio" in DriverCommandParser.vocabulary("radio"))
         assertEquals(DriverCommand.Ask(DriverQuery.TYRES), DriverCommandParser.parse("mes pneus"))
+        // Test réel du 13/10 : le "je" est avalé par la reconnaissance.
+        assertEquals(DriverCommand.ReportPosition(14), DriverCommandParser.parse("suis quatorzieme"))
+        // Réponses brèves à « Ta position ? ».
+        assertEquals(DriverCommand.ReportPosition(8), DriverCommandParser.parse("huitième"))
+        assertEquals(DriverCommand.ReportPosition(8), DriverCommandParser.parse("huit"))
+        assertEquals(DriverCommand.Ask(DriverQuery.SECTORS), DriverCommandParser.parse("premier secteur"))
     }
 
     @Test
@@ -177,5 +183,40 @@ class SectorsAndRadioTest {
         val g = assertNotNull(meter.update(pk(2, 20.1f, 0.4905f)))
         assertEquals(0.6116f, g.longitudinal, 0.01f) // 0,1 m/s en 1/60 s
         assertEquals(1.0f, g.lateral, 0.01f) // 20,1 × 0,4905 / 9,81
+    }
+
+    /** Course réelle du 13/10 : 14,5 L/tour, 100 L au départ, 10 tours. */
+    @Test
+    fun boxCallOnTheRightLap() {
+        val t = SessionTracker()
+        val e = RaceEngineer()
+        val said = mutableListOf<String>()
+        fun go(lap: Int, fuel: Float, last: Int) {
+            val p = TestPackets.packet(lap = lap, totalLaps = 10, fuel = fuel, lastLapMs = last)
+            said += e.onUpdate(t.update(p), t.snapshot, FuelStrategy.compute(t.snapshot)).map { it.text }
+        }
+        go(0, 100f, -1)
+        var fuel = 100f
+        for (lap in 1..6) {
+            go(lap, fuel, 110_000 + lap)
+            fuel -= 14.5f
+        }
+        go(7, fuel, 120_000)
+        val text = said.joinToString("\n")
+        // 100 L / 14,5 = 6,9 tours : dernier tour possible = 6 ; prévenu au début du tour 5.
+        assertTrue(said.any { it.startsWith("Tour 4 :") && "Stand au prochain tour" in it }, text)
+        val box = said.first { it.startsWith("Tour 5 :") }
+        assertTrue("Box, box ! Rentre au stand à la fin de ce tour, ajoute environ" in box && "litres" in box, box)
+        assertTrue("Il faudra ravitailler" !in box, box)
+    }
+
+    @Test
+    fun asksPositionEachLapWhenEnabled() {
+        val t = SessionTracker()
+        val e = RaceEngineer().apply { askPositionEachLap = true }
+        e.onUpdate(t.update(TestPackets.packet(lap = 1, totalLaps = 5)), t.snapshot, null)
+        val m = e.onUpdate(t.update(TestPackets.packet(lap = 2, totalLaps = 5, lastLapMs = 80_000)), t.snapshot, null).single()
+        assertTrue(m.text.endsWith("Ta position ?"), m.text)
+        assertTrue(m.expectsReply)
     }
 }

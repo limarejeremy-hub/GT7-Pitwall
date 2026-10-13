@@ -65,7 +65,8 @@ class EngineerTest {
         val msgs = run(t, e, packet(lap = 3, totalLaps = 10, fuel = 10f, lastLapMs = 91_000))
         val lapMsg = msgs.first { it.category == MessageCategory.LAP }
         assertEquals(Priority.HIGH, lapMsg.priority)
-        assertTrue("Il faudra ravitailler" in lapMsg.text, lapMsg.text)
+        // Il ne reste qu'un tour de carburant : c'est le tour où il faut rentrer.
+        assertTrue("Box, box ! Rentre au stand à la fin de ce tour" in lapMsg.text, lapMsg.text)
         // 10 restants à 10/tour => moins de 2 tours : une seule alerte.
         assertTrue(msgs.any { it.category == MessageCategory.ALERT && it.priority == Priority.HIGH })
         val again = run(t, e, packet(lap = 3, totalLaps = 10, fuel = 10f, lastLapMs = 91_000))

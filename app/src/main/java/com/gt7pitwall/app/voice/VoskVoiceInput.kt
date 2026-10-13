@@ -118,6 +118,14 @@ class VoskVoiceInput(
         _state.value = ListenState.OFF
     }
 
+    override fun expectReply() {
+        scope.launch {
+            if (service == null) return@launch
+            // Si l'ingénieur parle encore, l'écoute s'ouvrira à la fin de sa phrase.
+            if (tts.speaking.value) awakeUntil = 1 else awake()
+        }
+    }
+
     private suspend fun onEngineerSpeaking(speaking: Boolean) {
         val s = service ?: return
         if (speaking) {

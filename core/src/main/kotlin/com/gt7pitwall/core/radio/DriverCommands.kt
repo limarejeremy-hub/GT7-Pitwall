@@ -125,10 +125,14 @@ object DriverCommandParser {
     /** "je suis troisième", "je suis dix-septième", "je suis 3e", "en position vingt deux", "P3". */
     private fun positionIn(t: String): Int? {
         val padded = " $t "
-        val mentionsPosition = has(t, "je suis", "position", "place", "je roule")
+        // "suis" seul : la reconnaissance avale souvent le "je" (test réel du 13/10 : « suis quatorzieme »).
+        val mentionsPosition = has(t, "suis", "position", "place", "je roule", "p ")
+        val otherTopic = has(t, "secteur", "tour", "rapport", "vitesse")
         for ((phrase, n) in ORDINALS) {
-            if (" $phrase " in padded && (mentionsPosition || t == phrase)) return n
+            if (" $phrase " in padded && (mentionsPosition || t == phrase || !otherTopic)) return n
         }
+        // Réponse brève à « Position ? » : un nombre seul ("huit").
+        CARDINALS.firstOrNull { it.first == t }?.let { return it.second }
         Regex("(^|\\s)(\\d{1,2})(e|eme|er|re)($|\\s)").find(t)?.let { if (mentionsPosition) return it.groupValues[2].toInt() }
         Regex("(^|\\s)p ?(\\d{1,2})($|\\s)").find(t)?.let { return it.groupValues[2].toInt() }
         Regex("(position|place) (.+)$").find(t)?.let { m ->

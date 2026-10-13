@@ -100,6 +100,7 @@ fun PitwallScreen(
     val listenError by voiceInput.error.collectAsStateWithLifecycle()
     var wakeWord by rememberSaveable { mutableStateOf(settings.wakeWord) }
     var limitedVocab by rememberSaveable { mutableStateOf(settings.limitedVocabulary) }
+    var askPosition by rememberSaveable { mutableStateOf(settings.askPositionEachLap) }
 
     val voiceRadioCard: @Composable () -> Unit = {
         VoiceRadioCard(
@@ -120,6 +121,11 @@ fun PitwallScreen(
                 limitedVocab = it
                 settings.limitedVocabulary = it
                 voiceInput.limitedVocabulary = it
+            },
+            askPosition = askPosition,
+            onAskPositionChange = {
+                askPosition = it
+                settings.askPositionEachLap = it
             },
         )
     }
@@ -251,8 +257,13 @@ private fun describe(status: ConnectionStatus): String = when (status) {
     ConnectionStatus.Stopped -> "Réception arrêtée."
     is ConnectionStatus.Searching ->
         if (status.target == null) "Recherche automatique de la PS5 sur le Wi-Fi…" else "Connexion à ${status.target}…"
-    is ConnectionStatus.Receiving ->
-        "PS5 ${status.ps5Address} • ${status.packetsPerSecond} paquets/s • format ${status.format.label}"
+    is ConnectionStatus.Receiving -> buildString {
+        append("PS5 ${status.ps5Address} • ${status.packetsPerSecond} paquets/s • format ${status.format.label}")
+        if (status.fullFormatUnanswered) append("\nLe format complet (~) n'a pas donné de paquet lisible : format A utilisé.")
+        if (status.invalidPackets > 0) {
+            append("\nDiagnostic : ${status.invalidPackets} paquet(s) illisible(s), dernier de ${status.lastInvalidSize} octets.")
+        }
+    }
     is ConnectionStatus.NoData ->
         "PS5 ${status.ps5Address} : plus de données depuis ${status.silenceMs / 1000} s (menu ou rediffusion ?)"
     is ConnectionStatus.Error -> status.message
@@ -672,6 +683,8 @@ private fun VoiceRadioCard(
     onToggle: (Boolean) -> Unit,
     limitedVocabulary: Boolean,
     onLimitedVocabularyChange: (Boolean) -> Unit,
+    askPosition: Boolean,
+    onAskPositionChange: (Boolean) -> Unit,
 ) {
     PitCard("Radio vocale") {
         when (modelState) {
@@ -724,6 +737,17 @@ private fun VoiceRadioCard(
                 )
             }
             Switch(checked = limitedVocabulary, onCheckedChange = onLimitedVocabularyChange, enabled = !on)
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Demander ma position à chaque tour")
+                Text(
+                    "GT7 ne transmet pas la position. Après « Ta position ? », réponds directement (« huitième »), sans mot de réveil.",
+                    color = PitColors.Muted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Switch(checked = askPosition, onCheckedChange = onAskPositionChange)
         }
         val (label, color) = when (listenState) {
             ListenState.OFF -> "Micro coupé." to PitColors.Muted

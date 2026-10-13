@@ -48,7 +48,7 @@ data class PitwallUiState(
  * Chaîne complète : réception UDP -> suivi de session -> stratégie carburant -> ingénieur -> voix.
  * Indépendant de l'interface : le service de premier plan le maintient en vie écran éteint.
  */
-class PitwallEngine(private val voice: VoiceOutput, voiceInput: VoiceInput? = null) {
+class PitwallEngine(private val voice: VoiceOutput, private val voiceInput: VoiceInput? = null) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val client = TelemetryClient()
@@ -71,6 +71,10 @@ class PitwallEngine(private val voice: VoiceOutput, voiceInput: VoiceInput? = nu
 
     @Volatile
     var voiceEnabled: Boolean = true
+
+    /** Demander la position à chaque tour (si la radio vocale écoute). */
+    @Volatile
+    var askPositionEachLap: () -> Boolean = { false }
 
     private var collectJob: Job? = null
     private var lastPublishMs = 0L
@@ -143,6 +147,7 @@ class PitwallEngine(private val voice: VoiceOutput, voiceInput: VoiceInput? = nu
     private suspend fun onPacket(p: TelemetryPacket) {
         mutex.withLock {
             val events = tracker.update(p)
+            engineer.askPositionEachLap = askPositionEachLap()
             gMeter.update(p)?.let { lastG = it }
             val snap = tracker.snapshot
             val fuel = FuelStrategy.compute(snap)
@@ -168,6 +173,7 @@ class PitwallEngine(private val voice: VoiceOutput, voiceInput: VoiceInput? = nu
         _radio.update { (listOf(message) + it).take(MAX_RADIO_LOG) }
         // Les paroles du pilote sont seulement affichées.
         if (voiceEnabled && message.category != MessageCategory.DRIVER) voice.speak(message)
+        if (message.expectsReply) voiceInput?.expectReply()
     }
 
     private companion object {

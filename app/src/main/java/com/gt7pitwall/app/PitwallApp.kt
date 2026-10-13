@@ -30,7 +30,10 @@ class PitwallApp : Application() {
             it.wakeWord = settings.wakeWord
             it.limitedVocabulary = settings.limitedVocabulary
         }
-        engine = PitwallEngine(voice, voiceInput).also { it.voiceEnabled = settings.voiceEnabled }
+        engine = PitwallEngine(voice, voiceInput).also {
+            it.voiceEnabled = settings.voiceEnabled
+            it.askPositionEachLap = { settings.askPositionEachLap && voiceInput.isRunning }
+        }
     }
 
     /** Active ou coupe l'écoute du mot de réveil (le micro doit déjà être autorisé). */

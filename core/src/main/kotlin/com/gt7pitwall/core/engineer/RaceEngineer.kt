@@ -23,6 +23,8 @@ data class EngineerMessage(
     val priority: Priority,
     val category: MessageCategory,
     val timestampMs: Long = System.currentTimeMillis(),
+    /** L'ingénieur pose une question : la radio écoute la réponse sans mot de réveil. */
+    val expectsReply: Boolean = false,
 )
 
 /**
@@ -47,6 +49,9 @@ class RaceEngineer {
         private set
 
     private var lastSpoken: EngineerMessage? = null
+
+    /** Demander la position au pilote à chaque tour (GT7 ne la transmet pas). */
+    var askPositionEachLap: Boolean = false
 
     fun onUpdate(events: List<SessionEvent>, snapshot: SessionSnapshot, fuel: FuelReport?): List<EngineerMessage> {
         val out = mutableListOf<EngineerMessage>()
@@ -231,6 +236,8 @@ class RaceEngineer {
             finalLapNext -> sb.append("Dernier tour, donne tout ! ")
             totalLaps > 0 && totalLaps - lap.lapNumber > 1 -> sb.append("Encore ${totalLaps - lap.lapNumber} tours. ")
         }
+        val box = boxCall(lap.lapNumber + 1, fuel)
+        box?.let { sb.append(it).append(' ') }
 
         // Point rythme tous les 3 tours, à partir des chronos réels.
         val stats = LapAnalyzer.analyze(snapshot.laps)
@@ -246,10 +253,15 @@ class RaceEngineer {
                     sb.append("Le niveau d'essence ne baisse pas : pas de consommation sur cette épreuve.")
                 }
                 FuelAdvice.NotAvailable, FuelAdvice.RaceFinished -> Unit
-                else -> sb.append(fuelSentence(fuel, verbose = false))
+                // L'appel au stand remplace le point carburant détaillé sur ces tours-là.
+                else -> if (box == null) sb.append(fuelSentence(fuel, verbose = false))
             }
         }
         val priority = if (fuel?.advice is FuelAdvice.PitRequired || finalLapNext) Priority.HIGH else Priority.NORMAL
+        if (askPositionEachLap && !quiet) {
+            sb.append(" Ta position ?")
+            return EngineerMessage(sb.toString().trim(), priority, MessageCategory.LAP, expectsReply = true)
+        }
         return msg(sb.toString().trim(), priority, MessageCategory.LAP)
     }
 
@@ -321,7 +333,7 @@ class RaceEngineer {
                 "Ça va être juste : vise ${decimal(a.targetPerLap)} par tour."
             is FuelAdvice.PitRequired -> buildString {
                 append("Il faudra ravitailler : rentre au plus tard à la fin du tour ${a.latestPitLap}, ")
-                append("ajoute environ ${a.fuelToAdd.roundToInt()}.")
+                append("ajoute environ ${a.fuelToAdd.roundToInt()} litres.")
                 if (a.stopsNeeded > 1) append(" Il faudra ${a.stopsNeeded} arrêts.")
                 if (a.savingNeeded in 0f..0.10f) {
                     append(" Sinon, économise ${(a.savingNeeded * 100).roundToInt()} pour cent par tour pour aller au bout.")
@@ -329,6 +341,17 @@ class RaceEngineer {
             }
         }
         return (range + perLap + advice).trim()
+    }
+
+    /** Appel au stand au bon tour : "Box ce tour" sur le dernier tour possible, prévenu un tour avant. */
+    private fun boxCall(currentLap: Int, fuel: FuelReport?): String? {
+        val a = fuel?.advice as? FuelAdvice.PitRequired ?: return null
+        val liters = a.fuelToAdd.roundToInt()
+        return when (currentLap) {
+            a.latestPitLap -> "Box, box ! Rentre au stand à la fin de ce tour, ajoute environ $liters litres."
+            a.latestPitLap - 1 -> "Stand au prochain tour, prépare-toi."
+            else -> null
+        }
     }
 
     /** Alertes de bas niveau, une seule fois par seuil (réarmées après ravitaillement). */

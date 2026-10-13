@@ -30,6 +30,11 @@ sealed interface ConnectionStatus {
         val ps5Address: String,
         val packetsPerSecond: Int,
         val format: PacketFormat = PacketFormat.A,
+        /** Diagnostic : paquets reçus mais indéchiffrables, et taille du dernier. */
+        val invalidPackets: Long = 0,
+        val lastInvalidSize: Int = 0,
+        /** Le format complet (~) a été demandé sans réponse exploitable. */
+        val fullFormatUnanswered: Boolean = false,
     ) : ConnectionStatus
 
     /** Des paquets ont été reçus, puis plus rien depuis [silenceMs]. */
@@ -121,6 +126,8 @@ class TelemetryClient(
             var format = config.preferredFormat
             var formatSince = clock()
             var gotValidPacket = false
+            var lastInvalidSize = 0
+            var fullFormatUnanswered = false
             val buffer = ByteArray(4096)
             var lastHeartbeatAt = Long.MIN_VALUE / 2
             var packetsSinceHeartbeat = 0
@@ -132,6 +139,7 @@ class TelemetryClient(
             while (isActive) {
                 val now = clock()
                 if (!gotValidPacket && now - formatSince >= config.formatFallbackMs) {
+                    if (format == config.preferredFormat) fullFormatUnanswered = true
                     format = if (format == PacketFormat.A) config.preferredFormat else PacketFormat.A
                     formatSince = now
                     lastHeartbeatAt = Long.MIN_VALUE / 2
@@ -160,6 +168,7 @@ class TelemetryClient(
                 val packet = TelemetryParser.parseEncrypted(buffer, datagram.length)
                 if (packet == null) {
                     invalidPackets++
+                    lastInvalidSize = datagram.length
                     continue
                 }
                 gotValidPacket = true
@@ -176,7 +185,14 @@ class TelemetryClient(
                     rateCount = 0
                     rateWindowStart = lastPacketAt
                 }
-                _status.value = ConnectionStatus.Receiving(target.hostAddress ?: "?", currentRate, packet.format)
+                _status.value = ConnectionStatus.Receiving(
+                    target.hostAddress ?: "?",
+                    currentRate,
+                    packet.format,
+                    invalidPackets,
+                    lastInvalidSize,
+                    fullFormatUnanswered && packet.format != config.preferredFormat,
+                )
                 _packets.emit(packet)
             }
         } catch (e: SocketException) {
