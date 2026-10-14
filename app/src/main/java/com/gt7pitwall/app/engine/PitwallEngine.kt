@@ -189,6 +189,13 @@ class PitwallEngine(
         return messages
     }
 
+    /** Réponse du test Gemini : dite à la radio et inscrite au journal, comme une réponse de l'ingénieur. */
+    fun sayAiTest(text: String) {
+        val m = EngineerMessage(text, Priority.HIGH, MessageCategory.ANSWER, fromAi = true)
+        _radio.update { (listOf(m) + it).take(MAX_RADIO_LOG) }
+        voice.speak(m)
+    }
+
     /** Question posée à Gemini depuis l'écran (sans micro). */
     fun askAiFromScreen(question: String) {
         val lm = languageModel
