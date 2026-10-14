@@ -31,6 +31,10 @@ class TyreCoach {
     private var severeActive = false
     private var lastDegradationLap = -NEVER
 
+    /** Tour où une usure des pneus a été constatée (chronos qui se dégradent avec plus de glisse), depuis le dernier arrêt. */
+    var wearSuspectedLap: Int? = null
+        private set
+
     fun reset() {
         window.clear()
         lastSampleId = null
@@ -41,6 +45,7 @@ class TyreCoach {
         gripAlertRef = null
         severeActive = false
         lastDegradationLap = -NEVER
+        wearSuspectedLap = null
     }
 
     /** Arrêt au stand : les pneus repartent pour une nouvelle montée en température. */
@@ -49,6 +54,7 @@ class TyreCoach {
         startTemp = null
         warmAnnounced = false
         overheatWarned = false
+        wearSuspectedLap = null
     }
 
     /** À chaque paquet. Renvoie une phrase quand il y a quelque chose à dire. */
@@ -150,6 +156,7 @@ class TyreCoach {
         val eventsRise = recent.map { events(it) }.average() - best.map { events(it) }.average()
         if (loss < DEGRADATION_LOSS_MS || (tcsRise < DEGRADATION_TCS_RISE && eventsRise < DEGRADATION_EVENTS_RISE)) return null
         lastDegradationLap = cur.lapNumber
+        wearSuspectedLap = cur.lapNumber
         val why = buildList {
             if (tcsRise >= DEGRADATION_TCS_RISE) add("le TCS travaille plus")
             if (eventsRise >= DEGRADATION_EVENTS_RISE) add("ça glisse plus")

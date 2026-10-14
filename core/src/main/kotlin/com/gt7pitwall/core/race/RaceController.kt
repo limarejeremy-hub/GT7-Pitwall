@@ -82,6 +82,7 @@ class RaceController(
      * « box » et annoncerait un nouveau plan en pleine voie des stands.
      */
     private var pitWindowPackets = 0
+    private var tyreLifeAsked = false
 
     /** Derniers échanges vérifiés avec l'IA, pour les relances (« et au freinage ? »). */
     private val aiExchanges = ArrayDeque<RadioAi.Exchange>()
@@ -118,6 +119,7 @@ class RaceController(
                 pitWindowPackets = 0
                 aiExchanges.clear()
                 lastAiAnswerMs = null
+                tyreLifeAsked = false
             }
             out += learn(events)
             for (e in events) {
@@ -133,6 +135,19 @@ class RaceController(
             }
         }
         // Plan gelé pendant un passage aux stands (le niveau monte) et juste après la ligne d'un tour d'arrêt.
+        // Usure des pneus activée sans durée de vie connue : on la demande une fois, au premier tour bouclé.
+        if (!tyreLifeAsked && rules.tyreMultiplier > 1 && rules.tyreStintLaps == null &&
+            events.any { it is SessionEvent.LapCompleted }
+        ) {
+            tyreLifeAsked = true
+            out += EngineerMessage(
+                "Usure des pneus fois ${rules.tyreMultiplier}, mais GT7 ne me donne pas leur usure. Combien de tours tiennent " +
+                    "tes pneus ? Dis par exemple « les pneus tiennent huit tours », et je te dirai quand les changer.",
+                Priority.HIGH,
+                MessageCategory.FUEL,
+                expectsReply = true,
+            )
+        }
         val frozen = tracker.pitVisitOpen || pitWindowPackets > 0
         if (!frozen && (events.isNotEmpty() || windowWasOpen)) out += replan()
         fuel = FuelStrategy.compute(tracker.snapshot, plan?.totalLaps)
@@ -203,6 +218,8 @@ class RaceController(
             }
             is DriverCommand.Ask -> out += if (command.query == DriverQuery.OBLIGATIONS) {
                 answer(listOf(obligationsSentence()))
+            } else if (command.query == DriverQuery.TYRE_CHANGE) {
+                answer(listOf(tyreChangeSentence()))
             } else {
                 listOf(engineer.handle(command, snapshot, fuel))
             }
@@ -273,7 +290,11 @@ class RaceController(
         carName?.let { lines += "Voiture : $it." }
         course?.let { lines += "Circuit : ${it.label}." }
         for (q in DriverQuery.entries) {
-            val text = if (q == DriverQuery.OBLIGATIONS) obligationsSentence() else engineer.answer(q, snap, fuel).text
+            val text = when (q) {
+                DriverQuery.OBLIGATIONS -> obligationsSentence()
+                DriverQuery.TYRE_CHANGE -> tyreChangeSentence()
+                else -> engineer.answer(q, snap, fuel).text
+            }
             lines += "${AI_TOPICS[q]} : $text"
         }
         lines += "Arrêts aux stands enregistrés : ${ledger.stopCount}."
@@ -488,6 +509,7 @@ class RaceController(
             DriverQuery.PLAN to "Stratégie",
             DriverQuery.DETAILS to "Détail du dernier tour",
             DriverQuery.OBLIGATIONS to "Obligations du règlement",
+            DriverQuery.TYRE_CHANGE to "Changement de pneus",
         )
 
         /** 45 s après la ligne d'un tour d'arrêt prévu, le temps d'atteindre son stand. */
@@ -524,6 +546,37 @@ class RaceController(
             }
         }
         return out
+    }
+
+    /**
+     * Quand changer les pneus. GT7 ne transmet pas leur usure : on s'appuie sur la durée de vie donnée par le pilote,
+     * le plan, et les signes d'usure mesurés (chronos qui se dégradent avec plus de glisse).
+     */
+    fun tyreChangeSentence(): String {
+        val lap = (snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)
+        val life = rules.tyreStintLaps
+        val lastChange = ledger.changes.lastOrNull()?.lap
+        val wear = engineer.tyreWearSuspectedLap?.takeIf { w -> lastChange == null || w > lastChange }
+        return buildString {
+            if (life == null) {
+                append("GT7 ne transmet pas l'usure des pneus, je ne peux pas deviner quand les changer.")
+                wear?.let { append(" Mais tes chronos se dégradent depuis le tour $it avec plus de glisse : tes pneus fatiguent, change-les au prochain arrêt.") }
+                append(" Dis-moi combien de tours ils tiennent, par exemple « les pneus tiennent huit tours », et je planifierai les changements comme pour l'essence.")
+                return@buildString
+            }
+            val age = ledger.tyreAge(lap)
+            append("Tes pneus ont $age tour${if (age > 1) "s" else ""} sur $life.")
+            val next = plan?.stops?.firstOrNull { it.changeTyres && it.endOfLap >= lap }
+            when {
+                next != null -> {
+                    append(" Changement prévu à la fin du tour ${next.endOfLap}")
+                    append(if (next.forFuel) ", avec le ravitaillement." else ", sans essence.")
+                }
+                age >= life -> append(" Ils ont dépassé leur durée de vie : change-les au prochain arrêt.")
+                else -> append(" Ils tiennent jusqu'à l'arrivée.")
+            }
+            wear?.let { append(" Attention, tes chronos se dégradent depuis le tour $it : ils s'usent peut-être plus vite que prévu.") }
+        }
     }
 
     /** État des obligations avec leurs preuves. N'affirme jamais « règlement respecté ». */

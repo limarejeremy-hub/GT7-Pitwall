@@ -64,6 +64,9 @@ class RaceEngineer {
     private var lastSpoken: EngineerMessage? = null
     private val tyres = TyreCoach()
 
+    /** Tour où l'usure des pneus a été constatée par la télémétrie (null si rien depuis le dernier arrêt). */
+    val tyreWearSuspectedLap: Int? get() = tyres.wearSuspectedLap
+
     /** Plan de course calculé par le moteur à partir du règlement (null sans règlement exploitable). */
     var plan: RacePlan? = null
 
@@ -296,6 +299,7 @@ class RaceEngineer {
             ).joinToString(" ").ifBlank { "Pas encore de tour bouclé." }
 
             DriverQuery.OBLIGATIONS -> "Je n'ai pas de registre de course."
+            DriverQuery.TYRE_CHANGE -> "Je n'ai pas de registre de course."
 
             DriverQuery.TYRES -> p?.let {
                 val t = it.tyreTemps

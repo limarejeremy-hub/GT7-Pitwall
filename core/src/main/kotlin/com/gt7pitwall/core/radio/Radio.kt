@@ -26,6 +26,9 @@ enum class DriverQuery {
 
     /** État des obligations du règlement (arrêts, gommes), avec leurs preuves. */
     OBLIGATIONS,
+
+    /** « Quand dois-je changer mes pneus ? » : âge des pneus, durée de vie et changement prévu. */
+    TYRE_CHANGE,
 }
 
 /** Événements de l'entrée vocale (mot de réveil puis phrase du pilote). */

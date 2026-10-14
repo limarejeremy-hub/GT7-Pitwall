@@ -136,6 +136,12 @@ object DriverCommandParser {
         if (has(t, "repete", "repeter", "redis")) return DriverCommand.Repeat
         if (t == "oui" || t == "affirmatif" || t == "confirme" || t == "c'est ca" || t == "exact") return DriverCommand.Yes
         if (t == "non" || t == "negatif" || t == "non non") return DriverCommand.No
+        // « Quand est-ce que je dois changer mes pneus ? » : une question, pas une déclaration de changement.
+        val tyreWords = has(t, "pneu", "gomme")
+        val changeWords = has(t, "changer", "change", "changement", "remplacer", "neufs")
+        val asking = has(t, "quand", "dois", "doit", "faut", "est ce", "est-ce", "prochain", "combien", "tiennent encore", "?")
+        val declared = has(t, "j'ai change", "jai change", "ai change", "pneus changes", "j'ai mis", "j'ai monte")
+        if (tyreWords && changeWords && asking && !declared) return DriverCommand.Ask(DriverQuery.TYRE_CHANGE)
         tyresIn(t)?.let { tyres ->
             val stop = if (has(t, "annule", "pas fait", "pas d'arret")) null else stopIn(t)
             return if (stop == DriverCommand.DeclareStop) DriverCommand.StopAndTyres(tyres) else tyres
