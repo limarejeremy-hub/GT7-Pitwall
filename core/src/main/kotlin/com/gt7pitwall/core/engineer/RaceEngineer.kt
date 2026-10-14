@@ -187,6 +187,16 @@ class RaceEngineer {
                 if (pos != null) positionReportedLap = snapshotLap
                 if (pos == null) "Bien joué ! Donne-moi ta position quand tu peux." else "Bien joué ! Tu es P$pos."
             }
+            is DriverCommand.SeveralPlaces -> {
+                // GT7 ne transmet pas la position : on ne la devine pas, on la demande.
+                return EngineerMessage(
+                    (if (command.lost) "Compris, tu as perdu plusieurs places." else "Bien joué, plusieurs places de gagnées !") +
+                        " Donne-moi ta position quand tu peux.",
+                    Priority.HIGH,
+                    MessageCategory.ANSWER,
+                    expectsReply = true,
+                ).also { lastSpoken = it }
+            }
             DriverCommand.Overtaken -> {
                 val pos = driverPosition?.let { p -> (p + 1).let { n -> carsInRace?.let { minOf(n, it) } ?: n } }
                 driverPosition = pos

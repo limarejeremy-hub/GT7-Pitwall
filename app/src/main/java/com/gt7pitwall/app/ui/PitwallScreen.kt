@@ -107,6 +107,7 @@ fun PitwallScreen(
     var wakeWord by rememberSaveable { mutableStateOf(settings.wakeWord) }
     var limitedVocab by rememberSaveable { mutableStateOf(settings.limitedVocabulary) }
     var askPosition by rememberSaveable { mutableStateOf(settings.askPositionEachLap) }
+    var googleSpeech by rememberSaveable { mutableStateOf(settings.googleSpeech) }
     var aiOn by rememberSaveable { mutableStateOf(settings.aiEnabled) }
     val aiState by gemini.state.collectAsStateWithLifecycle()
     val aiDetail by gemini.detail.collectAsStateWithLifecycle()
@@ -137,6 +138,12 @@ fun PitwallScreen(
             onAskPositionChange = {
                 askPosition = it
                 settings.askPositionEachLap = it
+            },
+            googleSpeech = googleSpeech,
+            onGoogleSpeechChange = {
+                googleSpeech = it
+                settings.googleSpeech = it
+                voiceInput.useGoogleSpeech = it
             },
         )
         AiCard(
@@ -813,6 +820,8 @@ private fun VoiceRadioCard(
     onLimitedVocabularyChange: (Boolean) -> Unit,
     askPosition: Boolean,
     onAskPositionChange: (Boolean) -> Unit,
+    googleSpeech: Boolean,
+    onGoogleSpeechChange: (Boolean) -> Unit,
 ) {
     PitCard("Radio vocale") {
         when (modelState) {
@@ -876,6 +885,18 @@ private fun VoiceRadioCard(
                 )
             }
             Switch(checked = askPosition, onCheckedChange = onAskPositionChange)
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Reconnaissance Google pour les phrases")
+                Text(
+                    "Après « $wakeWord » seul, et pour répondre à une question de l'ingénieur : reconnaissance d'Android, " +
+                        "bien plus précise en français. Dis « $wakeWord », attends « Je t'écoute », puis parle.",
+                    color = PitColors.Muted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Switch(checked = googleSpeech, onCheckedChange = onGoogleSpeechChange)
         }
         val (label, color) = when (listenState) {
             ListenState.OFF -> "Micro coupé." to PitColors.Muted

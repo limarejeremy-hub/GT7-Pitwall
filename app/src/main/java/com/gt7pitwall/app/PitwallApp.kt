@@ -8,6 +8,7 @@ import com.gt7pitwall.app.settings.RaceStore
 import com.gt7pitwall.app.settings.SettingsStore
 import com.gt7pitwall.core.knowledge.Gt7Database
 import com.gt7pitwall.app.voice.TtsVoiceOutput
+import com.gt7pitwall.app.voice.GoogleSpeech
 import com.gt7pitwall.app.voice.VoiceModelManager
 import com.gt7pitwall.app.voice.VoskVoiceInput
 
@@ -34,6 +35,8 @@ class PitwallApp : Application() {
             it.wakeWord = settings.wakeWord
             it.limitedVocabulary = settings.limitedVocabulary
             it.freeTranscription = settings.aiEnabled
+            it.googleSpeech = GoogleSpeech(this)
+            it.useGoogleSpeech = settings.googleSpeech
         }
         engine = PitwallEngine(voice, voiceInput, loadDatabase(), RaceStore(this)).also {
             it.voiceEnabled = settings.voiceEnabled

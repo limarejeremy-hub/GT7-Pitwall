@@ -80,6 +80,20 @@ class VoskVoiceInput(
     @Volatile
     private var paused = false
 
+    /**
+     * Reconnaissance d'Android (Google) pour la phrase qui suit « radio » seul et pour les réponses attendues :
+     * bien meilleure en français que le petit modèle hors ligne. Vosk garde la détection du mot de réveil.
+     */
+    var googleSpeech: GoogleSpeech? = null
+
+    @Volatile
+    var useGoogleSpeech: Boolean = true
+
+    /** Le micro est rendu à la reconnaissance Google le temps d'une phrase. */
+    @Volatile
+    private var micReleased = false
+    private var googleSession = 0
+
     /** Dernière phrase de la reconnaissance libre, et quand elle a été reçue. */
     private var lastFree: Pair<String, Long>? = null
     private var pendingCommand: Pair<String, Long>? = null
@@ -127,6 +141,9 @@ class VoskVoiceInput(
     }
 
     fun stop() {
+        googleSession++
+        googleSpeech?.cancel()
+        micReleased = false
         ttsJob?.cancel()
         expiryJob?.cancel()
         pendingJob?.cancel()
@@ -166,7 +183,21 @@ class VoskVoiceInput(
         val buffer = ShortArray(BUFFER_SAMPLES)
         try {
             record.startRecording()
+            var recording = true
             while (scope.isActive && kotlinx.coroutines.currentCoroutineContext().isActive) {
+                // Micro prêté à la reconnaissance Google : on arrête d'enregistrer, puis on reprend.
+                if (micReleased) {
+                    if (recording) {
+                        record.stop()
+                        recording = false
+                    }
+                    delay(MIC_POLL_MS)
+                    continue
+                }
+                if (!recording) {
+                    record.startRecording()
+                    recording = true
+                }
                 val n = record.read(buffer, 0, buffer.size)
                 if (n < 0) error("Erreur micro ($n)")
                 if (n == 0 || paused) continue
@@ -241,6 +272,13 @@ class VoskVoiceInput(
     private suspend fun onEngineerSpeaking(speaking: Boolean) {
         if (audioJob == null) return
         if (speaking) {
+            // L'ingénieur reprend la parole pendant une écoute Google : on la relancera après lui.
+            if (googleSpeech?.listening == true) {
+                googleSession++
+                googleSpeech?.cancel()
+                micReleased = false
+                awakeUntil = 1
+            }
             paused = true
             _state.value = ListenState.PAUSED
         } else {
@@ -255,6 +293,11 @@ class VoskVoiceInput(
     }
 
     private fun awake() {
+        val google = googleSpeech?.takeIf { useGoogleSpeech && it.available }
+        if (google != null) {
+            listenWithGoogle(google)
+            return
+        }
         awakeUntil = SystemClock.elapsedRealtime() + AWAKE_MS
         _state.value = ListenState.AWAKE
         expiryJob?.cancel()
@@ -263,6 +306,32 @@ class VoskVoiceInput(
             if (SystemClock.elapsedRealtime() >= awakeUntil && _state.value == ListenState.AWAKE) {
                 awakeUntil = 0
                 _state.value = ListenState.WAITING_WAKE_WORD
+            }
+        }
+    }
+
+    /** Une phrase écoutée par Google, puis le micro revient au mot de réveil. */
+    private fun listenWithGoogle(google: GoogleSpeech) {
+        val session = ++googleSession
+        awakeUntil = 1
+        _state.value = ListenState.AWAKE
+        expiryJob?.cancel()
+        scope.launch {
+            // Laisse démarrer une éventuelle phrase de l'ingénieur (« Je t'écoute ») : l'écoute suivra sa fin.
+            delay(GOOGLE_START_DELAY_MS)
+            if (session != googleSession || tts.speaking.value || audioJob == null) return@launch
+            micReleased = true
+            delay(MIC_POLL_MS * 2)
+            google.listenOnce { text ->
+                if (session != googleSession) return@listenOnce
+                micReleased = false
+                awakeUntil = 0
+                if (_state.value == ListenState.AWAKE) _state.value = ListenState.WAITING_WAKE_WORD
+                if (text.isNullOrBlank()) return@listenOnce
+                _heard.value = text
+                val wakeRegex = Regex("^\\s*${Regex.escape(DriverCommandParser.normalize(wakeWord))}\\s*,?\\s*")
+                val norm = DriverCommandParser.normalize(text).replace(wakeRegex, "").trim()
+                if (norm.isNotEmpty()) _events.tryEmit(VoiceInputEvent.Utterance(norm, norm))
             }
         }
     }
@@ -284,6 +353,7 @@ class VoskVoiceInput(
                 awakeUntil = 0
                 _events.tryEmit(VoiceInputEvent.Utterance(rest, free))
             } else {
+                // Avec Google, l'écoute démarre après « Je t'écoute » (fin de la phrase de l'ingénieur).
                 awake()
                 _events.tryEmit(VoiceInputEvent.Wake)
             }
@@ -310,5 +380,7 @@ class VoskVoiceInput(
         const val RESUME_DELAY_MS = 400L
         const val BUFFER_SAMPLES = 4_000 // 0,25 s
         const val PAIR_WINDOW_MS = 1_200L
+        const val MIC_POLL_MS = 50L
+        const val GOOGLE_START_DELAY_MS = 500L
     }
 }

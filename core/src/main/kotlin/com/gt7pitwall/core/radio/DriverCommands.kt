@@ -18,6 +18,9 @@ sealed interface DriverCommand {
     /** "Je me suis fait doubler". */
     data object Overtaken : DriverCommand
 
+    /** « Je me fais doubler par tout le monde » / « j'ai doublé plusieurs voitures » : nombre de places inconnu. */
+    data class SeveralPlaces(val lost: Boolean) : DriverCommand
+
     /** "Silence" : seulement les messages critiques et les réponses. */
     data object Quiet : DriverCommand
 
@@ -143,7 +146,9 @@ object DriverCommandParser {
             return DriverCommand.Dry
         }
         if (has(t, "pleut", "pluie", "mouille", "humide", "averse")) return DriverCommand.Rain
-        if (has(t, "silence", "tais-toi", "tais toi", "chut")) return DriverCommand.Quiet
+        // « J'ai pas dit silence » (essai réel, entendu « j'ai pas dix silence ») : surtout ne pas couper la radio.
+        val negated = has(t, "pas dit", "pas dix", "pas demande", "jamais dit")
+        if (has(t, "silence", "tais-toi", "tais toi", "chut")) return if (negated) DriverCommand.Talk else DriverCommand.Quiet
         if (has(t, "essentiel", "moins de messages", "moins de radio")) return DriverCommand.Essential
         if (has(t, "tu peux parler", "reparle", "parle-moi", "parle moi", "radio complete", "plus de messages")) return DriverCommand.Talk
 
@@ -155,6 +160,14 @@ object DriverCommandParser {
 
         // « gagner / perdre du temps » parle de chrono, pas de place.
         val aboutTime = has(t, "temps", "seconde", "centieme", "dixieme", "chrono", "secteur")
+        // Plusieurs places perdues d'un coup : on ne devine pas la position, on la demande.
+        if (!aboutTime && has(t, "doubl", "depass", "passe", "perdu", "perds", "gagne", "pris") &&
+            has(t, "tout le monde", "plusieurs", "beaucoup", "des places", "toutes les", "tous les")
+        ) {
+            val lost = has(t, "fait doubler", "fait depasser", "fait passer", "me double", "me depasse", "m'ont", "ma double",
+                "m'a double", "perdu", "perds", "par tout le monde")
+            return DriverCommand.SeveralPlaces(lost)
+        }
         // "Il m'a doublé" avant "j'ai doublé". "adieu une place" : erreur réelle de reconnaissance de "perdu une place".
         if (!aboutTime && has(
                 t, "fait doubler", "fait passer", "fait depasser", "m'a double", "m'a passe", "m'a depasse",
@@ -315,7 +328,7 @@ object DriverCommandParser {
             "pars", "durs", "dures", "mediums", "medium", "moyens", "tendres", "softs", "intermédiaires", "obligations",
             "règlement", "détails", "essentielle", "stand", "stands", "aux", "au", "box", "passé", "sorti", "sors",
             "ravitaillé", "ravitaillement", "plein", "terminé", "fini", "arrêté", "changé", "changer", "change", "nouveaux",
-            "neufs", "question", "comment", "pourquoi", "conseil", "analyse", "les", "des", "l'arrêt", "dois", "faire", "mêmes", "tiennent", "tient", "durent", "relais", "quand", "est-ce", "que", "rentre", "prochain", "pleut", "pluie", "mouillé", "mouillée", "piste", "sèche", "sec", "plus", "arrête", "pneus", "pneu", "gommes", "température", "températures", "silence", "chut", "tu", "peux", "parler", "répète", "répéter",
+            "neufs", "plusieurs", "par", "tout", "monde", "voitures", "dit", "fais", "question", "comment", "pourquoi", "conseil", "analyse", "les", "des", "l'arrêt", "dois", "faire", "mêmes", "tiennent", "tient", "durent", "relais", "quand", "est-ce", "que", "rentre", "prochain", "pleut", "pluie", "mouillé", "mouillée", "piste", "sèche", "sec", "plus", "arrête", "pneus", "pneu", "gommes", "température", "températures", "silence", "chut", "tu", "peux", "parler", "répète", "répéter",
             "premier", "première", "deuxième", "second", "troisième", "quatrième", "cinquième", "sixième", "septième",
             "huitième", "neuvième", "dixième", "onzième", "douzième", "treizième", "quatorzième", "quinzième",
             "seizième", "dix-septième", "dix-huitième", "dix-neuvième", "vingtième", "vingt", "et", "unième",

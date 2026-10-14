@@ -41,7 +41,13 @@ class SettingsStore(context: Context) {
         get() = prefs.getBoolean(KEY_AI, false)
         set(value) = prefs.edit().putBoolean(KEY_AI, value).apply()
 
+    /** Reconnaissance d'Android (Google) pour les questions et les réponses, après « radio ». */
+    var googleSpeech: Boolean
+        get() = prefs.getBoolean(KEY_GOOGLE_SPEECH, true)
+        set(value) = prefs.edit().putBoolean(KEY_GOOGLE_SPEECH, value).apply()
+
     companion object {
+        private const val KEY_GOOGLE_SPEECH = "google_speech"
         private const val KEY_AI = "ai_enabled"
         const val DEFAULT_WAKE_WORD = "radio"
         private const val KEY_ASK_POSITION = "ask_position_each_lap"
