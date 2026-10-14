@@ -220,9 +220,22 @@ class PitwallEngine(
 
     /** Réponse du test Gemini : dite à la radio et inscrite au journal, comme une réponse de l'ingénieur. */
     fun sayAiTest(text: String) {
-        val m = EngineerMessage(text, Priority.HIGH, MessageCategory.ANSWER)
+        val m = EngineerMessage(text, Priority.HIGH, MessageCategory.ANSWER, fromAi = true)
         _radio.update { (listOf(m) + it).take(MAX_RADIO_LOG) }
         voice.speak(m)
+    }
+
+    /** Question posée à Gemini depuis l'écran (sans micro). */
+    fun askAiFromScreen(question: String) {
+        val lm = languageModel
+        scope.launch {
+            val messages = if (lm != null && lm.ready) {
+                askAi(lm, question)
+            } else {
+                listOf(EngineerMessage("Gemini n'est pas prêt : ${lm?.status ?: "désactivé"}", Priority.HIGH, MessageCategory.ANSWER))
+            }
+            messages.forEach(::deliver)
+        }
     }
 
     fun testVoice() {

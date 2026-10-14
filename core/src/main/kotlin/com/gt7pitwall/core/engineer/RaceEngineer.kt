@@ -31,6 +31,8 @@ data class EngineerMessage(
     val expectsReply: Boolean = false,
     /** Clé anti-répétition (sinon le texte). */
     val dedupKey: String? = null,
+    /** Réponse rédigée par l'IA (Gemini), signalée comme telle à l'écran. */
+    val fromAi: Boolean = false,
 )
 
 /**

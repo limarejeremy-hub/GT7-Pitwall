@@ -150,6 +150,7 @@ fun PitwallScreen(
             },
             testResult = aiTest,
             onTest = { gemini.selfTest(engine::sayAiTest) },
+            onAsk = engine::askAiFromScreen,
             trace = aiTrace,
         )
     }
@@ -643,9 +644,19 @@ private fun RadioCard(messages: List<EngineerMessage>, onCommand: (DriverCommand
                     style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.padding(end = 8.dp, top = 2.dp),
                 )
+                if (m.fromAi) {
+                    Text(
+                        "✦ Gemini",
+                        color = PitColors.Purple,
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(end = 6.dp, top = 2.dp),
+                    )
+                }
                 Text(
                     m.text,
                     color = when {
+                        m.fromAi -> PitColors.Purple
                         m.category == MessageCategory.DRIVER -> PitColors.Cyan
                         m.priority == Priority.CRITICAL -> PitColors.Red
                         m.priority == Priority.HIGH -> PitColors.Orange
@@ -725,7 +736,9 @@ private fun AiCard(
     testResult: String?,
     onTest: () -> Unit,
     trace: AiTrace?,
+    onAsk: (String) -> Unit,
 ) {
+    var question by rememberSaveable { mutableStateOf("") }
     PitCard("Ingénieur IA (Gemini Nano)") {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
@@ -751,6 +764,21 @@ private fun AiCard(
             Text(label, color = color, fontWeight = FontWeight.Bold)
             detail?.let { Text(it, color = PitColors.Muted, style = MaterialTheme.typography.bodySmall) }
             OutlinedButton(onClick = onTest, modifier = Modifier.fillMaxWidth()) { Text("Tester Gemini") }
+            Text("Demander à Gemini (sans micro) :", style = MaterialTheme.typography.bodySmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { onAsk("résume ma course") }, modifier = Modifier.weight(1f)) { Text("Résumé") }
+                OutlinedButton(onClick = { onAsk("comment je peux être plus rapide") }, modifier = Modifier.weight(1f)) { Text("Conseils") }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = question,
+                    onValueChange = { question = it },
+                    singleLine = true,
+                    label = { Text("Ta question") },
+                    modifier = Modifier.weight(1f),
+                )
+                Button(onClick = { if (question.isNotBlank()) onAsk(question.trim()) }) { Text("Envoyer") }
+            }
             testResult?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             trace?.let { t ->
                 Text("Dernière question : « ${t.question} »", style = MaterialTheme.typography.bodySmall)

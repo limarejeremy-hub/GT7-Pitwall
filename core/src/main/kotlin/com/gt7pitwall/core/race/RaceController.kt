@@ -212,7 +212,7 @@ class RaceController(
         val echo = EngineerMessage("Toi : $question", Priority.INFO, MessageCategory.DRIVER)
         val out = when (reply) {
             is AiReply.Command -> command(reply.command)
-            is AiReply.Answer -> deliver(listOf(EngineerMessage(reply.text, Priority.HIGH, MessageCategory.ANSWER)))
+            is AiReply.Answer -> deliver(listOf(EngineerMessage(reply.text, Priority.HIGH, MessageCategory.ANSWER, fromAi = true)))
             is AiReply.Rejected -> deliver(
                 listOf(
                     when (reply.reason) {
