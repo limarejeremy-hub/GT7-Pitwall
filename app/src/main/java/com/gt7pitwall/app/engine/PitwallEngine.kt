@@ -218,6 +218,13 @@ class PitwallEngine(
         return mutex.withLock { race.aiReply(question, reply).also { publish(force = true) } }
     }
 
+    /** Réponse du test Gemini : dite à la radio et inscrite au journal, comme une réponse de l'ingénieur. */
+    fun sayAiTest(text: String) {
+        val m = EngineerMessage(text, Priority.HIGH, MessageCategory.ANSWER)
+        _radio.update { (listOf(m) + it).take(MAX_RADIO_LOG) }
+        voice.speak(m)
+    }
+
     fun testVoice() {
         voice.speak(EngineerMessage("Radio check. Ici ton ingénieur, je te reçois cinq sur cinq.", Priority.HIGH, MessageCategory.RADIO))
     }

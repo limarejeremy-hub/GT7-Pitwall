@@ -56,7 +56,8 @@ class GeminiNano : LanguageModel {
     val testResult: StateFlow<String?> = _testResult.asStateFlow()
 
     /** Question de test, sans télémétrie : prouve que le modèle tourne et mesure son temps de réponse. */
-    fun selfTest() {
+    /** [onAnswer] reçoit la réponse de Gemini, pour la faire dire par la radio. */
+    fun selfTest(onAnswer: (String) -> Unit = {}) {
         scope.launch {
             if (!ready) {
                 _testResult.value = "Pas prêt : $status. Réactive l'interrupteur pour revérifier."
@@ -74,6 +75,7 @@ class GeminiNano : LanguageModel {
             } else {
                 "Réponse en $ms ms : « ${text.trim()} »"
             }
+            text?.trim()?.takeIf { it.isNotEmpty() }?.let(onAnswer)
         }
     }
 

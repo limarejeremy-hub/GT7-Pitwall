@@ -149,7 +149,7 @@ fun PitwallScreen(
                 onAiToggle(it)
             },
             testResult = aiTest,
-            onTest = gemini::selfTest,
+            onTest = { gemini.selfTest(engine::sayAiTest) },
             trace = aiTrace,
         )
     }
