@@ -166,7 +166,7 @@ class PitDetectionTest {
         val s = sim()
         s.pitStop(liters = 0f, stopSeconds = 8f)
         s.say("oui")
-        assertEquals(MessageCategory.ANSWER, s.said.last().category)
+        assertEquals(MessageCategory.ANSWER, s.said.last { "Arrêt 1 enregistré" in it.text }.category)
         assertNotNull(s.controller.ledger.stopList.singleOrNull())
     }
 }

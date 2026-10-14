@@ -30,14 +30,24 @@ class RaceControllerTest {
         assertTrue(s.texts.any { it.startsWith("Noté : course de 30 minutes") })
         val plan1 = assertNotNull(s.controller.plan)
         assertEquals(DataSource.ESTIMATED, plan1.lapsSource)
-        val planAnnouncements = { s.texts.count { it.contains("Stratégie :") && !it.startsWith("Noté") } }
+        val planAnnouncements = { s.texts.count { (it.contains("Stratégie :") || it.startsWith("Nouveau plan")) && !it.startsWith("Noté") } }
         assertEquals(1, planAnnouncements())
 
         s.say("deux arrêts obligatoires")
         assertEquals(2, store.rules.mandatoryStops)
         assertEquals(2, s.controller.plan!!.stops.size)
-        assertTrue(s.texts.any { it.startsWith("Nouveau plan.") })
+        // Les deux arrêts carburant comptent déjà pour l'obligation : mêmes tours d'arrêt, pas de nouvelle annonce.
+        assertEquals(1, planAnnouncements())
+
+        s.say("trois arrêts obligatoires")
+        assertEquals(3, s.controller.plan!!.stops.size)
+        // En course, le changement de plan tient en une phrase : prochain arrêt, sans réciter toute la course.
+        val update = s.texts.lastOrNull { it.startsWith("Nouveau plan") } ?: error(s.texts.takeLast(6).toString())
+        assertTrue(update.startsWith("Nouveau plan : prochain arrêt fin du tour") && "Puis encore 2 arrêts." in update, update)
+        assertTrue("Course" !in update, update)
         assertEquals(2, planAnnouncements())
+        s.say("deux arrêts obligatoires")
+        assertEquals(3, planAnnouncements())
 
         // La consommation mesurée en course vient de GT7 : le multiplicateur ne doit pas la multiplier.
         val perLapBefore = s.controller.plan!!.perLap!!
@@ -45,11 +55,11 @@ class RaceControllerTest {
         assertEquals(3, store.rules.fuelMultiplier)
         assertEquals(perLapBefore, s.controller.plan!!.perLap!!, 0.001f)
         assertEquals(DataSource.MEASURED, s.controller.plan!!.fuelSource)
-        assertEquals(2, planAnnouncements(), "le plan n'a pas changé : pas de nouvelle annonce")
+        assertEquals(3, planAnnouncements(), "le plan n'a pas changé : pas de nouvelle annonce")
 
         // Même règle répétée : confirmée, mais pas de plan réannoncé.
         s.say("deux arrêts obligatoires")
-        assertEquals(2, planAnnouncements())
+        assertEquals(3, planAnnouncements())
 
         s.say("quelle stratégie")
         assertTrue(s.lastAnswer.contains("2 arrêts"), s.lastAnswer)

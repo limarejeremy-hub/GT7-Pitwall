@@ -17,7 +17,8 @@ data class PitStopRecord(val number: Int, val lap: Int, val evidence: StopEviden
 /** Arrêt possible (sans ravitaillement) en attente de confirmation du pilote. */
 data class StopCandidate(val lap: Int, val locationKnown: Boolean)
 
-data class TyreChange(val lap: Int, val compound: TyreCompound)
+/** Changement de pneus déclaré au tour [lap] (gomme inconnue si le pilote ne l'a pas précisée). */
+data class TyreChange(val lap: Int, val compound: TyreCompound?)
 
 /**
  * Registre de course : arrêts aux stands avec leur preuve, et gommes déclarées.
@@ -34,6 +35,9 @@ class PitLedger {
     /** Après un arrêt, on attend la déclaration des gommes montées (si le règlement en impose). */
     var awaitingTyreDeclaration: Boolean = false
 
+    /** Après un arrêt, on attend un oui / non : « As-tu changé les pneus ? ». */
+    var awaitingTyreChangeAnswer: Boolean = false
+
     val stopList: List<PitStopRecord> get() = stops.toList()
     val stopCount: Int get() = stops.size
     val changes: List<TyreChange> get() = tyreChanges.toList()
@@ -43,6 +47,7 @@ class PitLedger {
         tyreChanges.clear()
         pending = null
         awaitingTyreDeclaration = false
+        awaitingTyreChangeAnswer = false
     }
 
     fun recordRefuel(lap: Int, liters: Float): PitStopRecord {
@@ -75,16 +80,26 @@ class PitLedger {
         return stops.removeLastOrNull()
     }
 
-    fun fitTyres(lap: Int, compound: TyreCompound) {
+    fun fitTyres(lap: Int, compound: TyreCompound?) {
         tyreChanges += TyreChange(lap, compound)
         awaitingTyreDeclaration = false
+        awaitingTyreChangeAnswer = false
     }
 
     /** Gommes utilisées d'après les déclarations du pilote (départ + changements). */
     fun tyresUsed(start: TyreCompound?): Set<TyreCompound> =
-        (listOfNotNull(start) + tyreChanges.map { it.compound }).toCollection(linkedSetOf())
+        (listOfNotNull(start) + tyreChanges.mapNotNull { it.compound }).toCollection(linkedSetOf())
 
-    fun currentTyre(start: TyreCompound?): TyreCompound? = tyreChanges.lastOrNull()?.compound ?: start
+    fun currentTyre(start: TyreCompound?): TyreCompound? = if (tyreChanges.isEmpty()) start else tyreChanges.last().compound
+
+    /**
+     * Tours bouclés avec le train de pneus actuel avant le tour [currentLap].
+     * Un changement déclaré pendant le tour L (arrêt à la fin du tour L-1, ou dans la voie des stands) remet le compteur à zéro à partir de ce tour.
+     */
+    fun tyreAge(currentLap: Int): Int {
+        val since = tyreChanges.lastOrNull()?.lap ?: 1
+        return (currentLap - since).coerceAtLeast(0)
+    }
 
     fun missingRequired(rules: RaceRules): Set<TyreCompound> = rules.requiredTyres - tyresUsed(rules.startTyre)
 

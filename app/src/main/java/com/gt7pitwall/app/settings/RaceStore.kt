@@ -25,6 +25,7 @@ class RaceStore(context: Context) : RaceStorage {
                 // Ancien format : texte libre ; seuls les codes reconnus (RH, RM…) sont repris.
                 requiredTyres = TyreCompound.parseCodes(o.optString("requiredTyres", "")),
                 startTyre = TyreCompound.parseCodes(o.optString("startTyre", "")).firstOrNull(),
+                tyreStintLaps = o.optInt("tyreStintLaps", 0).takeIf { it > 0 },
                 trackId = o.optInt("trackId", 0).takeIf { it > 0 },
             )
         } ?: RaceRules()
@@ -42,6 +43,7 @@ class RaceStore(context: Context) : RaceStorage {
             .put("allowedTyres", TyreCompound.codes(r.allowedTyres))
             .put("requiredTyres", TyreCompound.codes(r.requiredTyres))
             .put("startTyre", r.startTyre?.name ?: "")
+            .put("tyreStintLaps", r.tyreStintLaps ?: 0)
             .put("trackId", r.trackId ?: 0)
         prefs.edit().putString(KEY_RULES, o.toString()).apply()
     }

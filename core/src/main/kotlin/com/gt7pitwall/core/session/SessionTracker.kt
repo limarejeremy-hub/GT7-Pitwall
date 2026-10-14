@@ -106,6 +106,10 @@ class SessionTracker(
     private var outlineLapMs: Int? = null
     private var raceTicks: Long? = null
     private val pitDetector = PitDetector(refuelThreshold)
+    private val fuelRise = FuelRise()
+
+    /** Un passage aux stands (ravitaillement ou immobilisation) est en cours. */
+    val pitVisitOpen: Boolean get() = pitDetector.inVisit
 
     private data class PendingLap(
         val lapNumber: Int,
@@ -137,7 +141,8 @@ class SessionTracker(
         // Après une remise à zéro, le paquet précédent appartient à l'ancienne session : on ne compare pas.
         val before = if (resetNow) null else prev
         if (before != null) {
-            if (p.fuelLevel - before.fuelLevel > refuelThreshold) {
+            // Hausse cumulée : un ravitaillement lent peut monter de moins de [refuelThreshold] par paquet.
+            if (fuelRise.update(p.fuelLevel - before.fuelLevel) > refuelThreshold) {
                 if (!refuelledThisLap) events += SessionEvent.RefuelDetected
                 refuelledThisLap = true
             }
@@ -245,6 +250,7 @@ class SessionTracker(
         outlineLapMs = null
         raceTicks = null
         pitDetector.reset()
+        fuelRise.reset()
     }
 
     private companion object {

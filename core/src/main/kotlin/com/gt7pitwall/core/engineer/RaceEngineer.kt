@@ -65,8 +65,19 @@ class RaceEngineer {
     /** Plan de course calculé par le moteur à partir du règlement (null sans règlement exploitable). */
     var plan: RacePlan? = null
 
-    private var announcedPlanKey: String? = null
-    private var announcedWarnings: Set<PlanWarning> = emptySet()
+    /** Arrêts restants du dernier plan annoncé (tour, pneus) : on ne réannonce que si le prochain arrêt ou leur nombre change. */
+    private var announcedStops: List<Pair<Int, Boolean>>? = null
+
+    /** Tour où chaque avertissement a été annoncé (pas de répétition à chaque recalcul). */
+    private val announcedWarnings = mutableMapOf<PlanWarning, Int>()
+
+    /** Course terminée : plus d'annonce automatique jusqu'à la prochaine session (les réponses restent possibles). */
+    var raceOver: Boolean = false
+        private set
+
+    /** Tour où le pilote a donné sa position pour la dernière fois. */
+    private var positionReportedLap: Int? = null
+    private var finishTotalLaps = 0
 
     /** Gommes imposées encore à monter (déclarations du pilote), pour l'avertissement avant le dernier arrêt. */
     var missingTyres: Set<com.gt7pitwall.core.strategy.TyreCompound> = emptySet()
@@ -97,16 +108,18 @@ class RaceEngineer {
                     carsInRace = null
                     tyres.reset()
                     raining = false
-                    announcedPlanKey = null
-                    announcedWarnings = emptySet()
+                    announcedStops = null
+                    announcedWarnings.clear()
+                    raceOver = false
+                    positionReportedLap = null
                     lastLapDetails = null
                     out += msg("Nouvelle session détectée, je repars de zéro.", Priority.NORMAL, MessageCategory.RADIO)
                 }
 
+                // Le contrôleur annonce l'arrêt enregistré (« Arrêt 1 enregistré : ravitaillement de… »).
                 SessionEvent.RefuelDetected -> {
                     resetAlerts()
                     tyres.pitStop()
-                    out += msg("Ravitaillement détecté, je recalcule la stratégie au prochain tour.", Priority.NORMAL, MessageCategory.FUEL)
                 }
 
                 // Annoncé dans le message du tour qui vient de se terminer, sinon seul.
@@ -114,7 +127,11 @@ class RaceEngineer {
                     out += msg("Dernier tour ! Donne tout.", Priority.HIGH, MessageCategory.LAP)
                 }
 
-                is SessionEvent.RaceFinished -> out += finishMessage(snapshot)
+                is SessionEvent.RaceFinished -> {
+                    raceOver = true
+                    finishTotalLaps = event.totalLaps
+                    out += finishMessage(snapshot)
+                }
 
                 // Les passages aux stands sont traités par le contrôleur de course (preuves, confirmations).
                 is SessionEvent.PitVisitEnded -> Unit
@@ -129,15 +146,19 @@ class RaceEngineer {
                     )
                 }
 
-                is SessionEvent.LapCompleted -> {
+                is SessionEvent.LapCompleted -> if (!raceOver) {
                     // L'appel au stand est un message critique à part : il passe avant tout et même en mode silence.
                     if (!finishedNow) boxMessage(event.lap.lapNumber + 1, fuel)?.let { out += it }
-                    out += lapMessage(event, snapshot, fuel, finalLapNext, finishedNow)
+                    // À l'arrivée, seul « course terminée » est annoncé ; le détail du dernier tour reste sur « détails ».
+                    val lapMsg = lapMessage(event, snapshot, fuel, finalLapNext, finishedNow)
+                    if (!finishedNow) out += lapMsg
                 }
             }
         }
-        fuelAlert(fuel)?.let { out += it }
-        snapshot.packet?.let { p -> tyres.onPacket(p)?.let { out += msg(it, Priority.HIGH, MessageCategory.LAP) } }
+        if (!raceOver) {
+            fuelAlert(fuel)?.let { out += it }
+            snapshot.packet?.let { p -> tyres.onPacket(p)?.let { out += msg(it, Priority.HIGH, MessageCategory.LAP) } }
+        }
         val result = RadioFilter.criticalFirst(out.filter { RadioFilter.allowed(radioLevel, it) })
         result.lastOrNull()?.let { lastSpoken = it }
         return result
@@ -149,21 +170,25 @@ class RaceEngineer {
             is DriverCommand.Ask -> return answer(command.query, snapshot, fuel).also { lastSpoken = it }
             is DriverCommand.ReportPosition -> {
                 driverPosition = command.position
-                "Bien reçu, P${command.position}."
+                positionReportedLap = snapshotLap
+                if (raceOver) "Bien reçu, tu termines P${command.position}." else "Bien reçu, P${command.position}."
             }
             DriverCommand.ReportLast -> carsInRace?.let {
                 driverPosition = it
+                positionReportedLap = snapshotLap
                 "Compris, dernier, P$it. On remonte."
             } ?: "Compris, tu es dernier. Dis-moi ta place en chiffre, par exemple « je suis vingtième »."
 
             DriverCommand.Overtook -> {
                 val pos = driverPosition?.let { (it - 1).coerceAtLeast(1) }
                 driverPosition = pos
+                if (pos != null) positionReportedLap = snapshotLap
                 if (pos == null) "Bien joué ! Donne-moi ta position quand tu peux." else "Bien joué ! Tu es P$pos."
             }
             DriverCommand.Overtaken -> {
                 val pos = driverPosition?.let { p -> (p + 1).let { n -> carsInRace?.let { minOf(n, it) } ?: n } }
                 driverPosition = pos
+                if (pos != null) positionReportedLap = snapshotLap
                 if (pos == null) "Compris. Donne-moi ta position quand tu peux." else "Compris, tu es P$pos. On reste concentré."
             }
             is DriverCommand.SetLaps -> "Noté : course de ${command.laps} tours."
@@ -175,6 +200,7 @@ class RaceEngineer {
             }
             is DriverCommand.SetFuelMultiplier -> "Noté : consommation fois ${command.factor}."
             is DriverCommand.SetTyreMultiplier -> "Noté : usure des pneus fois ${command.factor}."
+            is DriverCommand.SetTyreStint -> "Noté : les pneus tiennent ${command.laps} tours."
             DriverCommand.Rain -> {
                 raining = true
                 rainSinceLap = snapshot.packet?.currentLap ?: 0
@@ -197,7 +223,8 @@ class RaceEngineer {
                 "Je reprends toutes les annonces."
             }
             // Confirmations, arrêts et gommes sont traités par le contrôleur de course, qui connaît le registre.
-            DriverCommand.Yes, DriverCommand.No, DriverCommand.DeclareStop, DriverCommand.CancelStop, is DriverCommand.Tyres ->
+            DriverCommand.Yes, DriverCommand.No, DriverCommand.DeclareStop, DriverCommand.CancelStop, is DriverCommand.Tyres, DriverCommand.TyresChanged,
+            is DriverCommand.StopAndTyres ->
                 "Je n'ai pas de registre de course pour enregistrer ça."
             DriverCommand.Repeat -> return lastSpoken?.copy(timestampMs = System.currentTimeMillis())
                 ?: msg("Je n'ai encore rien dit.", Priority.HIGH, MessageCategory.ANSWER)
@@ -333,7 +360,9 @@ class RaceEngineer {
             sb.append("Rythme moyen ${lapTimeSpeech(stats.recentAverageMs)}, $spread. ")
         }
 
-        if (fuel != null) {
+        // Tour d'arrêt prévu : on est peut-être déjà dans la voie des stands, pas de conseil carburant.
+        val pitLap = plan?.stops?.any { it.endOfLap == lap.lapNumber } == true
+        if (fuel != null && !pitLap) {
             when (fuel.advice) {
                 FuelAdvice.Measuring -> if (lap.fuelUsed == null) sb.append("Je mesure la consommation sur le prochain tour complet.")
                 FuelAdvice.NoConsumption -> if (!announcedNoConsumption) {
@@ -389,25 +418,65 @@ class RaceEngineer {
     }
 
     /**
-     * Annonce le plan quand il change réellement (nombre de tours ou tours d'arrêt), pas à chaque recalcul de
-     * litres ; les avertissements graves (carburant, obligations impossibles) sont des messages critiques.
+     * Annonce le plan complet une fois, puis seulement quand le prochain arrêt ou le nombre d'arrêts change,
+     * en une phrase courte (le plan complet reste disponible sur demande). Rien après l'arrivée.
+     * Les avertissements graves sont critiques, au plus une fois tous les [WARNING_REPEAT_LAPS] tours.
      */
-    fun onPlan(newPlan: RacePlan?): List<EngineerMessage> {
+    fun onPlan(newPlan: RacePlan?, currentLap: Int = snapshotLap): List<EngineerMessage> {
         plan = newPlan
+        if (raceOver || newPlan == null) return emptyList()
         val out = mutableListOf<EngineerMessage>()
-        val warnings = newPlan?.warnings ?: emptySet()
-        for (w in warnings - announcedWarnings) {
-            out += msg(warningSentence(w), Priority.CRITICAL, MessageCategory.ALERT).copy(dedupKey = "warn:$w")
+        for (w in newPlan.warnings) {
+            val last = announcedWarnings[w]
+            if (last == null || currentLap - last >= WARNING_REPEAT_LAPS) {
+                announcedWarnings[w] = currentLap
+                out += msg(warningSentence(w), Priority.CRITICAL, MessageCategory.ALERT).copy(dedupKey = "warn:$w")
+            }
         }
-        announcedWarnings = warnings
-        val key = newPlan?.let { p -> "${p.totalLaps}:" + p.stops.joinToString(",") { "${it.endOfLap}/${it.forFuel}/${it.mandatory}" } }
-        if (key != null && key != announcedPlanKey) {
-            val first = announcedPlanKey == null
-            announcedPlanKey = key
-            out += msg((if (first) "" else "Nouveau plan. ") + planSentence(newPlan), Priority.HIGH, MessageCategory.FUEL)
-                .copy(dedupKey = "plan:$key")
+        val stops = newPlan.stops.map { it.endOfLap to it.changeTyres }
+        val previous = announcedStops
+        // Les arrêts déjà passés sortent du plan : ce n'est pas un changement de stratégie.
+        val stillAhead = previous?.filter { it.first >= currentLap }
+        if (previous == null) {
+            announcedStops = stops
+            out += msg(planSentence(newPlan), Priority.HIGH, MessageCategory.FUEL).copy(dedupKey = "plan-full")
+        } else if (stops != stillAhead) {
+            announcedStops = stops
+            val changed = stops.size != stillAhead?.size || stops.firstOrNull() != stillAhead.firstOrNull()
+            if (changed) {
+                out += msg(planUpdateSentence(newPlan), Priority.HIGH, MessageCategory.FUEL)
+                    .copy(dedupKey = "plan:" + stops.joinToString(",") { "${it.first}/${it.second}" })
+            }
+        } else {
+            announcedStops = stops
         }
         return out
+    }
+
+    /** Changement de plan en course : une phrase, le prochain arrêt seulement. */
+    private fun planUpdateSentence(p: RacePlan): String = buildString {
+        val next = p.stops.firstOrNull()
+        if (next == null) {
+            append("Nouveau plan : plus d'arrêt jusqu'à l'arrivée.")
+            return@buildString
+        }
+        append("Nouveau plan : prochain arrêt fin du tour ${next.endOfLap}")
+        when {
+            next.mandatoryOnly -> append(", obligatoire sans essence")
+            next.forFuel -> append(", ${next.liters} litres")
+            next.noFuelNeeded -> append(", sans essence")
+        }
+        stopTyres(next)?.let { append(", ").append(it) }
+        append(".")
+        val others = p.stops.size - 1
+        if (others > 0) append(" Puis encore $others arrêt${if (others > 1) "s" else ""}.")
+    }
+
+    /** Ce qu'il faut faire des pneus à cet arrêt, ou null. */
+    private fun stopTyres(s: com.gt7pitwall.core.strategy.PlannedStop): String? = when {
+        s.tyreToFit != null -> "monter les ${s.tyreToFit.spoken}"
+        s.changeTyres -> "pneus neufs"
+        else -> null
     }
 
     private fun warningSentence(w: PlanWarning): String = when (w) {
@@ -415,6 +484,7 @@ class RaceEngineer {
         PlanWarning.MANDATORY_STOPS_IMPOSSIBLE -> "Attention : il ne reste plus assez de tours pour faire tous les arrêts obligatoires."
         PlanWarning.TYRES_IMPOSSIBLE -> "Attention : il ne reste plus assez d'arrêts possibles pour monter toutes les gommes imposées."
         PlanWarning.FUEL_IMPOSSIBLE -> "Attention : avec les arrêts restants, un relais dépasse un plein. Il faudra économiser."
+        PlanWarning.TYRES_OVERDUE -> "Attention : tes pneus ont dépassé leur durée de vie. Change-les au prochain arrêt."
     }
 
     private fun sourceSentence(p: RacePlan): String {
@@ -443,10 +513,11 @@ class RaceEngineer {
                         append("fin du tour ${s.endOfLap}")
                         when {
                             s.mandatoryOnly -> append(", obligatoire sans essence")
-                            s.liters != null -> append(", ${s.liters} litres")
+                            s.forFuel -> append(", ${s.liters} litres")
+                            s.noFuelNeeded -> append(", sans essence")
                         }
                         if (s.mandatory && s.forFuel) append(", compte pour l'arrêt obligatoire")
-                        s.tyreToFit?.let { append(", monter les ${it.spoken}") }
+                        stopTyres(s)?.let { append(", ").append(it) }
                     }
                 },
             )
@@ -458,20 +529,19 @@ class RaceEngineer {
         if (p.startTyreUnknown) append(" Je ne connais pas tes pneus de départ : dis-moi par exemple « je pars en mediums ».")
     }
 
+    /** Arrivée : course terminée, meilleur tour et position. Rien d'autre. */
     private fun finishMessage(snapshot: SessionSnapshot): EngineerMessage {
         val p = snapshot.packet
-        val best = p?.bestLapMs?.takeIf { it > 0 } ?: snapshot.bestRecordedLapMs
-        val bestLap = snapshot.laps.firstOrNull { it.timeMs != null && it.timeMs == best }?.lapNumber
+        // Meilleur tour de cette course d'abord (tours observés), sinon celui transmis par GT7.
+        val best = snapshot.bestRecordedLapMs ?: p?.bestLapMs?.takeIf { it > 0 }
+        // GT7 ne transmet pas la position en course : seule une position donnée par le pilote dans le dernier tour compte.
+        val recent = positionReportedLap?.let { it >= finishTotalLaps - 1 } == true
         val text = buildString {
-            append("Drapeau à damier, course terminée ! ")
-            if (best != null) {
-                append("Meilleur tour : ${lapTimeSpeech(best)}")
-                if (bestLap != null) append(", au tour $bestLap")
-                append(". ")
-            }
-            append("Beau boulot.")
+            append("Course terminée ! ")
+            if (best != null) append("Meilleur tour : ${lapTimeSpeech(best)}. ")
+            if (recent) driverPosition?.let { append("Tu termines P$it.") } else append("Ta position à l'arrivée ?")
         }
-        return msg(text.trim(), Priority.HIGH, MessageCategory.RADIO)
+        return EngineerMessage(text.trim(), Priority.HIGH, MessageCategory.RADIO, expectsReply = !recent)
     }
 
     /** Tour en cours, pour choisir le prochain arrêt du plan dans les phrases carburant. */
@@ -525,16 +595,21 @@ class RaceEngineer {
                     append("Box, box ! Rentre au stand à la fin de ce tour")
                     when {
                         next.mandatoryOnly -> append(", arrêt obligatoire, pas besoin d'essence.")
-                        next.liters != null -> append(", ajoute environ ${next.liters} litres.")
+                        next.forFuel -> append(", ajoute environ ${next.liters} litres.")
+                        next.noFuelNeeded -> append(", pas besoin d'essence.")
                         else -> append(".")
                     }
-                    next.tyreToFit?.let { append(" Monte les ${it.spoken}.") }
+                    when {
+                        next.tyreToFit != null -> append(" Monte les ${next.tyreToFit.spoken}.")
+                        next.changeTyres -> append(" Change les pneus.")
+                    }
                     if (isLastStop && missingTyres.size > 1) {
                         append(" Attention, il te manque encore ${missingTyres.joinToString(" et ") { it.spoken }}.")
                     }
                 }
                 currentLap + 1 -> buildString {
                     append("Stand au prochain tour, prépare-toi.")
+                    if (next.changeTyres && next.tyreToFit == null) append(" On changera les pneus.")
                     if (isLastStop && missingTyres.isNotEmpty()) {
                         append(" C'est ton dernier arrêt prévu et il te manque les ${missingTyres.joinToString(" et ") { it.spoken }}.")
                     }
@@ -581,5 +656,6 @@ class RaceEngineer {
     companion object {
         const val NO_DATA = "Je n'ai pas encore de télémétrie."
         const val SECTOR_THRESHOLD_MS = 100
+        const val WARNING_REPEAT_LAPS = 5
     }
 }

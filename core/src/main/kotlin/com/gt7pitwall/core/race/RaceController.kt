@@ -71,6 +71,13 @@ class RaceController(
         private set
     private var candidatesAnnounced = false
 
+    /**
+     * Paquets restants pendant lesquels le plan est gelé après la ligne d'un tour d'arrêt prévu : selon le circuit,
+     * on franchit la ligne dans la voie des stands avant d'avoir ravitaillé. Sans ce gel, l'ingénieur relancerait
+     * « box » et annoncerait un nouveau plan en pleine voie des stands.
+     */
+    private var pitWindowPackets = 0
+
     val snapshot: SessionSnapshot get() = tracker.snapshot
     val course: Course? get() = rules.trackId?.let(database::course)
     val carName: String? get() = snapshot.packet?.let { database.car(it.carCode)?.fullName }
@@ -85,17 +92,32 @@ class RaceController(
         val events = tracker.update(p)
         gMeter.update(p)?.let { gForce = it }
         val out = mutableListOf<EngineerMessage>()
+        val windowWasOpen = pitWindowPackets > 0
+        if (pitWindowPackets > 0) pitWindowPackets--
         if (events.isNotEmpty()) {
             if (events.any { it is SessionEvent.SessionReset }) {
                 ledger.reset()
                 radio.reset()
                 trackCandidates = emptyList()
                 candidatesAnnounced = false
+                pitWindowPackets = 0
             }
             out += learn(events)
-            for (e in events) if (e is SessionEvent.PitVisitEnded) out += onPitVisit(e)
-            out += replan()
+            for (e in events) {
+                if (e is SessionEvent.LapCompleted && plan?.stops?.any { it.endOfLap == e.lap.lapNumber } == true) {
+                    pitWindowPackets = PIT_WINDOW_PACKETS
+                }
+                if (e is SessionEvent.PitVisitEnded) {
+                    pitWindowPackets = 0
+                    out += onPitVisit(e)
+                    // Une question est posée (arrêt, pneus) : le plan attend la réponse, au plus 30 s.
+                    if (awaitingAnswer) pitWindowPackets = QUESTION_WINDOW_PACKETS
+                }
+            }
         }
+        // Plan gelé pendant un passage aux stands (le niveau monte) et juste après la ligne d'un tour d'arrêt.
+        val frozen = tracker.pitVisitOpen || pitWindowPackets > 0
+        if (!frozen && (events.isNotEmpty() || windowWasOpen)) out += replan()
         fuel = FuelStrategy.compute(tracker.snapshot, plan?.totalLaps)
         out.addAll(0, engineer.onUpdate(events, tracker.snapshot, fuel))
         return deliver(out)
@@ -111,24 +133,47 @@ class RaceController(
                 out += engineer.handle(command, snapshot, fuel)
                 out += replan()
             }
-            DriverCommand.Yes -> out += answer(
-                ledger.confirmPending()?.let { stopRecorded(it) + afterStopQuestions() }
-                    ?: listOf("Je n'attendais pas de confirmation."),
-            )
-            DriverCommand.No -> out += answer(
-                when {
-                    ledger.rejectPending() -> listOf("D'accord, je ne compte pas cet arrêt.")
-                    ledger.awaitingTyreDeclaration -> {
-                        ledger.awaitingTyreDeclaration = false
-                        listOf("D'accord, pas de changement de pneus noté.")
-                    }
-                    else -> listOf("Je n'attendais pas de réponse.")
-                },
-            )
+            DriverCommand.Yes -> {
+                val confirmed = ledger.confirmPending()
+                out += answer(
+                    when {
+                        confirmed != null -> stopRecorded(confirmed) + afterStopQuestions()
+                        ledger.awaitingTyreChangeAnswer -> tyresChanged(lap)
+                        else -> listOf("Je n'attendais pas de confirmation.")
+                    },
+                )
+                out += replanOrWait()
+            }
+            DriverCommand.No -> {
+                out += answer(
+                    when {
+                        ledger.rejectPending() -> listOf("D'accord, je ne compte pas cet arrêt.")
+                        ledger.awaitingTyreDeclaration || ledger.awaitingTyreChangeAnswer -> {
+                            ledger.awaitingTyreDeclaration = false
+                            ledger.awaitingTyreChangeAnswer = false
+                            listOf("D'accord, mêmes pneus.")
+                        }
+                        else -> listOf("Je n'attendais pas de réponse.")
+                    },
+                )
+                out += replanOrWait()
+            }
+            DriverCommand.TyresChanged -> {
+                out += answer(tyresChanged(lap))
+                out += replanOrWait()
+            }
             DriverCommand.DeclareStop -> {
-                val rec = ledger.declare(lap)
-                out += answer(stopRecorded(rec) + afterStopQuestions())
-                out += replan()
+                val (lines, recorded) = declareStop(lap)
+                out += answer(lines + if (recorded) afterStopQuestions() else emptyList())
+                out += replanOrWait()
+            }
+            is DriverCommand.StopAndTyres -> {
+                val tyreLines = when (val t = command.tyres) {
+                    is DriverCommand.Tyres -> tyres(t, lap)
+                    else -> tyresChanged(lap)
+                }
+                out += answer(declareStop(lap).first + tyreLines)
+                out += replanOrWait()
             }
             DriverCommand.CancelStop -> {
                 val removed = ledger.cancelLast()
@@ -137,7 +182,7 @@ class RaceController(
             }
             is DriverCommand.Tyres -> {
                 out += answer(tyres(command, lap))
-                out += replan()
+                out += replanOrWait()
             }
             is DriverCommand.Ask -> out += if (command.query == DriverQuery.OBLIGATIONS) {
                 answer(listOf(obligationsSentence()))
@@ -170,6 +215,7 @@ class RaceController(
         is DriverCommand.SetMandatoryStops -> rules.copy(mandatoryStops = c.stops.coerceAtLeast(0))
         is DriverCommand.SetFuelMultiplier -> rules.copy(fuelMultiplier = c.factor.coerceAtLeast(1))
         is DriverCommand.SetTyreMultiplier -> rules.copy(tyreMultiplier = c.factor.coerceAtLeast(1))
+        is DriverCommand.SetTyreStint -> rules.copy(tyreStintLaps = c.laps.takeIf { it > 0 })
     }
 
     private fun applyRules(newRules: RaceRules) {
@@ -182,6 +228,16 @@ class RaceController(
      * Recalcule le plan. Consommation : mesurée en direct (jamais multipliée), sinon historique voiture × circuit
      * ramené au multiplicateur du règlement. Rythme : mesuré, sinon historique.
      */
+    /** Recalcule le plan, sauf si une question sur l'arrêt ou les pneus attend sa réponse (le plan en dépend). */
+    private fun replanOrWait(): List<EngineerMessage> {
+        if (awaitingAnswer) {
+            pitWindowPackets = maxOf(pitWindowPackets, QUESTION_WINDOW_PACKETS)
+            return emptyList()
+        }
+        pitWindowPackets = 0
+        return replan()
+    }
+
     private fun replan(): List<EngineerMessage> {
         val snap = tracker.snapshot
         val p = snap.packet ?: return emptyList()
@@ -203,7 +259,7 @@ class RaceController(
         }
         val missing = missingTyres
         engineer.missingTyres = missing
-        plan = if (p.fuelCapacity > 0f || rules.mandatoryStops > 0 || missing.isNotEmpty()) {
+        plan = if (p.fuelCapacity > 0f || rules.mandatoryStops > 0 || missing.isNotEmpty() || rules.tyreStintLaps != null) {
             RacePlanner.plan(
                 RacePlanner.Input(
                     rules = rules,
@@ -218,6 +274,7 @@ class RaceController(
                     raceElapsedMs = snap.raceElapsedMs,
                     stopsDone = ledger.stopCount,
                     tyresMissing = missing.toList(),
+                    tyreAgeLaps = ledger.tyreAge(p.currentLap.coerceAtLeast(1)),
                     pitLaneDeltaS = course?.pitLaneDeltaS,
                     previousStops = plan?.stops?.map { it.endOfLap } ?: emptyList(),
                 ),
@@ -225,18 +282,19 @@ class RaceController(
         } else {
             null
         }
-        return engineer.onPlan(plan)
+        return engineer.onPlan(plan, p.currentLap)
     }
 
     // ------------------------------------------------------------------ Arrêts et gommes
 
     private fun onPitVisit(e: SessionEvent.PitVisitEnded): List<EngineerMessage> {
         val v = e.visit
-        val hasObligations = rules.mandatoryStops > 0 || rules.requiredTyres.isNotEmpty()
+        // Avec une durée de vie des pneus, un arrêt sans essence compte aussi : il peut s'agir d'un changement de pneus.
+        val hasObligations = rules.mandatoryStops > 0 || rules.requiredTyres.isNotEmpty() || rules.tyreStintLaps != null
         return when (v.assessment) {
             PitAssessment.REFUEL -> {
                 val rec = ledger.recordRefuel(v.lap, v.refuelLiters)
-                info(stopRecorded(rec) + afterStopQuestions(), Priority.HIGH, expectsReply = ledger.awaitingTyreDeclaration)
+                info(stopRecorded(rec) + afterStopQuestions(), Priority.HIGH, expectsReply = awaitingAnswer)
             }
             PitAssessment.PIT_LIKE_STOP -> if (hasObligations) {
                 ledger.propose(v.lap, v.locationKnown)
@@ -274,12 +332,57 @@ class RaceController(
         return listOf(sb.toString())
     }
 
-    /** Après un arrêt, si des gommes sont encore imposées, on demande lesquelles ont été montées. */
-    private fun afterStopQuestions(): List<String> {
-        if (rules.requiredTyres.isEmpty()) return emptyList()
-        ledger.awaitingTyreDeclaration = true
-        return listOf("Quels pneus as-tu montés ?")
+    /**
+     * « J'ai fait mon arrêt » : confirme l'arrêt en attente, sinon l'enregistre comme déclaré — sauf si un arrêt
+     * vient déjà d'être enregistré (ravitaillement détecté) : on ne compte jamais deux fois le même passage.
+     * Renvoie les phrases à dire et si un arrêt a été enregistré.
+     */
+    private fun declareStop(lap: Int): Pair<List<String>, Boolean> {
+        if (ledger.pending == null) {
+            ledger.stopList.lastOrNull()?.takeIf { lap - it.lap in 0..1 }?.let {
+                return listOf("Arrêt ${it.number} déjà enregistré au tour ${it.lap}, je ne le compte pas deux fois.") to false
+            }
+        }
+        return stopRecorded(ledger.declare(lap)) to true
     }
+
+    /**
+     * Après un arrêt : si des gommes sont imposées, on demande lesquelles ont été montées ; si le pilote a donné
+     * une durée de vie des pneus, on demande s'il les a changés. GT7 ne transmet pas les pneus montés.
+     */
+    private fun afterStopQuestions(): List<String> {
+        if (rules.requiredTyres.isNotEmpty()) {
+            ledger.awaitingTyreDeclaration = true
+            return listOf("Quels pneus as-tu montés ?")
+        }
+        if (rules.tyreStintLaps != null) {
+            ledger.awaitingTyreChangeAnswer = true
+            return listOf("As-tu changé les pneus ?")
+        }
+        return emptyList()
+    }
+
+    /** Pneus neufs sans gomme précisée : l'âge des pneus repart de zéro. */
+    private fun tyresChanged(lap: Int): List<String> {
+        ledger.fitTyres(lap.coerceAtLeast(1), null)
+        val out = mutableListOf("Noté : pneus neufs au tour ${lap.coerceAtLeast(1)}.")
+        if (rules.requiredTyres.isNotEmpty()) {
+            ledger.awaitingTyreDeclaration = true
+            out += "Quelle gomme as-tu montée ?"
+        }
+        return out
+    }
+
+    private companion object {
+        /** 45 s après la ligne d'un tour d'arrêt prévu, le temps d'atteindre son stand. */
+        const val PIT_WINDOW_PACKETS = 45 * 60
+
+        /** Délai laissé au pilote pour répondre à une question sur l'arrêt ou les pneus avant de recalculer. */
+        const val QUESTION_WINDOW_PACKETS = 30 * 60
+    }
+
+    private val awaitingAnswer: Boolean
+        get() = ledger.awaitingTyreDeclaration || ledger.awaitingTyreChangeAnswer || ledger.pending != null
 
     private fun tyres(c: DriverCommand.Tyres, lap: Int): List<String> {
         val compound = TyreCompound.fromSpeech(c.text, rules.allowedTyres, rules.requiredTyres)
@@ -381,7 +484,7 @@ class RaceController(
                 lines.joinToString(" "),
                 Priority.HIGH,
                 MessageCategory.ANSWER,
-                expectsReply = ledger.awaitingTyreDeclaration || ledger.pending != null,
+                expectsReply = awaitingAnswer,
             ),
         )
 

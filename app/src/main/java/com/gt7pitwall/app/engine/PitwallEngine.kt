@@ -65,6 +65,10 @@ data class PitwallUiState(
     val pendingStop: StopCandidate? = null,
     val tyresUsed: Set<TyreCompound> = emptySet(),
     val missingTyres: Set<TyreCompound> = emptySet(),
+    /** Tours bouclés avec les pneus actuels (d'après les changements déclarés par le pilote). */
+    val tyreAgeLaps: Int = 0,
+    /** L'ingénieur attend « oui / non » à « As-tu changé les pneus ? ». */
+    val askTyreChange: Boolean = false,
 )
 
 /**
@@ -200,6 +204,8 @@ class PitwallEngine(
             pendingStop = race.ledger.pending,
             tyresUsed = race.tyresUsed,
             missingTyres = race.missingTyres,
+            tyreAgeLaps = race.ledger.tyreAge((race.snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)),
+            askTyreChange = race.ledger.awaitingTyreChangeAnswer,
         )
     }
 

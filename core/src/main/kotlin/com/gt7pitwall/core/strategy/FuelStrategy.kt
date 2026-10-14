@@ -53,7 +53,7 @@ data class FuelReport(
 
 object FuelStrategy {
     const val SAMPLE_WINDOW = 3
-    const val TIGHT_MARGIN_LAPS = 0.5f
+    const val TIGHT_MARGIN_LAPS = 0.2f
     const val SAFETY_LAPS = 0.5f
 
     /** [totalLapsOverride] : nombre de tours du règlement ou estimé (course au temps) quand GT7 n'en envoie pas. */

@@ -36,11 +36,17 @@ sealed interface DriverCommand {
     /** "J'ai fait mon arrêt". */
     data object DeclareStop : DriverCommand
 
+    /** « J'ai fait mon arrêt et changé les pneus » : arrêt déclaré et pneus dans la même phrase. */
+    data class StopAndTyres(val tyres: DriverCommand) : DriverCommand
+
     /** "Annule l'arrêt". */
     data object CancelStop : DriverCommand
 
     /** "J'ai mis les durs" / "je pars en mediums" : gommes déclarées (le texte est interprété avec le règlement). */
     data class Tyres(val text: String, val atStart: Boolean) : DriverCommand
+
+    /** "J'ai changé les pneus" (gomme non précisée). */
+    data object TyresChanged : DriverCommand
 
     /** "Il pleut" : le pilote signale la pluie (GT7 ne transmet pas la météo). */
     data object Rain : DriverCommand
@@ -65,6 +71,9 @@ sealed interface DriverCommand {
 
     /** "Usure fois trois". */
     data class SetTyreMultiplier(val factor: Int) : Rule
+
+    /** "Les pneus tiennent huit tours" : relais maximal d'un train de pneus (donné par le pilote). */
+    data class SetTyreStint(val laps: Int) : Rule
 
     /** "Répète". */
     data object Repeat : DriverCommand
@@ -124,7 +133,10 @@ object DriverCommandParser {
         if (has(t, "repete", "repeter", "redis")) return DriverCommand.Repeat
         if (t == "oui" || t == "affirmatif" || t == "confirme" || t == "c'est ca" || t == "exact") return DriverCommand.Yes
         if (t == "non" || t == "negatif" || t == "non non") return DriverCommand.No
-        tyresIn(t)?.let { return it }
+        tyresIn(t)?.let { tyres ->
+            val stop = if (has(t, "annule", "pas fait", "pas d'arret")) null else stopIn(t)
+            return if (stop == DriverCommand.DeclareStop) DriverCommand.StopAndTyres(tyres) else tyres
+        }
         if (has(t, "plus de pluie", "pluie s'arrete", "pluie arrete", "ca seche", "piste seche", "seche") ||
             Regex("(^|\\s)sec($|\\s)").containsMatchIn(t)
         ) {
@@ -139,9 +151,7 @@ object DriverCommandParser {
         if (has(t, "annule l'arret", "annule arret", "annuler l'arret", "pas fait d'arret", "pas d'arret fait", "pas arrete")) {
             return DriverCommand.CancelStop
         }
-        if (has(t, "arret fait", "arret effectue", "fait mon arret", "fait l'arret", "je me suis arrete", "j'ai fait l'arret", "stand fait")) {
-            return DriverCommand.DeclareStop
-        }
+        stopIn(t)?.let { return it }
 
         // "Il m'a doublé" avant "j'ai doublé". "adieu une place" : erreur réelle de reconnaissance de "perdu une place".
         if (has(
@@ -185,11 +195,32 @@ object DriverCommandParser {
         return query?.let { DriverCommand.Ask(it) }
     }
 
+    /**
+     * Arrêt aux stands déclaré, sous toutes ses formes courantes : « j'ai fait un arrêt aux stands »,
+     * « je suis passé aux stands », « arrêt fait », « j'ai fait le plein », « je sors des stands ».
+     * Une question (« quand est-ce que je rentre aux stands ? ») est renvoyée vers le plan.
+     */
+    private fun stopIn(t: String): DriverCommand? {
+        if (has(t, "je me suis arrete")) return DriverCommand.DeclareStop
+        val aboutPit = Regex("(^|\\s)(arret|arrets|stand|stands|box|ravitaille|ravitaillement|plein)($|\\s)").containsMatchIn(t)
+        if (!aboutPit) return null
+        if (has(t, "quand", "combien", "dois", "faut", "est-ce", "prochain", "prevu")) return DriverCommand.Ask(DriverQuery.PLAN)
+        val done = Regex("(^|\\s)(fait|faite|effectue|passe|sorti|sors|sortie|termine|fini|ravitaille|arrete|fais)($|\\s)").containsMatchIn(t) ||
+            has(t, "plein fait", "fait le plein", "j'ai ravitaille")
+        return if (done) DriverCommand.DeclareStop else null
+    }
+
     /** Gommes déclarées : il faut un mot de dureté / type de gomme ET un verbe ou le mot pneus. */
-    private fun tyresIn(t: String): DriverCommand.Tyres? {
+    private fun tyresIn(t: String): DriverCommand? {
         val compound = Regex("(^|\\s)(durs?|dures?|hard|mediums?|moyens?|moyennes?|tendres?|softs?|intermediaires?|ch|cm|cs|sh|sm|ss|rh|rm|rs|im)($|\\s)")
             .containsMatchIn(t) || Regex("(pneus?|gommes?) (pluie|wet)").containsMatchIn(t)
-        if (!compound) return null
+        if (!compound) {
+            return if (has(t, "change les pneus", "change de pneus", "changer les pneus", "pneus changes", "nouveaux pneus", "pneus neufs", "change les gommes")) {
+                DriverCommand.TyresChanged
+            } else {
+                null
+            }
+        }
         val context = has(t, "mis ", "monte", "chausse", "pneus", "pneu ", "gomme", "depart", "je pars", "change")
         if (!context) return null
         return DriverCommand.Tyres(t, atStart = has(t, "depart", "je pars", "on part"))
@@ -211,6 +242,15 @@ object DriverCommandParser {
 
     /** Règlement : "course de 30 minutes", "une heure", "arrêt obligatoire", "consommation fois deux"… */
     private fun ruleIn(t: String): DriverCommand.Rule? {
+        // « les pneus tiennent huit tours », « relais pneus de huit tours », « pneus huit tours ».
+        Regex("(pneus?|gommes?).*?(tiennent|tient|durent|dure|relais|de|font)? ?(.+?) tours?($|\\s)").find(t)?.let { m ->
+            if (has(t, "pneus", "pneu", "gomme")) {
+                val words = m.groupValues[3].split(' ')
+                for (n in minOf(3, words.size) downTo 1) {
+                    numberAt(words.takeLast(n).joinToString(" "))?.let { if (it in 1..99) return DriverCommand.SetTyreStint(it) }
+                }
+            }
+        }
         Regex("(consommation|essence|carburant|fuel) (fois|x) ?(.+)$").find(t)?.let { m ->
             numberAt(m.groupValues[3])?.let { return DriverCommand.SetFuelMultiplier(it) }
         }
@@ -271,7 +311,9 @@ object DriverCommandParser {
             "arrêts", "d'arrêt", "pas", "aucun", "fois", "consommation", "usure", "stratégie", "plan", "quarante",
             "cinquante", "soixante", "oui", "non", "fait", "effectué", "annule", "mis", "monté", "montés", "départ",
             "pars", "durs", "dures", "mediums", "medium", "moyens", "tendres", "softs", "intermédiaires", "obligations",
-            "règlement", "détails", "essentielle", "pleut", "pluie", "mouillé", "mouillée", "piste", "sèche", "sec", "plus", "arrête", "pneus", "pneu", "gommes", "température", "températures", "silence", "chut", "tu", "peux", "parler", "répète", "répéter",
+            "règlement", "détails", "essentielle", "stand", "stands", "aux", "au", "box", "passé", "sorti", "sors",
+            "ravitaillé", "ravitaillement", "plein", "terminé", "fini", "arrêté", "changé", "changer", "change", "nouveaux",
+            "neufs", "les", "des", "l'arrêt", "dois", "faire", "mêmes", "tiennent", "tient", "durent", "relais", "quand", "est-ce", "que", "rentre", "prochain", "pleut", "pluie", "mouillé", "mouillée", "piste", "sèche", "sec", "plus", "arrête", "pneus", "pneu", "gommes", "température", "températures", "silence", "chut", "tu", "peux", "parler", "répète", "répéter",
             "premier", "première", "deuxième", "second", "troisième", "quatrième", "cinquième", "sixième", "septième",
             "huitième", "neuvième", "dixième", "onzième", "douzième", "treizième", "quatorzième", "quinzième",
             "seizième", "dix-septième", "dix-huitième", "dix-neuvième", "vingtième", "vingt", "et", "unième",

@@ -35,6 +35,10 @@ class PitDetector(private val refuelThreshold: Float = 0.05f) {
     private var head = 0
 
     private var open = false
+    private val rise = FuelRise()
+
+    /** Un passage est en cours (ravitaillement ou immobilisation), jusqu'à la sortie des stands. */
+    val inVisit: Boolean get() = open
     private var visitLap = 0
     private var liters = 0f
     private var stoppedPackets = 0
@@ -47,6 +51,7 @@ class PitDetector(private val refuelThreshold: Float = 0.05f) {
         count = 0
         head = 0
         open = false
+        rise.reset()
         liters = 0f
         stoppedPackets = 0
         stillPackets = 0
@@ -62,27 +67,32 @@ class PitDetector(private val refuelThreshold: Float = 0.05f) {
         if (!raceStarted || p.currentLap < 1 || p.isPaused || p.isLoading) return null
 
         val fuelUp = p.fuelLevel - prev.fuelLevel
+        // Un ravitaillement lent monte de moins de [refuelThreshold] par paquet : on cumule la hausse.
+        val risen = rise.update(fuelUp)
         val stationary = p.speedKmh < STATIONARY_KMH
         stillPackets = if (stationary) stillPackets + 1 else 0
 
+        val opened = !open
         if (!open) {
             when {
-                fuelUp > refuelThreshold -> {
+                risen > refuelThreshold -> {
                     openVisit(p, outline, assess = false)
                     pitLike = true
+                    liters = risen
                 }
                 stillPackets >= OPEN_STOPPED_PACKETS -> openVisit(p, outline, assess = true)
                 else -> return null
             }
         }
 
-        if (fuelUp > refuelThreshold) liters += fuelUp
+        if (!opened && fuelUp > FuelRise.NOISE) liters += fuelUp
         if (stationary) stoppedPackets++
         fastPackets = if (p.speedKmh >= CLOSE_KMH) fastPackets + 1 else 0
         if (fastPackets < CLOSE_FAST_PACKETS) return null
 
         // La voiture est repartie franchement : on clôt le passage.
         open = false
+        rise.reset()
         val assessment = when {
             liters >= MIN_REFUEL_LITERS -> PitAssessment.REFUEL
             pitLike -> PitAssessment.PIT_LIKE_STOP
@@ -160,5 +170,29 @@ class PitDetector(private val refuelThreshold: Float = 0.05f) {
         const val LIMITER_PACKETS = 180 // 3 s à vitesse limitée
         const val MAX_DISTANCE_TO_START_M = 800f
         const val MIN_OFF_LINE_M = 4f
+    }
+}
+
+/**
+ * Hausse cumulée du niveau d'essence sur des paquets consécutifs : GT7 ravitaille progressivement, parfois de
+ * moins de 0,05 L par paquet. Toute baisse (consommation) remet le cumul à zéro.
+ */
+class FuelRise {
+    private var total = 0f
+
+    fun update(delta: Float): Float {
+        when {
+            delta > NOISE -> total += delta
+            delta < -NOISE -> total = 0f
+        }
+        return total
+    }
+
+    fun reset() {
+        total = 0f
+    }
+
+    companion object {
+        const val NOISE = 0.0005f
     }
 }

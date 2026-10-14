@@ -131,11 +131,10 @@ class EngineerTest {
         assertTrue("Meilleur tour, 2 centièmes de mieux" in lap4, lap4)
         assertTrue("Dernier tour, donne tout" in lap4, lap4)
         assertTrue(texts.none { it == "Dernier tour ! Donne tout." })
-        // Chrono du tour 5 annoncé avant l'arrivée.
-        val i5 = texts.indexOfFirst { it.startsWith("Tour 5 :") }
-        val iFinish = texts.indexOfFirst { it.startsWith("Drapeau à damier") }
-        assertTrue(i5 in 0 until iFinish, texts.toString())
-        assertTrue("au tour 5" in texts[iFinish], texts[iFinish])
+        // À l'arrivée : seulement « course terminée », le meilleur tour et la position (demandée si inconnue).
+        assertTrue(texts.none { it.startsWith("Tour 5 :") }, texts.toString())
+        val finish = texts.last()
+        assertEquals("Course terminée ! Meilleur tour : 1 minute 27 secondes 0. Ta position à l'arrivée ?", finish)
         assertEquals(
             com.gt7pitwall.core.strategy.FuelAdvice.RaceFinished,
             FuelStrategy.compute(t.snapshot)!!.advice,

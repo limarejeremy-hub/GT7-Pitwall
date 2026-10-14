@@ -60,6 +60,28 @@ Quand une information manque, l'application le dit au lieu de l'estimer :
 - **Position** : GT7 ne transmet **ni la position en course ni les adversaires**. L'ingénieur part
   de la place sur la grille (transmise par GT7 avant le départ) puis suit ce que tu lui annonces.
 
+## Retours d'essai : arrêts, plan, arrivée, pneus (0.6)
+
+- **Arrêt dit à la voix** : « j'ai fait un arrêt aux stands », « je suis passé aux stands », « j'ai fait le plein »,
+  « je suis sorti des stands », « j'ai fait mon arrêt et changé les pneus ». Une question (« quand est-ce que je rentre
+  aux stands ? ») donne le plan. Un passage déjà prouvé par le ravitaillement n'est jamais compté deux fois.
+  Les mots manquants du vocabulaire vocal (« les », « des », « l'arrêt »…) ont été ajoutés : un test vérifie que
+  chaque phrase reconnue est prononçable.
+- **Ravitaillement lent** : GT7 peut ajouter moins de 0,05 L par paquet ; la hausse est maintenant cumulée, donc un
+  ravitaillement de quelques litres est bien vu (et le tour du plein n'entre plus dans la consommation mesurée).
+- **Plan annoncé une fois** : plan complet au départ (et sur « stratégie ? »), puis seulement si le prochain arrêt
+  ou le nombre d'arrêts change, en une phrase : « Nouveau plan : prochain arrêt fin du tour 9, 40 litres. ».
+  Plus d'arrêt « 1 litre » ou « sans essence » sans raison (écart de mesure) : si le carburant suffit sans la marge,
+  pas d'arrêt, la radio dit de gérer. Le plan est gelé dans la voie des stands (la ligne est parfois franchie avant
+  le ravitaillement) : plus de « Box, box » répété ni de nouveau plan en plein arrêt.
+- **Arrivée** : un seul message — « Course terminée ! Meilleur tour : … Tu termines P5. » (position seulement si tu
+  l'as donnée dans le dernier tour, sinon « Ta position à l'arrivée ? ») ; plus aucune annonce automatique ensuite.
+- **Pneus comme le carburant** : « les pneus tiennent huit tours » (ou champ « Pneus (tours) » à l'écran). Le plan
+  place les changements de pneus ; « Stand au prochain tour… On changera les pneus », puis « Box, box ! … Change
+  les pneus. ». Après un arrêt : « As-tu changé les pneus ? » (« oui » / « non », ou « j'ai changé les pneus »).
+  Garder des pneus usés déclenche un avertissement et un nouvel arrêt. GT7 ne transmet pas les pneus montés : ils
+  sont toujours déclarés par toi.
+
 ## Fiabilisation Sport (0.5)
 
 Toute la logique de course est dans `core/race/RaceController.kt` (testée) : boutons, voix et écran passent

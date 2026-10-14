@@ -18,10 +18,16 @@ data class RaceRules(
     val requiredTyres: Set<TyreCompound> = emptySet(),
     /** Gomme montée au départ, déclarée par le pilote. */
     val startTyre: TyreCompound? = null,
+    /**
+     * Nombre de tours maximal d'un train de pneus, donné par le pilote (« les pneus tiennent 8 tours »).
+     * GT7 ne transmet pas l'usure : c'est la seule base fiable pour planifier les changements de pneus.
+     */
+    val tyreStintLaps: Int? = null,
     /** Circuit choisi ou reconnu (identifiant de la base GT7). */
     val trackId: Int? = null,
 ) {
     val isEmpty: Boolean
         get() = totalLaps == null && durationMin == null && fuelMultiplier == 1 && tyreMultiplier == 1 &&
-            mandatoryStops == 0 && allowedTyres.isEmpty() && requiredTyres.isEmpty() && startTyre == null
+            mandatoryStops == 0 && allowedTyres.isEmpty() && requiredTyres.isEmpty() && startTyre == null &&
+            tyreStintLaps == null
 }

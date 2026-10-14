@@ -118,13 +118,14 @@ fun RaceSetupCard(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 NumberField("Conso ×", rules.fuelMultiplier.takeIf { it > 1 }, Modifier.weight(1f)) { onRules(rules.copy(fuelMultiplier = (it ?: 1).coerceAtLeast(1))) }
                 NumberField("Usure ×", rules.tyreMultiplier.takeIf { it > 1 }, Modifier.weight(1f)) { onRules(rules.copy(tyreMultiplier = (it ?: 1).coerceAtLeast(1))) }
+                NumberField("Pneus (tours)", rules.tyreStintLaps, Modifier.weight(1f)) { onRules(rules.copy(tyreStintLaps = it?.takeIf { n -> n > 0 })) }
             }
             Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                 Text(tyreSummary(rules), Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
                 TextButton(onClick = { editingTyres = true }) { Text("Gommes") }
             }
             Text(
-                "À la radio aussi : « course de 30 minutes », « arrêt obligatoire », « consommation fois deux », « stratégie ? ».",
+                "À la radio aussi : « course de 30 minutes », « arrêt obligatoire », « consommation fois deux », « les pneus tiennent huit tours », « stratégie ? ».",
                 color = PitColors.Muted,
                 style = MaterialTheme.typography.bodySmall,
             )
@@ -153,8 +154,9 @@ fun RaceSetupCard(
                         val reasons = buildList {
                             if (s.forFuel) add("${s.liters} L")
                             if (s.mandatory) add("obligatoire")
-                            if (!s.forFuel && s.liters != null && !s.mandatory && s.tyreToFit == null) add("sans essence")
+                            if (s.noFuelNeeded) add("sans essence")
                             s.tyreToFit?.let { add("monter ${it.name}") }
+                            if (s.changeTyres && s.tyreToFit == null) add("pneus neufs")
                             if (s.liters == null) add("litres après un tour mesuré")
                         }
                         Text(
@@ -197,6 +199,23 @@ fun RaceSetupCard(
                     color = if (state.missingTyres.isEmpty()) PitColors.Green else PitColors.Yellow,
                     style = MaterialTheme.typography.bodySmall,
                 )
+            }
+            rules.tyreStintLaps?.let { life ->
+                Text(
+                    "Pneus actuels : ${state.tyreAgeLaps} tour${if (state.tyreAgeLaps > 1) "s" else ""} sur $life",
+                    color = if (state.tyreAgeLaps >= life) PitColors.Red else PitColors.Muted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                if (!state.askTyreChange) {
+                    OutlinedButton(onClick = { onCommand(DriverCommand.TyresChanged) }, modifier = Modifier.fillMaxWidth()) { Text("Pneus changés") }
+                }
+            }
+            if (state.askTyreChange) {
+                Text("As-tu changé les pneus ?", color = PitColors.Yellow, fontWeight = FontWeight.Bold)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { onCommand(DriverCommand.Yes) }, modifier = Modifier.weight(1f)) { Text("Oui, pneus neufs") }
+                    OutlinedButton(onClick = { onCommand(DriverCommand.No) }, modifier = Modifier.weight(1f)) { Text("Mêmes pneus") }
+                }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = { onCommand(DriverCommand.DeclareStop) }, modifier = Modifier.weight(1f)) { Text("Arrêt fait") }
@@ -294,6 +313,7 @@ private fun warningLabel(w: PlanWarning): String = when (w) {
     PlanWarning.MANDATORY_STOPS_IMPOSSIBLE -> "⚠ Plus assez de tours pour les arrêts obligatoires"
     PlanWarning.TYRES_IMPOSSIBLE -> "⚠ Plus assez d'arrêts pour les gommes imposées"
     PlanWarning.FUEL_IMPOSSIBLE -> "⚠ Un relais dépasse un plein : économie nécessaire"
+    PlanWarning.TYRES_OVERDUE -> "⚠ Pneus au-delà de leur durée de vie : à changer au prochain arrêt"
 }
 
 /** Gommes du règlement : autorisées, imposées (à utiliser au moins une fois), et pneus de départ. */
