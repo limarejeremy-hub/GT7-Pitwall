@@ -60,6 +60,23 @@ Quand une information manque, l'application le dit au lieu de l'estimer :
 - **Position** : GT7 ne transmet **ni la position en course ni les adversaires**. L'ingénieur part
   de la place sur la grille (transmise par GT7 avant le départ) puis suit ce que tu lui annonces.
 
+## Ingénieur IA : Gemini Nano sur le téléphone (0.7)
+
+- **Gemini Nano** (ML Kit GenAI Prompt API, via AICore) tourne **sur le Fold** : gratuit, hors ligne, aucune donnée
+  envoyée sur Internet. À activer dans la carte « Ingénieur IA » ; le modèle se télécharge une fois si AICore le
+  propose. Sur un appareil non compatible, l'application fonctionne comme avant.
+- **Rôle limité** : les commandes connues restent traitées par l'analyseur à mots-clés (rapide, testé). L'IA ne prend
+  que les phrases qu'il ne comprend pas : questions libres (« comment je peux être plus rapide ? », « résume ma
+  course ») ou commandes formulées autrement — qu'elle traduit en une commande connue, rejouée par le même chemin
+  que la voix.
+- **Aucune donnée inventée** (`core/ai/RadioAi.kt`, testé) : l'IA ne reçoit que les réponses que l'ingénieur ferait
+  lui-même (télémétrie GT7, mesures, plan, déclarations du pilote) et la liste de ce que GT7 ne transmet pas. Une
+  réponse est **refusée** si elle contient un chiffre absent de ces faits (avec la même unité : « 7 » existe mais
+  pas « 7 secondes »), une position, ou parle des autres voitures (écarts, adversaires). Une commande dont le chiffre
+  ne vient pas du pilote est refusée. Sinon : « Je n'ai pas cette information ».
+- **Écoute double** : la reconnaissance limitée au vocabulaire radio (fiable dans le bruit) et une reconnaissance
+  libre écoutent le même micro ; la libre ne sert qu'à l'IA.
+
 ## Retours d'essai : arrêts, plan, arrivée, pneus (0.6)
 
 - **Arrêt dit à la voix** : « j'ai fait un arrêt aux stands », « je suis passé aux stands », « j'ai fait le plein »,
@@ -205,6 +222,8 @@ une nouvelle version s'installe **par-dessus** l'ancienne, sans désinstaller.
 - [ ] le sens de la carte du circuit (elle peut apparaître en miroir) et le sens gauche/droite des forces G ;
 - [ ] la détection blocage / patinage des roues ;
 - [ ] la reconnaissance du circuit, le plan de course et le décompte des arrêts (mode Sport) ;
+- [ ] Gemini Nano disponible sur le Fold (carte « Ingénieur IA » : « Prêt »), temps de réponse, qualité des réponses ;
+- [ ] la reconnaissance libre (questions à l'IA) dans le bruit du jeu ;
 - [ ] la détection « ressemble à un passage aux stands » sur de vrais circuits (vitesse du limiteur, position de la voie des stands) ;
 - [ ] les seuils pneus / adhérence (« en température », « l'adhérence baisse », « la galère », dégradation) ;
 - [ ] le niveau de carburant GT7 (souvent sur une échelle de 100) : la stratégie fonctionne dans l'unité du jeu ;

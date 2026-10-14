@@ -12,11 +12,12 @@ android {
 
     defaultConfig {
         applicationId = "com.gt7pitwall.app"
-        minSdk = 26
+        // Android 12 minimum : Gemini Nano (ML Kit GenAI) ; le Fold est sous Android 16.
+        minSdk = 31
         targetSdk = 35
         // Sur GitHub Actions, chaque build a un numéro croissant : l'APK s'installe par-dessus le précédent.
         versionCode = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
-        versionName = "0.2.0"
+        versionName = "0.7.0"
 
         // Le Fold est en arm64 ; on garde aussi armeabi-v7a. Réduit la taille des bibliothèques natives (Vosk).
         ndk {
@@ -67,7 +68,10 @@ dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
+
+    // Ingénieur IA : Gemini Nano sur le téléphone (ML Kit GenAI Prompt API, gratuit, hors ligne via AICore).
+    implementation("com.google.mlkit:genai-prompt:1.0.0-beta4")
 
     // Reconnaissance vocale hors ligne, gratuite et open source (Apache 2.0).
     implementation("com.alphacephei:vosk-android:0.3.47@aar")

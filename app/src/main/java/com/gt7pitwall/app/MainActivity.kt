@@ -52,6 +52,8 @@ class MainActivity : ComponentActivity() {
                     settings = app.settings,
                     voiceModels = app.voiceModels,
                     voiceInput = app.voiceInput,
+                    gemini = app.gemini,
+                    onAiToggle = app::setAi,
                     onStart = { address ->
                         app.settings.ps5Address = address
                         TelemetryService.start(this, address)

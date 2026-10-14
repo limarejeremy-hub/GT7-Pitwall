@@ -50,6 +50,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.gt7pitwall.app.ai.AiState
+import com.gt7pitwall.app.ai.GeminiNano
 import com.gt7pitwall.app.engine.PitwallEngine
 import com.gt7pitwall.app.engine.PitwallUiState
 import com.gt7pitwall.app.settings.SettingsStore
@@ -85,6 +87,8 @@ fun PitwallScreen(
     settings: SettingsStore,
     voiceModels: VoiceModelManager,
     voiceInput: VoskVoiceInput,
+    gemini: GeminiNano,
+    onAiToggle: (Boolean) -> Unit,
     onStart: (String) -> Unit,
     onStop: () -> Unit,
     onVoiceInputToggle: (Boolean) -> Unit,
@@ -102,6 +106,9 @@ fun PitwallScreen(
     var wakeWord by rememberSaveable { mutableStateOf(settings.wakeWord) }
     var limitedVocab by rememberSaveable { mutableStateOf(settings.limitedVocabulary) }
     var askPosition by rememberSaveable { mutableStateOf(settings.askPositionEachLap) }
+    var aiOn by rememberSaveable { mutableStateOf(settings.aiEnabled) }
+    val aiState by gemini.state.collectAsStateWithLifecycle()
+    val aiDetail by gemini.detail.collectAsStateWithLifecycle()
 
     val voiceRadioCard: @Composable () -> Unit = {
         VoiceRadioCard(
@@ -127,6 +134,16 @@ fun PitwallScreen(
             onAskPositionChange = {
                 askPosition = it
                 settings.askPositionEachLap = it
+            },
+        )
+        AiCard(
+            on = aiOn,
+            state = aiState,
+            detail = aiDetail,
+            wakeWord = wakeWord,
+            onToggle = {
+                aiOn = it
+                onAiToggle(it)
             },
         )
     }
@@ -688,6 +705,43 @@ private fun LapHistoryCard(laps: List<LapRecord>) {
                     fontFamily = FontFamily.Monospace,
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun AiCard(on: Boolean, state: AiState, detail: String?, wakeWord: String, onToggle: (Boolean) -> Unit) {
+    PitCard("Ingénieur IA (Gemini Nano)") {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Questions libres à la radio")
+                Text(
+                    "Gemini Nano tourne sur le téléphone : gratuit, hors ligne. Il ne reçoit que les données de la course " +
+                        "(télémétrie GT7, plan, ce que tu as déclaré) ; une réponse avec un chiffre absent de ces données est refusée.",
+                    color = PitColors.Muted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Switch(checked = on, onCheckedChange = onToggle)
+        }
+        if (on) {
+            val (label, color) = when (state) {
+                AiState.OFF -> "Désactivé." to PitColors.Muted
+                AiState.CHECKING -> "Vérification de Gemini Nano…" to PitColors.Yellow
+                AiState.DOWNLOADING -> "Téléchargement du modèle (une seule fois, Wi-Fi conseillé)…" to PitColors.Yellow
+                AiState.READY -> "Prêt." to PitColors.Green
+                AiState.UNAVAILABLE -> "Gemini Nano indisponible sur cet appareil." to PitColors.Red
+                AiState.ERROR -> "Erreur." to PitColors.Red
+            }
+            Text(label, color = color, fontWeight = FontWeight.Bold)
+            detail?.let { Text(it, color = PitColors.Muted, style = MaterialTheme.typography.bodySmall) }
+            Text(
+                "Exemples : « $wakeWord, comment je peux être plus rapide ? » • « $wakeWord, je bloque mes roues ? » • " +
+                    "« $wakeWord, résume ma course » • « $wakeWord, est-ce que je suis régulier ? ». " +
+                    "Les commandes habituelles restent traitées sans l'IA.",
+                color = PitColors.Muted,
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
     }
 }

@@ -1,9 +1,12 @@
 package com.gt7pitwall.core.race
 
+import com.gt7pitwall.core.ai.AiFacts
+import com.gt7pitwall.core.ai.AiReply
 import com.gt7pitwall.core.analysis.GForce
 import com.gt7pitwall.core.analysis.GForceMeter
 import com.gt7pitwall.core.analysis.LapAnalyzer
 import com.gt7pitwall.core.engineer.EngineerMessage
+import com.gt7pitwall.core.engineer.FrenchFormat
 import com.gt7pitwall.core.engineer.MessageCategory
 import com.gt7pitwall.core.engineer.Priority
 import com.gt7pitwall.core.engineer.RaceEngineer
@@ -201,6 +204,70 @@ class RaceController(
         return listOf(echo) + if (cmd == null) deliver(listOf(engineer.notUnderstood(text))) else command(cmd)
     }
 
+    /**
+     * Réponse de l'IA (Gemini Nano) à une phrase que l'analyseur n'a pas comprise. Une commande reconnue passe
+     * par le même chemin que la voix ; une réponse n'est dite que si elle a passé le contrôle des chiffres.
+     */
+    fun aiReply(question: String, reply: AiReply): List<EngineerMessage> {
+        val echo = EngineerMessage("Toi : $question", Priority.INFO, MessageCategory.DRIVER)
+        val out = when (reply) {
+            is AiReply.Command -> command(reply.command)
+            is AiReply.Answer -> deliver(listOf(EngineerMessage(reply.text, Priority.HIGH, MessageCategory.ANSWER)))
+            is AiReply.Rejected -> deliver(
+                listOf(
+                    when (reply.reason) {
+                        AiReply.Reason.UNKNOWN -> EngineerMessage(
+                            "Je n'ai pas cette information : GT7 ne me la transmet pas.",
+                            Priority.HIGH,
+                            MessageCategory.ANSWER,
+                        )
+                        AiReply.Reason.INVENTED_NUMBER -> EngineerMessage(
+                            "Je n'ai pas de donnée fiable pour te répondre.",
+                            Priority.HIGH,
+                            MessageCategory.ANSWER,
+                        )
+                        else -> engineer.notUnderstood(question)
+                    },
+                ),
+            )
+        }
+        return listOf(echo) + out
+    }
+
+    /**
+     * Faits donnés à l'IA : les réponses que l'ingénieur ferait lui-même à chaque question, plus les tours
+     * mesurés. Uniquement des valeurs GT7, des mesures ou des déclarations du pilote.
+     */
+    fun aiFacts(): AiFacts {
+        val snap = snapshot
+        val lines = mutableListOf<String>()
+        lines += "GT7 ne transmet pas : les positions en course, les adversaires, les écarts, les dégâts, les gommes montées, la météo."
+        carName?.let { lines += "Voiture : $it." }
+        course?.let { lines += "Circuit : ${it.label}." }
+        for (q in DriverQuery.entries) {
+            val text = if (q == DriverQuery.OBLIGATIONS) obligationsSentence() else engineer.answer(q, snap, fuel).text
+            lines += "${AI_TOPICS[q]} : $text"
+        }
+        lines += "Arrêts aux stands enregistrés : ${ledger.stopCount}."
+        rules.tyreStintLaps?.let { life ->
+            val age = ledger.tyreAge((snap.packet?.currentLap ?: 1).coerceAtLeast(1))
+            lines += "Pneus : ils tiennent $life tours d'après toi ; $age tours faits avec le train actuel."
+        }
+        lines += if (engineer.raining) "Pluie signalée par le pilote." else "Pas de pluie signalée par le pilote."
+        for (lap in snap.laps.takeLast(AI_LAPS)) {
+            val parts = mutableListOf<String>()
+            parts += lap.timeMs?.takeIf { it > 0 }?.let { FrenchFormat.lapTimeSpeech(it) } ?: "chrono inconnu"
+            lap.fuelUsed?.let { parts += "${FrenchFormat.decimal(it)} d'essence" }
+            if (lap.refuelled) parts += "ravitaillement"
+            lap.lockups?.let { parts += "$it blocages de roue" }
+            lap.wheelspins?.let { parts += "$it patinages" }
+            lap.maxSpeedKmh?.let { parts += "vitesse maximale ${it.roundToInt()} km/h" }
+            lap.tcsShare?.let { parts += "antipatinage actif ${(it * 100).roundToInt()} % du tour" }
+            lines += "Tour ${lap.lapNumber} : ${parts.joinToString(", ")}."
+        }
+        return AiFacts(lines)
+    }
+
     /** Règlement saisi à l'écran. */
     fun setRules(newRules: RaceRules): List<EngineerMessage> {
         applyRules(newRules)
@@ -374,6 +441,22 @@ class RaceController(
     }
 
     private companion object {
+        const val AI_LAPS = 5
+
+        val AI_TOPICS = mapOf(
+            DriverQuery.FUEL to "Carburant",
+            DriverQuery.LAST_LAP to "Dernier tour",
+            DriverQuery.BEST_LAP to "Meilleur tour",
+            DriverQuery.RACE_STATUS to "Course",
+            DriverQuery.PACE to "Rythme",
+            DriverQuery.SECTORS to "Secteurs",
+            DriverQuery.POSITION to "Position",
+            DriverQuery.TYRES to "Pneus",
+            DriverQuery.PLAN to "Stratégie",
+            DriverQuery.DETAILS to "Détail du dernier tour",
+            DriverQuery.OBLIGATIONS to "Obligations du règlement",
+        )
+
         /** 45 s après la ligne d'un tour d'arrêt prévu, le temps d'atteindre son stand. */
         const val PIT_WINDOW_PACKETS = 45 * 60
 

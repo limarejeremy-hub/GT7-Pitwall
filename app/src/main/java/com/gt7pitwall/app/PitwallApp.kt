@@ -1,6 +1,7 @@
 package com.gt7pitwall.app
 
 import android.app.Application
+import com.gt7pitwall.app.ai.GeminiNano
 import com.gt7pitwall.app.engine.PitwallEngine
 import com.gt7pitwall.app.service.TelemetryService
 import com.gt7pitwall.app.settings.RaceStore
@@ -22,6 +23,7 @@ class PitwallApp : Application() {
         private set
     lateinit var voiceInput: VoskVoiceInput
         private set
+    val gemini = GeminiNano()
 
     override fun onCreate() {
         super.onCreate()
@@ -31,11 +33,22 @@ class PitwallApp : Application() {
         voiceInput = VoskVoiceInput(voiceModels, voice).also {
             it.wakeWord = settings.wakeWord
             it.limitedVocabulary = settings.limitedVocabulary
+            it.freeTranscription = settings.aiEnabled
         }
         engine = PitwallEngine(voice, voiceInput, loadDatabase(), RaceStore(this)).also {
             it.voiceEnabled = settings.voiceEnabled
             it.askPositionEachLap = { settings.askPositionEachLap && voiceInput.isRunning }
+            it.languageModel = gemini
         }
+        if (settings.aiEnabled) gemini.enable()
+    }
+
+    /** Active ou coupe l'ingénieur IA ; l'écoute redémarre pour ajouter ou retirer la transcription libre. */
+    fun setAi(enabled: Boolean) {
+        settings.aiEnabled = enabled
+        voiceInput.freeTranscription = enabled
+        if (enabled) gemini.enable() else gemini.disable()
+        voiceInput.restart()
     }
 
     /** Base voitures / circuits de la communauté GT7 (gt7info, MIT-0), embarquée dans l'APK. */

@@ -1,5 +1,7 @@
 package com.gt7pitwall.app.engine
 
+import com.gt7pitwall.core.ai.LanguageModel
+import com.gt7pitwall.core.ai.RadioAi
 import com.gt7pitwall.core.analysis.GForce
 import com.gt7pitwall.core.analysis.LapAnalyzer
 import com.gt7pitwall.core.analysis.LapStats
@@ -13,6 +15,7 @@ import com.gt7pitwall.core.knowledge.Gt7Database
 import com.gt7pitwall.core.race.RaceController
 import com.gt7pitwall.core.race.RaceStorage
 import com.gt7pitwall.core.radio.DriverCommand
+import com.gt7pitwall.core.radio.DriverCommandParser
 import com.gt7pitwall.core.radio.DriverQuery
 import com.gt7pitwall.core.radio.VoiceInput
 import com.gt7pitwall.core.radio.VoiceInputEvent
@@ -39,6 +42,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.withLock
 
 data class PitwallUiState(
@@ -104,6 +108,10 @@ class PitwallEngine(
     @Volatile
     var voiceEnabled: Boolean = true
 
+    /** IA de la radio (Gemini Nano sur le téléphone), null si désactivée. */
+    @Volatile
+    var languageModel: LanguageModel? = null
+
     /** Demander la position à chaque tour (si la radio vocale écoute). */
     @Volatile
     var askPositionEachLap: () -> Boolean = { false }
@@ -160,10 +168,24 @@ class PitwallEngine(
         when (event) {
             VoiceInputEvent.Wake -> deliver(EngineerMessage("Je t'écoute.", Priority.HIGH, MessageCategory.ANSWER))
             is VoiceInputEvent.Utterance -> {
-                val messages = mutex.withLock { race.utterance(event.text).also { publish(force = true) } }
+                val ai = languageModel?.takeIf { it.ready }
+                // L'analyseur à mots-clés reste prioritaire : rapide, prévisible, testé. L'IA ne prend que le reste.
+                val messages = if (ai == null || DriverCommandParser.parse(event.text) != null) {
+                    mutex.withLock { race.utterance(event.text).also { publish(force = true) } }
+                } else {
+                    askAi(ai, event.freeText?.takeIf { it.isNotBlank() } ?: event.text)
+                }
                 messages.forEach(::deliver)
             }
         }
+    }
+
+    /** Question libre : l'IA ne voit que les faits de la course ; sa réponse est vérifiée avant d'être dite. */
+    private suspend fun askAi(ai: LanguageModel, question: String): List<EngineerMessage> {
+        val facts = mutex.withLock { race.aiFacts() }
+        val raw = withTimeoutOrNull(AI_TIMEOUT_MS) { ai.generate(RadioAi.systemInstruction, RadioAi.prompt(question, facts)) }
+        val reply = RadioAi.parse(raw, question, facts)
+        return mutex.withLock { race.aiReply(question, reply).also { publish(force = true) } }
     }
 
     fun testVoice() {
@@ -218,6 +240,7 @@ class PitwallEngine(
 
     private companion object {
         const val UI_REFRESH_MS = 50L
+        const val AI_TIMEOUT_MS = 8_000L
         const val MAX_RADIO_LOG = 50
         const val RULES_DEBOUNCE_MS = 1_500L
     }

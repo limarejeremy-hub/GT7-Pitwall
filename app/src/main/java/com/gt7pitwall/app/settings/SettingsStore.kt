@@ -36,7 +36,13 @@ class SettingsStore(context: Context) {
         get() = prefs.getBoolean(KEY_ASK_POSITION, true)
         set(value) = prefs.edit().putBoolean(KEY_ASK_POSITION, value).apply()
 
+    /** Ingénieur IA : Gemini Nano sur le téléphone (questions libres à la radio). */
+    var aiEnabled: Boolean
+        get() = prefs.getBoolean(KEY_AI, false)
+        set(value) = prefs.edit().putBoolean(KEY_AI, value).apply()
+
     companion object {
+        private const val KEY_AI = "ai_enabled"
         const val DEFAULT_WAKE_WORD = "radio"
         private const val KEY_ASK_POSITION = "ask_position_each_lap"
         private const val KEY_LIMITED_VOCAB = "limited_vocabulary"

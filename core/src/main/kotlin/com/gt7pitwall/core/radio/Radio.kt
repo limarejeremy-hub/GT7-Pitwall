@@ -33,8 +33,11 @@ sealed interface VoiceInputEvent {
     /** Mot de réveil entendu seul : l'ingénieur écoute la phrase suivante. */
     data object Wake : VoiceInputEvent
 
-    /** Phrase du pilote adressée à l'ingénieur. */
-    data class Utterance(val text: String) : VoiceInputEvent
+    /**
+     * Phrase du pilote adressée à l'ingénieur. [text] vient de la reconnaissance limitée au vocabulaire radio
+     * (fiable pour les commandes) ; [freeText], de la reconnaissance libre, sert aux questions posées à l'IA.
+     */
+    data class Utterance(val text: String, val freeText: String? = null) : VoiceInputEvent
 }
 
 /**
