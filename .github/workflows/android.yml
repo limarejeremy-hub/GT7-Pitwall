@@ -1,0 +1,58 @@
+name: APK Android
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Tests + APK debug
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Récupérer le code
+        uses: actions/checkout@v4
+
+      - name: Installer Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Configurer Gradle (avec cache)
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Tests unitaires (décodage GT7, tours, carburant, ingénieur)
+        run: ./gradlew --no-daemon --stacktrace :core:test
+
+      - name: Compiler l'APK debug
+        run: ./gradlew --no-daemon --stacktrace :app:assembleDebug
+
+      - name: Renommer l'APK
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk "dist/GT7-Pitwall-debug-${{ github.run_number }}.apk"
+
+      - name: Publier l'APK dans les Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: GT7-Pitwall-debug-apk-${{ github.run_number }}
+          path: dist/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Rapports de tests (en cas d'échec)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rapports-tests
+          path: core/build/reports/tests/
+          if-no-files-found: ignore
