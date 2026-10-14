@@ -90,8 +90,8 @@ class RadioAiTest {
 
     @Test
     fun longAnswersAreCutForTheRadio() {
-        val r = RadioAi.parse("Première phrase. Deuxième phrase. Troisième phrase.", "?", facts) as AiReply.Answer
-        assertEquals("Première phrase. Deuxième phrase.", r.text)
+        val r = RadioAi.parse("Bien. Continue. Reste concentré. Quatrième phrase.", "?", facts) as AiReply.Answer
+        assertEquals("Bien. Continue. Reste concentré.", r.text)
     }
 
     @Test
@@ -152,5 +152,50 @@ class RadioAiTest {
         assertTrue(p("j'ai perdu du temps au freinage") !is DriverCommand.Overtaken)
         assertEquals(DriverCommand.Overtook, p("j'ai gagné une place"))
         assertEquals(DriverCommand.Overtaken, p("j'ai perdu une place"))
+    }
+
+    @Test
+    fun onlyTheSentenceWithAnInventedNumberIsRemoved() {
+        // Retour réel : un résumé entier refusé pour un seul chiffre. Seule la phrase fautive saute.
+        val r = RadioAi.parse(
+            "Ton meilleur tour est 1 minute 27 secondes 4. Tu as gagné 4 places. Tu as bloqué tes roues 2 fois au tour 3, freine plus progressivement.",
+            "résume ma course",
+            facts,
+        )
+        assertEquals(
+            AiReply.Answer("Ton meilleur tour est 1 minute 27 secondes 4. Tu as bloqué tes roues 2 fois au tour 3, freine plus progressivement."),
+            r,
+        )
+        // Un conseil sans chiffre passe.
+        assertIs<AiReply.Answer>(RadioAi.parse("Freine un peu plus tôt et en ligne droite, puis relâche progressivement.", "comment aller plus vite", facts))
+    }
+
+    @Test
+    fun followUpsGoToTheAiDuringAConversation() {
+        // Hors conversation, « et au freinage » ne veut rien dire pour les mots-clés ; pendant, c'est une relance.
+        assertIs<RadioAi.Route.Ai>(RadioAi.route("et au freinage", "et au freinage", inConversation = true))
+        // Une commande reste une commande, même en pleine conversation.
+        assertIs<RadioAi.Route.Parser>(RadioAi.route("arrêt fait", "arrêt fait", inConversation = true))
+        assertIs<RadioAi.Route.Parser>(RadioAi.route("combien d'essence", "combien d'essence", inConversation = false))
+    }
+
+    @Test
+    fun theControllerKeepsTheConversation() {
+        val c = RaceController()
+        val s = RaceSim(c, totalLaps = 10, perLap = 5f)
+        s.start()
+        s.driveLaps(2)
+        assertFalse(c.inAiConversation())
+        s.said += c.aiReply("comment je roule", AiReply.Answer("Tu es régulier, continue comme ça."), nowMs = 1_000)
+        // La réponse rouvre le micro sans mot de réveil, et l'échange est gardé pour la relance.
+        assertTrue(s.said.last().expectsReply && s.said.last().fromAi)
+        assertTrue(c.inAiConversation(nowMs = 30_000))
+        assertFalse(c.inAiConversation(nowMs = 60_000))
+        assertEquals(listOf(RadioAi.Exchange("comment je roule", "Tu es régulier, continue comme ça.")), c.aiHistory)
+        val prompt = RadioAi.prompt("et au freinage ?", c.aiFacts(), c.aiHistory)
+        assertTrue("ÉCHANGES PRÉCÉDENTS" in prompt && "Tu es régulier" in prompt, prompt)
+        // Les chiffres d'une réponse déjà vérifiée peuvent être repris dans la relance.
+        val h = listOf(RadioAi.Exchange("q", "Tu as 2 blocages de roue."))
+        assertIs<AiReply.Answer>(RadioAi.parse("Ces 2 blocages de roue te coûtent du temps.", "et alors ?", AiFacts(emptyList()), h))
     }
 }

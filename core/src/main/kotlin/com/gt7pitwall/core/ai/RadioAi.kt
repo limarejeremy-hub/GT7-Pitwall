@@ -51,7 +51,7 @@ object RadioAi {
      * les mots hors vocabulaire sortent en « [unk] ») ; [freeText] de la reconnaissance libre.
      * Les commandes qui changent l'état (règlement, arrêt, pneus, position, oui / non…) restent à l'analyseur.
      */
-    fun route(text: String, freeText: String?): Route {
+    fun route(text: String, freeText: String?, inConversation: Boolean = false): Route {
         val t = DriverCommandParser.normalize(text)
         val unknownWords = Regex("\\[unk\\]").findAll(t).count()
         val clean = t.replace("[unk]", " ").replace(Regex("\\s+"), " ").trim()
@@ -61,6 +61,8 @@ object RadioAi {
         val cmd = DriverCommandParser.parse(clean)
         val statefulCommand = cmd != null && cmd !is DriverCommand.Ask && cmd != DriverCommand.Repeat
         if (statefulCommand) return Route.Parser(clean)
+        // Conversation en cours avec Gemini : la relance (« et au freinage ? », « pourquoi ? ») lui revient.
+        if (inConversation) return Route.Ai(question)
         if (OPEN_QUESTION.containsMatchIn(question)) return Route.Ai(question)
         if (unknownWords >= 2) return Route.Ai(question)
         if (freeText != null && question.split(' ').size > LONG_SENTENCE_WORDS) return Route.Ai(question)
@@ -79,23 +81,39 @@ object RadioAi {
 
     const val UNKNOWN = "INCONNU"
     const val COMMAND_PREFIX = "COMMANDE:"
-    private const val MAX_ANSWER_CHARS = 280
+    private const val MAX_ANSWER_CHARS = 400
+    private const val MAX_SENTENCES = 3
 
     val systemInstruction: String = """
-        Tu es l'ingénieur de course à la radio d'un pilote de Gran Turismo 7. Tu tutoies le pilote.
-        Réponds en français, en une ou deux phrases courtes faites pour être dites à voix haute.
-        Utilise UNIQUEMENT les FAITS fournis. N'invente aucun chiffre, aucun temps, aucune position, aucun adversaire,
-        aucune météo. Écris les nombres en chiffres, tels qu'ils apparaissent dans les faits.
-        Si la réponse n'est pas dans les faits, réponds exactement : $UNKNOWN
+        Tu es l'ingénieur de course à la radio d'un pilote de Gran Turismo 7. Tu tutoies le pilote, avec un ton
+        chaleureux et motivant, comme un vrai ingénieur qui discute avec son pilote.
+        Réponds en français, en deux ou trois phrases courtes faites pour être dites à voix haute.
+        Appuie-toi sur les FAITS (télémétrie de sa course) : régularité, écart au meilleur tour, secteurs, blocages de
+        roue, patinages, antipatinage, températures des pneus, carburant, stratégie. Tu peux donner des conseils de
+        pilotage généraux (freinage, trajectoire, gestion des pneus, de l'accélérateur) sans chiffre.
+        Tout chiffre que tu cites doit venir des FAITS, écrit en chiffres tel quel. N'invente jamais un temps, une
+        position, un écart, un adversaire ni une météo : GT7 ne les transmet pas.
+        Réponds $UNKNOWN seulement si la question porte sur une donnée absente des faits (adversaires, positions des autres…).
+        Tiens compte des ÉCHANGES PRÉCÉDENTS pour répondre aux relances.
         Si le pilote annonce quelque chose ou demande un changement (règlement, arrêt, pneus, position, pluie, radio),
         réponds uniquement par une ligne « $COMMAND_PREFIX <phrase> » en reprenant la forme d'un de ces exemples :
         ${COMMAND_EXAMPLES.joinToString(" ; ")}.
     """.trimIndent()
 
-    fun prompt(question: String, facts: AiFacts): String =
-        "FAITS :\n${facts.text}\n\nLE PILOTE DIT : « ${question.trim()} »\n\nRÉPONSE :"
+    /** Un échange déjà vérifié, gardé pour les relances. */
+    data class Exchange(val question: String, val answer: String)
 
-    fun parse(raw: String?, question: String, facts: AiFacts): AiReply {
+    fun prompt(question: String, facts: AiFacts, history: List<Exchange> = emptyList()): String = buildString {
+        append("FAITS :\n").append(facts.text).append("\n\n")
+        if (history.isNotEmpty()) {
+            append("ÉCHANGES PRÉCÉDENTS :\n")
+            history.forEach { append("- Pilote : ").append(it.question).append("\n  Ingénieur : ").append(it.answer).append('\n') }
+            append('\n')
+        }
+        append("LE PILOTE DIT : « ").append(question.trim()).append(" »\n\nRÉPONSE :")
+    }
+
+    fun parse(raw: String?, question: String, facts: AiFacts, history: List<Exchange> = emptyList()): AiReply {
         val text = raw?.trim()?.trim('"', '«', '»', ' ')?.takeIf { it.isNotEmpty() } ?: return AiReply.Rejected(AiReply.Reason.EMPTY)
         if (text.uppercase().startsWith(UNKNOWN)) return AiReply.Rejected(AiReply.Reason.UNKNOWN)
 
@@ -108,10 +126,22 @@ object RadioAi {
             return AiReply.Command(phrase, cmd)
         }
 
-        val answer = shorten(text.lines().filter { it.isNotBlank() }.joinToString(" ") { it.trim() })
-        if (!numbersAllowed(answer, facts.text + "\n" + question)) return AiReply.Rejected(AiReply.Reason.INVENTED_NUMBER)
-        if (talksAboutOthers(answer)) return AiReply.Rejected(AiReply.Reason.NOT_TRANSMITTED)
-        return AiReply.Answer(answer)
+        // Contrôle phrase par phrase : une phrase avec un chiffre non vérifiable est retirée, le reste est gardé.
+        val source = facts.text + "\n" + question + "\n" + history.joinToString("\n") { it.answer }
+        val sentences = sentences(text.lines().filter { it.isNotBlank() }.joinToString(" ") { it.trim() })
+        var firstProblem: AiReply.Reason? = null
+        val kept = sentences.filter { sentence ->
+            val problem = when {
+                !numbersAllowed(sentence, source) -> AiReply.Reason.INVENTED_NUMBER
+                talksAboutOthers(sentence) -> AiReply.Reason.NOT_TRANSMITTED
+                sentence.uppercase().contains(UNKNOWN) -> AiReply.Reason.UNKNOWN
+                else -> null
+            }
+            if (problem != null && firstProblem == null) firstProblem = problem
+            problem == null
+        }
+        if (kept.isEmpty()) return AiReply.Rejected(firstProblem ?: AiReply.Reason.EMPTY)
+        return AiReply.Answer(shorten(kept))
     }
 
     /**
@@ -139,7 +169,7 @@ object RadioAi {
         "seconde" to "s", "secondes" to "s", "centieme" to "c", "centiemes" to "c", "minute" to "min", "minutes" to "min",
         "tour" to "tour", "tours" to "tour", "litre" to "l", "litres" to "l", "km/h" to "kmh", "degre" to "deg",
         "degres" to "deg", "%" to "pct", "arret" to "arret", "arrets" to "arret",
-        "position" to "pos", "blocage" to "bloc", "blocages" to "bloc", "patinage" to "pat", "patinages" to "pat",
+        "position" to "pos", "positions" to "pos", "place" to "pos", "places" to "pos", "blocage" to "bloc", "blocages" to "bloc", "patinage" to "pat", "patinages" to "pat",
     )
 
     private fun withUnits(s: String): List<String> {
@@ -190,10 +220,11 @@ object RadioAi {
     // 8.3 et 8,3 sont le même nombre ; 08 et 8 aussi.
     private fun numbers(s: String): List<String> = NUMBER.findAll(s).map { canonical(it.value) }.toList()
 
-    /** Deux phrases au plus, pour la radio. */
-    private fun shorten(s: String): String {
-        val sentences = Regex("(?<=[.!?])\\s+").split(s).filter { it.isNotBlank() }
-        var out = sentences.take(2).joinToString(" ")
+    private fun sentences(s: String): List<String> = Regex("(?<=[.!?])\\s+").split(s).map { it.trim() }.filter { it.isNotBlank() }
+
+    /** Trois phrases au plus, pour la radio. */
+    private fun shorten(sentences: List<String>): String {
+        var out = sentences.take(MAX_SENTENCES).joinToString(" ")
         if (out.length > MAX_ANSWER_CHARS) out = out.take(MAX_ANSWER_CHARS).substringBeforeLast(' ') + "…"
         return out
     }

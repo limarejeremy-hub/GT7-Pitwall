@@ -144,9 +144,9 @@ class GeminiNano : LanguageModel {
         return lock.withLock {
             try {
                 val request = generateContentRequest(SystemInstruction(systemInstruction), TextPart(prompt)) {
-                    temperature = 0.2f
+                    temperature = 0.4f
                     topK = 10
-                    maxOutputTokens = 120
+                    maxOutputTokens = 160
                 }
                 m.generateContent(request).candidates.firstOrNull()?.text
             } catch (t: Throwable) {

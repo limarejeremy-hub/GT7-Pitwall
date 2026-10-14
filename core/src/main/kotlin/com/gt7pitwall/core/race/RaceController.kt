@@ -2,6 +2,7 @@ package com.gt7pitwall.core.race
 
 import com.gt7pitwall.core.ai.AiFacts
 import com.gt7pitwall.core.ai.AiReply
+import com.gt7pitwall.core.ai.RadioAi
 import com.gt7pitwall.core.analysis.GForce
 import com.gt7pitwall.core.analysis.GForceMeter
 import com.gt7pitwall.core.analysis.LapAnalyzer
@@ -81,6 +82,16 @@ class RaceController(
      */
     private var pitWindowPackets = 0
 
+    /** Derniers échanges vérifiés avec l'IA, pour les relances (« et au freinage ? »). */
+    private val aiExchanges = ArrayDeque<RadioAi.Exchange>()
+    private var lastAiAnswerMs: Long? = null
+
+    val aiHistory: List<RadioAi.Exchange> get() = aiExchanges.toList()
+
+    /** Une conversation avec l'IA est en cours : la phrase suivante lui revient (sauf commande). */
+    fun inAiConversation(nowMs: Long = System.currentTimeMillis()): Boolean =
+        lastAiAnswerMs?.let { nowMs - it < AI_CONVERSATION_MS } == true
+
     val snapshot: SessionSnapshot get() = tracker.snapshot
     val course: Course? get() = rules.trackId?.let(database::course)
     val carName: String? get() = snapshot.packet?.let { database.car(it.carCode)?.fullName }
@@ -104,6 +115,8 @@ class RaceController(
                 trackCandidates = emptyList()
                 candidatesAnnounced = false
                 pitWindowPackets = 0
+                aiExchanges.clear()
+                lastAiAnswerMs = null
             }
             out += learn(events)
             for (e in events) {
@@ -208,11 +221,17 @@ class RaceController(
      * Réponse de l'IA (Gemini Nano) à une phrase que l'analyseur n'a pas comprise. Une commande reconnue passe
      * par le même chemin que la voix ; une réponse n'est dite que si elle a passé le contrôle des chiffres.
      */
-    fun aiReply(question: String, reply: AiReply): List<EngineerMessage> {
+    fun aiReply(question: String, reply: AiReply, nowMs: Long = System.currentTimeMillis()): List<EngineerMessage> {
         val echo = EngineerMessage("Toi : $question", Priority.INFO, MessageCategory.DRIVER)
+        lastAiAnswerMs = if (reply is AiReply.Command) null else nowMs
         val out = when (reply) {
             is AiReply.Command -> command(reply.command)
-            is AiReply.Answer -> deliver(listOf(EngineerMessage(reply.text, Priority.HIGH, MessageCategory.ANSWER, fromAi = true)))
+            is AiReply.Answer -> {
+                aiExchanges.addLast(RadioAi.Exchange(question, reply.text))
+                while (aiExchanges.size > AI_HISTORY) aiExchanges.removeFirst()
+                // La radio écoute la relance sans mot de réveil : c'est une conversation.
+                deliver(listOf(EngineerMessage(reply.text, Priority.HIGH, MessageCategory.ANSWER, expectsReply = true, fromAi = true)))
+            }
             is AiReply.Rejected -> deliver(
                 listOf(
                     when (reply.reason) {
@@ -442,6 +461,8 @@ class RaceController(
 
     private companion object {
         const val AI_LAPS = 5
+        const val AI_HISTORY = 3
+        const val AI_CONVERSATION_MS = 45_000L
 
         val AI_TOPICS = mapOf(
             DriverQuery.FUEL to "Carburant",

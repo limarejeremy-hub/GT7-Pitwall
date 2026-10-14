@@ -178,7 +178,7 @@ class PitwallEngine(
             is VoiceInputEvent.Utterance -> {
                 val lm = languageModel
                 // Commandes et questions simples : analyseur à mots-clés (immédiat, testé). Questions ouvertes : IA.
-                val route = RadioAi.route(event.text, event.freeText)
+                val route = RadioAi.route(event.text, event.freeText, race.inAiConversation())
                 val messages = when {
                     route is RadioAi.Route.Ai && lm != null && lm.ready -> askAi(lm, route.question)
                     route is RadioAi.Route.Ai && lm != null && DriverCommandParser.parse(event.text) == null -> listOf(
@@ -195,10 +195,10 @@ class PitwallEngine(
     /** Question libre : l'IA ne voit que les faits de la course ; sa réponse est vérifiée avant d'être dite. */
     private suspend fun askAi(ai: LanguageModel, question: String): List<EngineerMessage> {
         deliver(EngineerMessage("Gemini réfléchit : « $question »", Priority.INFO, MessageCategory.DRIVER))
-        val facts = mutex.withLock { race.aiFacts() }
+        val (facts, history) = mutex.withLock { race.aiFacts() to race.aiHistory }
         val started = System.currentTimeMillis()
-        val raw = withTimeoutOrNull(AI_TIMEOUT_MS) { ai.generate(RadioAi.systemInstruction, RadioAi.prompt(question, facts)) }
-        val reply = RadioAi.parse(raw, question, facts)
+        val raw = withTimeoutOrNull(AI_TIMEOUT_MS) { ai.generate(RadioAi.systemInstruction, RadioAi.prompt(question, facts, history)) }
+        val reply = RadioAi.parse(raw, question, facts, history)
         _aiTrace.value = AiTrace(
             question = question,
             raw = raw,
@@ -290,7 +290,7 @@ class PitwallEngine(
 
     private companion object {
         const val UI_REFRESH_MS = 50L
-        const val AI_TIMEOUT_MS = 8_000L
+        const val AI_TIMEOUT_MS = 10_000L
         const val MAX_RADIO_LOG = 50
         const val RULES_DEBOUNCE_MS = 1_500L
     }
