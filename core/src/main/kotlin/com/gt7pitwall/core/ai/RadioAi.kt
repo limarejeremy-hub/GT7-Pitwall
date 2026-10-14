@@ -31,6 +31,44 @@ sealed interface AiReply {
  * commande connue, ou reformule des faits. Garde-fou : une réponse contenant un chiffre absent des faits est rejetée.
  */
 object RadioAi {
+    /** Où envoyer une phrase du pilote. */
+    sealed interface Route {
+        /** Analyseur à mots-clés : commandes et questions simples, immédiat. */
+        data class Parser(val text: String) : Route
+
+        /** Gemini : question ouverte ou phrase que la reconnaissance radio n'a pas suivie. */
+        data class Ai(val question: String) : Route
+    }
+
+    /** Questions ouvertes : conseils, analyses, résumés — le terrain de l'IA, pas des mots-clés. */
+    private val OPEN_QUESTION = Regex(
+        "(^|\\s)(comment|pourquoi|conseils?|ameliorer|progresser|analyse|analyser|resume|resumer|explique|expliquer|aide|" +
+            "point faible|points faibles|que dois|qu'est ce|quoi faire|tu penses|ton avis|astuces?|mieux|plus vite|plus rapide)(\\s|$)",
+    )
+
+    /**
+     * Aiguillage d'une phrase quand l'IA est prête. [text] vient de la reconnaissance radio (vocabulaire limité :
+     * les mots hors vocabulaire sortent en « [unk] ») ; [freeText] de la reconnaissance libre.
+     * Les commandes qui changent l'état (règlement, arrêt, pneus, position, oui / non…) restent à l'analyseur.
+     */
+    fun route(text: String, freeText: String?): Route {
+        val t = DriverCommandParser.normalize(text)
+        val unknownWords = Regex("\\[unk\\]").findAll(t).count()
+        val clean = t.replace("[unk]", " ").replace(Regex("\\s+"), " ").trim()
+        val question = freeText?.let { DriverCommandParser.normalize(it) }?.takeIf { it.isNotBlank() } ?: clean
+        // « radio, question : … » force l'IA.
+        Regex("^question\\s*:?\\s*").find(question)?.let { return Route.Ai(question.substring(it.range.last + 1).ifBlank { question }) }
+        val cmd = DriverCommandParser.parse(clean)
+        val statefulCommand = cmd != null && cmd !is DriverCommand.Ask && cmd != DriverCommand.Repeat
+        if (statefulCommand) return Route.Parser(clean)
+        if (OPEN_QUESTION.containsMatchIn(question)) return Route.Ai(question)
+        if (unknownWords >= 2) return Route.Ai(question)
+        if (freeText != null && question.split(' ').size > LONG_SENTENCE_WORDS) return Route.Ai(question)
+        return if (cmd != null) Route.Parser(clean) else Route.Ai(question)
+    }
+
+    private const val LONG_SENTENCE_WORDS = 7
+
     /** Phrases-types que l'IA peut renvoyer comme commande ; chacune est comprise par [DriverCommandParser]. */
     val COMMAND_EXAMPLES = listOf(
         "course de 12 tours", "course de 30 minutes", "2 arrêts obligatoires", "consommation fois 2", "usure fois 3",
@@ -165,6 +203,9 @@ object RadioAi {
 interface LanguageModel {
     /** Prêt à répondre tout de suite (modèle présent sur l'appareil). */
     val ready: Boolean
+
+    /** État lisible (« prêt », « indisponible sur cet appareil »…), dit au pilote si l'IA n'est pas prête. */
+    val status: String
 
     /** Texte généré, ou null en cas d'échec ou de dépassement de délai. */
     suspend fun generate(systemInstruction: String, prompt: String): String?

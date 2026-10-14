@@ -41,19 +41,57 @@ class GeminiNano : LanguageModel {
 
     override val ready: Boolean get() = _state.value == AiState.READY
 
+    override val status: String
+        get() = when (_state.value) {
+            AiState.OFF -> "désactivé"
+            AiState.CHECKING -> "vérification en cours"
+            AiState.DOWNLOADING -> "téléchargement du modèle en cours"
+            AiState.READY -> "prêt"
+            AiState.UNAVAILABLE -> "indisponible sur cet appareil"
+            AiState.ERROR -> "erreur ${_detail.value ?: ""}".trim()
+        }
+
+    private val _testResult = MutableStateFlow<String?>(null)
+    /** Résultat du bouton « Tester Gemini ». */
+    val testResult: StateFlow<String?> = _testResult.asStateFlow()
+
+    /** Question de test, sans télémétrie : prouve que le modèle tourne et mesure son temps de réponse. */
+    fun selfTest() {
+        scope.launch {
+            if (!ready) {
+                _testResult.value = "Pas prêt : $status. Réactive l'interrupteur pour revérifier."
+                return@launch
+            }
+            _testResult.value = "Test en cours…"
+            val started = System.currentTimeMillis()
+            val text = generate(
+                "Tu es un ingénieur de course. Réponds en français, en une phrase courte.",
+                "Dis au pilote que la radio fonctionne.",
+            )
+            val ms = System.currentTimeMillis() - started
+            _testResult.value = if (text.isNullOrBlank()) {
+                "Aucune réponse après $ms ms. ${_detail.value ?: ""}".trim()
+            } else {
+                "Réponse en $ms ms : « ${text.trim()} »"
+            }
+        }
+    }
+
     /** Vérifie la disponibilité et télécharge le modèle si AICore le propose. */
     fun enable() {
         if (prepareJob?.isActive == true || ready) return
+        _testResult.value = null
         prepareJob = scope.launch {
             _state.value = AiState.CHECKING
             _detail.value = null
             try {
                 val m = model ?: Generation.getClient(generationConfig {}).also { model = it }
-                when (m.checkStatus()) {
+                when (val status = m.checkStatus()) {
                     FeatureStatus.AVAILABLE -> _state.value = AiState.READY
                     FeatureStatus.UNAVAILABLE -> {
                         _state.value = AiState.UNAVAILABLE
-                        _detail.value = "Gemini Nano n'est pas disponible sur cet appareil."
+                        _detail.value = "AICore répond « indisponible » (code $status). Vérifie que les fonctions IA de " +
+                            "Samsung / Google (AICore) sont activées et à jour dans le Play Store, puis réessaie."
                     }
                     else -> download(m)
                 }

@@ -118,4 +118,39 @@ class RadioAiTest {
         assertEquals(MessageCategory.ANSWER, s.said.last().category)
         assertFalse(s.texts.any { "Je n'ai pas compris" in it })
     }
+
+    @Test
+    fun openQuestionsGoToTheAiAndCommandsStayWithTheParser() {
+        fun route(text: String, free: String? = null) = RadioAi.route(text, free)
+        val ai = RadioAi.Route.Ai::class
+        // Questions ouvertes : elles étaient captées par des mots-clés (« course », « temps », « tour »).
+        assertIs<RadioAi.Route.Ai>(route("résume ma course"))
+        assertIs<RadioAi.Route.Ai>(route("comment je peux être plus rapide"))
+        assertIs<RadioAi.Route.Ai>(route("analyse mon dernier tour"))
+        assertIs<RadioAi.Route.Ai>(route("pourquoi je perds du temps"))
+        // Reconnaissance radio dépassée (mots hors vocabulaire) : la version libre part à l'IA.
+        val r = route("[unk] je [unk] mes pneus [unk]", "est-ce que je surchauffe mes pneus arrière")
+        assertEquals(RadioAi.Route.Ai("est ce que je surchauffe mes pneus arriere"), r)
+        // « question : » force l'IA.
+        assertEquals(RadioAi.Route.Ai("je suis bien"), route("question je suis bien"))
+        // Commandes et questions simples : analyseur, immédiat.
+        for (s in listOf(
+            "arrêt fait", "j'ai fait un arrêt aux stands", "je suis cinquième", "les pneus tiennent huit tours",
+            "course de 12 tours", "oui", "non", "silence", "combien d'essence", "mes secteurs",
+        )) {
+            assertIs<RadioAi.Route.Parser>(route(s, s), s)
+        }
+        // Commande dite avec des mots inconnus autour : reste une commande.
+        assertIs<RadioAi.Route.Parser>(route("[unk] arrêt fait [unk]", "bon arrêt fait là"))
+        assertTrue(ai.isInstance(route("[unk] [unk]", "je fais quoi maintenant")))
+    }
+
+    @Test
+    fun gainingTimeIsNotAnOvertake() {
+        val p = com.gt7pitwall.core.radio.DriverCommandParser::parse
+        assertTrue(p("comment je peux gagner du temps") !is DriverCommand.Overtook)
+        assertTrue(p("j'ai perdu du temps au freinage") !is DriverCommand.Overtaken)
+        assertEquals(DriverCommand.Overtook, p("j'ai gagné une place"))
+        assertEquals(DriverCommand.Overtaken, p("j'ai perdu une place"))
+    }
 }

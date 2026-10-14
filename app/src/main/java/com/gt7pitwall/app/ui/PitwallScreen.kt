@@ -52,6 +52,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.gt7pitwall.app.ai.AiState
 import com.gt7pitwall.app.ai.GeminiNano
+import com.gt7pitwall.app.engine.AiTrace
 import com.gt7pitwall.app.engine.PitwallEngine
 import com.gt7pitwall.app.engine.PitwallUiState
 import com.gt7pitwall.app.settings.SettingsStore
@@ -109,6 +110,8 @@ fun PitwallScreen(
     var aiOn by rememberSaveable { mutableStateOf(settings.aiEnabled) }
     val aiState by gemini.state.collectAsStateWithLifecycle()
     val aiDetail by gemini.detail.collectAsStateWithLifecycle()
+    val aiTest by gemini.testResult.collectAsStateWithLifecycle()
+    val aiTrace by engine.aiTrace.collectAsStateWithLifecycle()
 
     val voiceRadioCard: @Composable () -> Unit = {
         VoiceRadioCard(
@@ -145,6 +148,9 @@ fun PitwallScreen(
                 aiOn = it
                 onAiToggle(it)
             },
+            testResult = aiTest,
+            onTest = gemini::selfTest,
+            trace = aiTrace,
         )
     }
 
@@ -710,7 +716,16 @@ private fun LapHistoryCard(laps: List<LapRecord>) {
 }
 
 @Composable
-private fun AiCard(on: Boolean, state: AiState, detail: String?, wakeWord: String, onToggle: (Boolean) -> Unit) {
+private fun AiCard(
+    on: Boolean,
+    state: AiState,
+    detail: String?,
+    wakeWord: String,
+    onToggle: (Boolean) -> Unit,
+    testResult: String?,
+    onTest: () -> Unit,
+    trace: AiTrace?,
+) {
     PitCard("Ingénieur IA (Gemini Nano)") {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
@@ -735,10 +750,20 @@ private fun AiCard(on: Boolean, state: AiState, detail: String?, wakeWord: Strin
             }
             Text(label, color = color, fontWeight = FontWeight.Bold)
             detail?.let { Text(it, color = PitColors.Muted, style = MaterialTheme.typography.bodySmall) }
+            OutlinedButton(onClick = onTest, modifier = Modifier.fillMaxWidth()) { Text("Tester Gemini") }
+            testResult?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            trace?.let { t ->
+                Text("Dernière question : « ${t.question} »", style = MaterialTheme.typography.bodySmall)
+                Text(
+                    "Gemini (${t.latencyMs} ms) : ${t.raw?.trim()?.take(160)?.let { "« $it »" } ?: "—"} → ${t.verdict}",
+                    color = PitColors.Muted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
             Text(
                 "Exemples : « $wakeWord, comment je peux être plus rapide ? » • « $wakeWord, je bloque mes roues ? » • " +
-                    "« $wakeWord, résume ma course » • « $wakeWord, est-ce que je suis régulier ? ». " +
-                    "Les commandes habituelles restent traitées sans l'IA.",
+                    "« $wakeWord, résume ma course » • « $wakeWord, question : … » (force Gemini). " +
+                    "Les commandes (arrêt, pneus, position, règlement) restent traitées sans l'IA.",
                 color = PitColors.Muted,
                 style = MaterialTheme.typography.bodySmall,
             )

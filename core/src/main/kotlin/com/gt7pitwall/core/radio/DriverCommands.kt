@@ -153,8 +153,10 @@ object DriverCommandParser {
         }
         stopIn(t)?.let { return it }
 
+        // « gagner / perdre du temps » parle de chrono, pas de place.
+        val aboutTime = has(t, "temps", "seconde", "centieme", "dixieme", "chrono", "secteur")
         // "Il m'a doublé" avant "j'ai doublé". "adieu une place" : erreur réelle de reconnaissance de "perdu une place".
-        if (has(
+        if (!aboutTime && has(
                 t, "fait doubler", "fait passer", "fait depasser", "m'a double", "m'a passe", "m'a depasse",
                 "ma double", "ma passe", "ma depasse", "perdu une place", "perdu la place", "perdu", "adieu une place",
                 "perds une place",
@@ -162,7 +164,7 @@ object DriverCommandParser {
         ) {
             return DriverCommand.Overtaken
         }
-        if (has(
+        if (!aboutTime && has(
                 t, "j'ai double", "j'ai passe", "j'ai depasse", "jai double", "jai passe", "jai depasse",
                 "gagne une place", "pris une place", "gagne",
             )
@@ -313,7 +315,7 @@ object DriverCommandParser {
             "pars", "durs", "dures", "mediums", "medium", "moyens", "tendres", "softs", "intermédiaires", "obligations",
             "règlement", "détails", "essentielle", "stand", "stands", "aux", "au", "box", "passé", "sorti", "sors",
             "ravitaillé", "ravitaillement", "plein", "terminé", "fini", "arrêté", "changé", "changer", "change", "nouveaux",
-            "neufs", "les", "des", "l'arrêt", "dois", "faire", "mêmes", "tiennent", "tient", "durent", "relais", "quand", "est-ce", "que", "rentre", "prochain", "pleut", "pluie", "mouillé", "mouillée", "piste", "sèche", "sec", "plus", "arrête", "pneus", "pneu", "gommes", "température", "températures", "silence", "chut", "tu", "peux", "parler", "répète", "répéter",
+            "neufs", "question", "comment", "pourquoi", "conseil", "analyse", "les", "des", "l'arrêt", "dois", "faire", "mêmes", "tiennent", "tient", "durent", "relais", "quand", "est-ce", "que", "rentre", "prochain", "pleut", "pluie", "mouillé", "mouillée", "piste", "sèche", "sec", "plus", "arrête", "pneus", "pneu", "gommes", "température", "températures", "silence", "chut", "tu", "peux", "parler", "répète", "répéter",
             "premier", "première", "deuxième", "second", "troisième", "quatrième", "cinquième", "sixième", "septième",
             "huitième", "neuvième", "dixième", "onzième", "douzième", "treizième", "quatorzième", "quinzième",
             "seizième", "dix-septième", "dix-huitième", "dix-neuvième", "vingtième", "vingt", "et", "unième",
