@@ -60,6 +60,22 @@ Quand une information manque, l'application le dit au lieu de l'estimer :
 - **Position** : GT7 ne transmet **ni la position en course ni les adversaires**. L'ingénieur part
   de la place sur la grille (transmise par GT7 avant le départ) puis suit ce que tu lui annonces.
 
+## Ingénieur IA compétent : coaching vérifié et conversation (0.8)
+
+- **Constats prouvés** (`core/ai/Coaching.kt`) : blocages de roue, patinages, antipatinage, régularité, secteur le
+  plus lent, températures et équilibre avant / arrière des pneus, calculés sur les tours mesurés. Un défaut n'est
+  reproché au pilote que s'il est prouvé ici ou s'il l'a affirmé lui-même (une question ne vaut pas aveu).
+- **Principes de pilotage fiables** donnés à Gemini selon le sujet : freinage dégressif, blocage, point de corde,
+  trajectoire, transfert de masse, réaccélération, patinage, sous-virage, survirage, pneus, régularité.
+- **Contrôle des conseils, phrase par phrase** : absurdités (« rester en contact avec le rail », freiner fort au point
+  de corde, accélérer à fond en entrée, couper par l'herbe…), banalités sans geste concret (« sois fluide »),
+  défauts non prouvés. Si tout est écarté, l'ingénieur pose une question pour trouver le vrai problème.
+- **Conversation** : Gemini explique le pourquoi, donne un geste concret, et pose une question précise pour
+  approfondir un sujet à la fois. « oui », « non », « pourquoi » sont des réponses ; les fragments (« et »,
+  « euh », phrase coupée) sont ignorés ; si l'ingénieur attend un oui / non (arrêt à confirmer), la réponse est
+  pour lui. Logique dans `core/ai/RadioConversation.kt`, testée par des dialogues sur plusieurs échanges avec et
+  sans télémétrie.
+
 ## Ingénieur IA : Gemini Nano sur le téléphone (0.7)
 
 - **Gemini Nano** (ML Kit GenAI Prompt API, via AICore) tourne **sur le Fold** : gratuit, hors ligne, aucune donnée

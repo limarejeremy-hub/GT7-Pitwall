@@ -1,8 +1,8 @@
 package com.gt7pitwall.app.engine
 
-import com.gt7pitwall.core.ai.AiReply
+import com.gt7pitwall.core.ai.AiTrace
+import com.gt7pitwall.core.ai.RadioConversation
 import com.gt7pitwall.core.ai.LanguageModel
-import com.gt7pitwall.core.ai.RadioAi
 import com.gt7pitwall.core.analysis.GForce
 import com.gt7pitwall.core.analysis.LapAnalyzer
 import com.gt7pitwall.core.analysis.LapStats
@@ -16,7 +16,6 @@ import com.gt7pitwall.core.knowledge.Gt7Database
 import com.gt7pitwall.core.race.RaceController
 import com.gt7pitwall.core.race.RaceStorage
 import com.gt7pitwall.core.radio.DriverCommand
-import com.gt7pitwall.core.radio.DriverCommandParser
 import com.gt7pitwall.core.radio.DriverQuery
 import com.gt7pitwall.core.radio.VoiceInput
 import com.gt7pitwall.core.radio.VoiceInputEvent
@@ -43,7 +42,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.withLock
 
 data class PitwallUiState(
@@ -76,9 +74,6 @@ data class PitwallUiState(
     val askTyreChange: Boolean = false,
 )
 
-/** Dernière question envoyée à l'IA, sa réponse brute et ce qu'on en a fait. */
-data class AiTrace(val question: String, val raw: String?, val verdict: String, val latencyMs: Long)
-
 /**
  * Chaîne Android : réception UDP, sérialisation et voix. Toute la logique de course est dans
  * [RaceController] (module core, testé) : boutons, voix et écran passent par le même chemin.
@@ -94,6 +89,7 @@ class PitwallEngine(
     private val client = TelemetryClient()
     private val race = RaceController(database, storage)
     private val mutex = Mutex()
+    private val conversation = RadioConversation(race, mutex)
 
     private val _rules = MutableStateFlow(race.rules)
     val rules: StateFlow<RaceRules> = _rules.asStateFlow()
@@ -176,18 +172,10 @@ class PitwallEngine(
         when (event) {
             VoiceInputEvent.Wake -> deliver(EngineerMessage("Je t'écoute.", Priority.HIGH, MessageCategory.ANSWER))
             is VoiceInputEvent.Utterance -> {
-                val lm = languageModel
-                // Commandes et questions simples : analyseur à mots-clés (immédiat, testé). Questions ouvertes : IA.
-                val route = RadioAi.route(event.text, event.freeText, race.inAiConversation())
-                val messages = when {
-                    route is RadioAi.Route.Ignore -> emptyList()
-                    route is RadioAi.Route.Ai && lm != null && lm.ready -> askAi(lm, route.question)
-                    route is RadioAi.Route.Ai && lm != null && DriverCommandParser.parse(event.text) == null -> listOf(
-                        EngineerMessage("Toi : ${route.question}", Priority.INFO, MessageCategory.DRIVER),
-                        EngineerMessage("Gemini n'est pas prêt : ${lm.status}", Priority.HIGH, MessageCategory.ANSWER),
-                    )
-                    else -> mutex.withLock { race.utterance(event.text).also { publish(force = true) } }
-                }
+                // Commandes et questions simples : analyseur (immédiat, testé). Questions ouvertes : IA. Fragments : ignorés.
+                val messages = conversation.onUtterance(event.text, event.freeText, languageModel, ::deliver)
+                mutex.withLock { publish(force = true) }
+                conversation.lastTrace?.let { _aiTrace.value = it }
                 messages.forEach(::deliver)
             }
         }
@@ -195,35 +183,10 @@ class PitwallEngine(
 
     /** Question libre : l'IA ne voit que les faits de la course ; sa réponse est vérifiée avant d'être dite. */
     private suspend fun askAi(ai: LanguageModel, question: String): List<EngineerMessage> {
-        deliver(EngineerMessage("Gemini réfléchit : « $question »", Priority.INFO, MessageCategory.DRIVER))
-        val (facts, history) = mutex.withLock { race.aiFacts() to race.aiHistory }
-        val started = System.currentTimeMillis()
-        val raw = withTimeoutOrNull(AI_TIMEOUT_MS) { ai.generate(RadioAi.systemInstruction, RadioAi.prompt(question, facts, history)) }
-        val reply = RadioAi.parse(raw, question, facts, history)
-        _aiTrace.value = AiTrace(
-            question = question,
-            raw = raw,
-            verdict = when (reply) {
-                is AiReply.Answer -> "réponse dite"
-                is AiReply.Command -> "commande : ${reply.phrase}"
-                is AiReply.Rejected -> when (reply.reason) {
-                    AiReply.Reason.UNKNOWN -> "Gemini ne sait pas"
-                    AiReply.Reason.INVENTED_NUMBER -> "refusée : chiffre absent des données"
-                    AiReply.Reason.NOT_TRANSMITTED -> "refusée : parle des autres voitures"
-                    AiReply.Reason.BAD_COMMAND -> "refusée : commande inconnue"
-                    AiReply.Reason.EMPTY -> if (raw == null) "pas de réponse (délai ou erreur)" else "réponse vide"
-                }
-            },
-            latencyMs = System.currentTimeMillis() - started,
-        )
-        return mutex.withLock { race.aiReply(question, reply).also { publish(force = true) } }
-    }
-
-    /** Réponse du test Gemini : dite à la radio et inscrite au journal, comme une réponse de l'ingénieur. */
-    fun sayAiTest(text: String) {
-        val m = EngineerMessage(text, Priority.HIGH, MessageCategory.ANSWER, fromAi = true)
-        _radio.update { (listOf(m) + it).take(MAX_RADIO_LOG) }
-        voice.speak(m)
+        val messages = conversation.ask(ai, question, ::deliver)
+        mutex.withLock { publish(force = true) }
+        conversation.lastTrace?.let { _aiTrace.value = it }
+        return messages
     }
 
     /** Question posée à Gemini depuis l'écran (sans micro). */
@@ -291,7 +254,6 @@ class PitwallEngine(
 
     private companion object {
         const val UI_REFRESH_MS = 50L
-        const val AI_TIMEOUT_MS = 10_000L
         const val MAX_RADIO_LOG = 50
         const val RULES_DEBOUNCE_MS = 1_500L
     }

@@ -7,8 +7,21 @@ import com.gt7pitwall.core.radio.DriverCommandParser
  * Faits que l'IA a le droit d'utiliser : phrases déjà produites par l'ingénieur à partir de la télémétrie GT7,
  * des mesures, du règlement et de ce que le pilote a déclaré. Rien d'autre.
  */
-data class AiFacts(val lines: List<String>) {
+data class AiFacts(
+    val lines: List<String>,
+    /** Constats de pilotage prouvés par la télémétrie (voir [CoachingObservations]). */
+    val observations: List<Observation> = emptyList(),
+) {
     val text: String get() = lines.joinToString("\n") { "- $it" }
+
+    /** Preuves disponibles : constats, plus les blocages / patinages lus dans les tours mesurés. */
+    val evidence: Set<Evidence>
+        get() = observations.map { it.evidence }.toSet() + lines.flatMap { line ->
+            listOfNotNull(
+                Evidence.LOCKUPS.takeIf { Regex("(^|\\D)([1-9]\\d*) blocages? de roue").containsMatchIn(line) },
+                Evidence.WHEELSPIN.takeIf { Regex("(^|\\D)([1-9]\\d*) patinages?").containsMatchIn(line) },
+            )
+        }
 }
 
 /** Ce qu'on fait de la réponse de l'IA. */
@@ -22,7 +35,7 @@ sealed interface AiReply {
     /** L'IA ne sait pas, ou sa réponse n'est pas sûre : on le dit franchement. */
     data class Rejected(val reason: Reason) : AiReply
 
-    enum class Reason { UNKNOWN, INVENTED_NUMBER, NOT_TRANSMITTED, BAD_COMMAND, EMPTY }
+    enum class Reason { UNKNOWN, INVENTED_NUMBER, NOT_TRANSMITTED, NONSENSE, BANALITY, UNPROVEN_DEFECT, BAD_COMMAND, EMPTY }
 }
 
 /**
@@ -54,22 +67,32 @@ object RadioAi {
      * les mots hors vocabulaire sortent en « [unk] ») ; [freeText] de la reconnaissance libre.
      * Les commandes qui changent l'état (règlement, arrêt, pneus, position, oui / non…) restent à l'analyseur.
      */
-    fun route(text: String, freeText: String?, inConversation: Boolean = false): Route {
+    fun route(
+        text: String,
+        freeText: String?,
+        inConversation: Boolean = false,
+        /** Le contrôleur attend un oui / non (arrêt à confirmer, pneus changés ?). */
+        engineerAwaitsAnswer: Boolean = false,
+    ): Route {
         val t = DriverCommandParser.normalize(text)
         val unknownWords = Regex("\\[unk\\]").findAll(t).count()
         val clean = t.replace("[unk]", " ").replace(Regex("\\s+"), " ").trim()
         val question = freeText?.let { DriverCommandParser.normalize(it) }?.takeIf { it.isNotBlank() } ?: clean
         // « radio, question : … » force l'IA.
-        Regex("^question\\s*:?\\s*").find(question)?.let { return Route.Ai(question.substring(it.range.last + 1).ifBlank { question }) }
+        Regex("^question\\s*:?\\s*").find(question)?.let { m ->
+            val rest = question.substring(m.range.last + 1)
+            return if (isFragment(rest, inConversation)) Route.Ignore else Route.Ai(rest)
+        }
         val cmd = DriverCommandParser.parse(clean)
+        // « oui » / « non » : réponse à l'ingénieur s'il a posé une question, sinon à Gemini pendant la conversation.
+        val yesNo = cmd == DriverCommand.Yes || cmd == DriverCommand.No
+        if (yesNo && inConversation && !engineerAwaitsAnswer) return Route.Ai(question)
         val statefulCommand = cmd != null && cmd !is DriverCommand.Ask && cmd != DriverCommand.Repeat
         if (statefulCommand) return Route.Parser(clean)
-        // Conversation en cours avec Gemini : la relance (« et au freinage ? », « pourquoi ? ») lui revient,
-        // mais pas un mot isolé capté par le micro resté ouvert.
-        if (inConversation) {
-            val words = question.split(' ').filter { it.isNotBlank() }
-            return if (words.size < 2 && words.none { it in SHORT_FOLLOW_UPS }) Route.Ignore else Route.Ai(question)
-        }
+        // Bout de phrase (« et », « euh », « je fais comment dans les ») : jamais envoyé à l'IA.
+        if (isFragment(question, inConversation)) return if (cmd != null && !inConversation) Route.Parser(clean) else Route.Ignore
+        // Conversation en cours avec Gemini : la relance (« et au freinage ? », « pourquoi ? ») lui revient.
+        if (inConversation) return Route.Ai(question)
         if (OPEN_QUESTION.containsMatchIn(question)) return Route.Ai(question)
         if (unknownWords >= 2) return Route.Ai(question)
         if (freeText != null && question.split(' ').size > LONG_SENTENCE_WORDS) return Route.Ai(question)
@@ -78,8 +101,37 @@ object RadioAi {
 
     private const val LONG_SENTENCE_WORDS = 7
 
-    /** Relances d'un seul mot qui ont un sens. */
-    private val SHORT_FOLLOW_UPS = setOf("pourquoi", "comment", "precise", "explique", "detaille", "encore", "ensuite", "merci")
+    /** Réponses ou relances d'un seul mot qui ont un sens. */
+    private val SHORT_FOLLOW_UPS = setOf(
+        "oui", "non", "pourquoi", "comment", "precise", "explique", "detaille", "encore", "ensuite", "merci",
+        "ouais", "exact", "jamais", "souvent", "toujours", "parfois", "entree", "sortie", "freinage", "corde", "avant", "arriere",
+    )
+
+    /** Mots sans contenu : hésitations, liaisons. */
+    private val FILLERS = setOf(
+        "euh", "heu", "hum", "hmm", "bah", "ben", "bon", "alors", "donc", "et", "mais", "ou", "ah", "oh", "hein", "voila",
+        "la", "quoi", "enfin", "puis", "genre", "tu", "sais", "je", "radio",
+    )
+
+    /** Mots qui ne terminent pas une phrase (« et au », « je fais comment dans les ») : phrase coupée. */
+    private val DANGLING = setOf(
+        "et", "de", "du", "des", "le", "la", "les", "au", "aux", "a", "en", "dans", "sur", "pour", "que", "qui", "mais",
+        "ou", "avec", "je", "tu", "il", "mon", "ma", "mes", "ton", "ta", "tes", "un", "une", "par", "sans", "quand", "si",
+    )
+
+    /**
+     * Fragment à ignorer : déclenchement parasite du micro ouvert, hésitation, phrase coupée. « oui », « non »,
+     * « pourquoi » et les relances courtes utiles sont conservés.
+     */
+    fun isFragment(text: String, inConversation: Boolean = true): Boolean {
+        val words = DriverCommandParser.normalize(text).replace("[unk]", " ").replace("?", " ")
+            .split(' ', '\'').filter { it.isNotBlank() }
+        if (words.isEmpty()) return true
+        // Un mot seul n'a de sens qu'en réponse, pendant une conversation.
+        if (words.size == 1) return !inConversation || words[0] !in SHORT_FOLLOW_UPS
+        if (words.all { it in FILLERS }) return true
+        return words.last() in DANGLING
+    }
 
     /** Phrases-types que l'IA peut renvoyer comme commande ; chacune est comprise par [DriverCommandParser]. */
     val COMMAND_EXAMPLES = listOf(
@@ -95,16 +147,19 @@ object RadioAi {
     private const val MAX_SENTENCES = 3
 
     val systemInstruction: String = """
-        Tu es l'ingénieur de course à la radio d'un pilote de Gran Turismo 7. Tu tutoies le pilote, avec un ton
-        chaleureux et motivant, comme un vrai ingénieur qui discute avec son pilote.
-        Réponds en français, en deux ou trois phrases courtes faites pour être dites à voix haute.
-        Appuie-toi sur les FAITS (télémétrie de sa course) : régularité, écart au meilleur tour, secteurs, blocages de
-        roue, patinages, antipatinage, températures des pneus, carburant, stratégie. Tu peux donner des conseils de
-        pilotage généraux (freinage, trajectoire, gestion des pneus, de l'accélérateur) sans chiffre.
-        Tout chiffre que tu cites doit venir des FAITS, écrit en chiffres tel quel. N'invente jamais un temps, une
-        position, un écart, un adversaire ni une météo : GT7 ne les transmet pas.
-        Réponds $UNKNOWN seulement si la question porte sur une donnée absente des faits (adversaires, positions des autres…).
-        Tiens compte des ÉCHANGES PRÉCÉDENTS pour répondre aux relances.
+        Tu es l'ingénieur de course d'un pilote de Gran Turismo 7, à la radio. Tu tutoies le pilote. Tu es précis,
+        naturel et utile, jamais bavard. Réponds en français, en deux ou trois phrases courtes, à dire à voix haute.
+        Règles de coaching :
+        1. Ne reproche au pilote un défaut que s'il figure dans les CONSTATS (prouvés par la télémétrie) ou s'il l'a
+           dit lui-même. Sans preuve, pose une question au lieu de supposer.
+        2. Chaque conseil explique le pourquoi et donne un geste concret (où, quand, comment), en t'appuyant sur les
+           PRINCIPES DE PILOTAGE fournis. Pas de formule creuse comme « sois fluide » ou « reste concentré ».
+        3. Pour approfondir, termine si besoin par UNE question précise (quel virage ? à l'entrée, au point de corde
+           ou en sortie ? l'avant ou l'arrière qui glisse ?), puis utilise sa réponse dans les ÉCHANGES PRÉCÉDENTS
+           pour aller plus loin, un sujet à la fois.
+        4. Tout chiffre cité doit venir des FAITS ou des CONSTATS, écrit en chiffres tel quel. N'invente jamais un
+           temps, une position, un écart, un adversaire ni une météo : GT7 ne les transmet pas.
+        5. Réponds $UNKNOWN seulement si on te demande une donnée absente (adversaires, positions des autres…).
         Si le pilote annonce quelque chose ou demande un changement (règlement, arrêt, pneus, position, pluie, radio),
         réponds uniquement par une ligne « $COMMAND_PREFIX <phrase> » en reprenant la forme d'un de ces exemples :
         ${COMMAND_EXAMPLES.joinToString(" ; ")}.
@@ -115,6 +170,15 @@ object RadioAi {
 
     fun prompt(question: String, facts: AiFacts, history: List<Exchange> = emptyList()): String = buildString {
         append("FAITS :\n").append(facts.text).append("\n\n")
+        append("CONSTATS (prouvés par la télémétrie) :\n")
+        if (facts.observations.isEmpty()) {
+            append("- Aucun défaut de pilotage prouvé pour l'instant.\n")
+        } else {
+            facts.observations.forEach { append("- ").append(it.text).append('\n') }
+        }
+        append("\nPRINCIPES DE PILOTAGE :\n")
+        DrivingPrinciples.select(question, history, facts.evidence).forEach { append("- ").append(it.text).append('\n') }
+        append('\n')
         if (history.isNotEmpty()) {
             append("ÉCHANGES PRÉCÉDENTS :\n")
             history.forEach { append("- Pilote : ").append(it.question).append("\n  Ingénieur : ").append(it.answer).append('\n') }
@@ -136,8 +200,12 @@ object RadioAi {
             return AiReply.Command(phrase, cmd)
         }
 
-        // Contrôle phrase par phrase : une phrase avec un chiffre non vérifiable est retirée, le reste est gardé.
-        val source = facts.text + "\n" + question + "\n" + history.joinToString("\n") { it.answer }
+        // Contrôle phrase par phrase : une phrase fautive est retirée, le reste est gardé.
+        val source = facts.text + "\n" + facts.observations.joinToString("\n") { it.text } + "\n" + question + "\n" +
+            history.joinToString("\n") { it.answer }
+        val evidence = facts.evidence
+        // Seules les affirmations du pilote valent preuve (« l'avant glisse »), pas ses questions (« je bloque ? »).
+        val driverSaid = (history.map { it.question } + question).filterNot(::isQuestion).joinToString(" ")
         val sentences = sentences(text.lines().filter { it.isNotBlank() }.joinToString(" ") { it.trim() })
         var firstProblem: AiReply.Reason? = null
         val kept = sentences.filter { sentence ->
@@ -145,7 +213,12 @@ object RadioAi {
                 !numbersAllowed(sentence, source) -> AiReply.Reason.INVENTED_NUMBER
                 talksAboutOthers(sentence) -> AiReply.Reason.NOT_TRANSMITTED
                 sentence.uppercase().contains(UNKNOWN) -> AiReply.Reason.UNKNOWN
-                else -> null
+                else -> when (AdviceCheck.check(sentence, evidence, driverSaid)) {
+                    AdviceCheck.Problem.NONSENSE -> AiReply.Reason.NONSENSE
+                    AdviceCheck.Problem.BANALITY -> AiReply.Reason.BANALITY
+                    AdviceCheck.Problem.UNPROVEN_DEFECT -> AiReply.Reason.UNPROVEN_DEFECT
+                    null -> null
+                }
             }
             if (problem != null && firstProblem == null) firstProblem = problem
             problem == null
@@ -165,6 +238,14 @@ object RadioAi {
         if (!numbers(t).all { it in allowed }) return false
         val allowedPairs = withUnits(src).toSet()
         return withUnits(t).all { it in allowedPairs }
+    }
+
+    private val INTERROGATIVE = Regex("^(est ce|comment|pourquoi|quand|ou est|quel|quelle|quels|quelles|combien|qu'est|que dois|dois je|tu crois|tu penses)")
+
+    /** Question du pilote (et non constat) : elle ne prouve aucun défaut. */
+    fun isQuestion(s: String): Boolean {
+        val t = DriverCommandParser.normalize(s)
+        return s.trim().endsWith("?") || INTERROGATIVE.containsMatchIn(t) || " est ce " in " $t "
     }
 
     /** GT7 ne transmet rien sur les autres voitures : écarts, avance, retard, adversaires. */
@@ -214,7 +295,7 @@ object RadioAi {
     /** Rangs (« quatrième ») : une position, que GT7 ne transmet pas en course. */
     private val ORDINALS: Map<String, Int> = WORDS.entries.associate { (w, n) ->
         w.removeSuffix("e").replace("cinq", "cinqu").replace("neuf", "neuv") + "ieme" to n
-    } + ("deuxieme" to 2) + ("second" to 2) + ("seconde" to 2)
+    } + ("deuxieme" to 2)
 
     /** Texte sans accents, nombres en lettres remplacés par des chiffres (« huit tours » → « 8 tours »). */
     private fun digitize(s: String): String =

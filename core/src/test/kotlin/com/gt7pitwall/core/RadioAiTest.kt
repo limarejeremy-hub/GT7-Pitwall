@@ -90,8 +90,8 @@ class RadioAiTest {
 
     @Test
     fun longAnswersAreCutForTheRadio() {
-        val r = RadioAi.parse("Bien. Continue. Reste concentré. Quatrième phrase.", "?", facts) as AiReply.Answer
-        assertEquals("Bien. Continue. Reste concentré.", r.text)
+        val r = RadioAi.parse("Bien. Continue. Garde ton repère de freinage. Quatrième phrase.", "?", facts) as AiReply.Answer
+        assertEquals("Bien. Continue. Garde ton repère de freinage.", r.text)
     }
 
     @Test

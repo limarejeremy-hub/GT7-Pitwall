@@ -2,6 +2,7 @@ package com.gt7pitwall.core.race
 
 import com.gt7pitwall.core.ai.AiFacts
 import com.gt7pitwall.core.ai.AiReply
+import com.gt7pitwall.core.ai.CoachingObservations
 import com.gt7pitwall.core.ai.RadioAi
 import com.gt7pitwall.core.analysis.GForce
 import com.gt7pitwall.core.analysis.GForceMeter
@@ -245,6 +246,14 @@ class RaceController(
                             Priority.HIGH,
                             MessageCategory.ANSWER,
                         )
+                        // Conseil écarté : plutôt que d'improviser, l'ingénieur cherche le vrai problème avec le pilote.
+                        AiReply.Reason.NONSENSE, AiReply.Reason.BANALITY, AiReply.Reason.UNPROVEN_DEFECT -> EngineerMessage(
+                            "Je préfère ne pas te dire de bêtise. Pour t'aider précisément : c'est dans quel virage, et ça se " +
+                                "passe à l'entrée, au point de corde ou en sortie ?",
+                            Priority.HIGH,
+                            MessageCategory.ANSWER,
+                            expectsReply = true,
+                        )
                         else -> engineer.notUnderstood(question)
                     },
                 ),
@@ -284,8 +293,11 @@ class RaceController(
             lap.tcsShare?.let { parts += "antipatinage actif ${(it * 100).roundToInt()} % du tour" }
             lines += "Tour ${lap.lapNumber} : ${parts.joinToString(", ")}."
         }
-        return AiFacts(lines)
+        return AiFacts(lines, CoachingObservations.from(snap.laps, snap.packet))
     }
+
+    /** L'ingénieur attend un oui / non (arrêt à confirmer, pneus changés ?) : la réponse n'est pas pour l'IA. */
+    val awaitingDriverAnswer: Boolean get() = awaitingAnswer
 
     /** Règlement saisi à l'écran. */
     fun setRules(newRules: RaceRules): List<EngineerMessage> {

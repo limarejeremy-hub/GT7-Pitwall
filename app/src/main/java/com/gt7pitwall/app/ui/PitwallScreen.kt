@@ -52,7 +52,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.gt7pitwall.app.ai.AiState
 import com.gt7pitwall.app.ai.GeminiNano
-import com.gt7pitwall.app.engine.AiTrace
+import com.gt7pitwall.core.ai.AiTrace
 import com.gt7pitwall.app.engine.PitwallEngine
 import com.gt7pitwall.app.engine.PitwallUiState
 import com.gt7pitwall.app.settings.SettingsStore
