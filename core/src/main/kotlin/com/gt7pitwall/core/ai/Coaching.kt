@@ -260,6 +260,8 @@ object AdviceCheck {
             listOf("corde", "trajectoire", "elargi", "large"),
         ),
         Claim(Regex("\\btu (es|roules de maniere) irreguli|\\btu manques de regularite|\\btes chronos (sont )?irreguli"), setOf(Evidence.INCONSISTENT), listOf("regul")),
+        // Un compliment aussi doit être prouvé : « tu es régulier » sans chronos réguliers mesurés est une invention.
+        Claim(Regex("\\btu es (tres |bien |assez )?(regulier|constant)|\\btes chronos sont (tres |bien )?(reguliers|constants)"), setOf(Evidence.CONSISTENT), emptyList()),
         Claim(Regex("\\btes pneus (sont trop chauds|surchauffent|chauffent trop)"), setOf(Evidence.TYRES_HOT, Evidence.FRONT_HOTTER, Evidence.REAR_HOTTER), listOf("chauff", "chaud")),
         Claim(Regex("\\btes pneus (sont )?(trop )?froids"), setOf(Evidence.TYRES_COLD), listOf("froid")),
         Claim(Regex("\\btu perds (du temps|beaucoup)"), setOf(Evidence.SECTOR_LOSS, Evidence.INCONSISTENT), listOf("perd")),

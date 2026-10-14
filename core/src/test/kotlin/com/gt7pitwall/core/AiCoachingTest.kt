@@ -134,6 +134,9 @@ class AiCoachingTest {
         assertEquals(AdviceCheck.Problem.UNPROVEN_DEFECT, AdviceCheck.check("Tu rates le point de corde.", emptySet(), ""))
         assertEquals(AdviceCheck.Problem.UNPROVEN_DEFECT, AdviceCheck.check("Tes pneus surchauffent.", emptySet(), ""))
         assertNull(AdviceCheck.check("Tes pneus surchauffent.", setOf(Evidence.TYRES_HOT), ""))
+        // Essai réel (v39) : « Tu as dit que tu es régulier, c'est bien » avec un seul tour chronométré.
+        assertEquals(AdviceCheck.Problem.UNPROVEN_DEFECT, AdviceCheck.check("Tu as dit que tu es régulier, c'est bien.", emptySet(), "tu es regulier"))
+        assertNull(AdviceCheck.check("Tu es régulier, garde tes repères.", setOf(Evidence.CONSISTENT), ""))
         // La question du pilote ne vaut pas aveu.
         val r = RadioAi.parse(claim, "est-ce que je bloque mes roues", AiFacts(listOf("Course : tour 3.")))
         assertEquals(AiReply.Rejected(AiReply.Reason.UNPROVEN_DEFECT), r)

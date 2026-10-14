@@ -36,6 +36,9 @@ sealed interface VoiceInputEvent {
     /** Mot de réveil entendu seul : l'ingénieur écoute la phrase suivante. */
     data object Wake : VoiceInputEvent
 
+    /** Écoute ouverte tout de suite après un bip (sans « Je t'écoute » parlé, pour ne pas couper le début de la phrase). */
+    data object Listening : VoiceInputEvent
+
     /**
      * Phrase du pilote adressée à l'ingénieur. [text] vient de la reconnaissance limitée au vocabulaire radio
      * (fiable pour les commandes) ; [freeText], de la reconnaissance libre, sert aux questions posées à l'IA.

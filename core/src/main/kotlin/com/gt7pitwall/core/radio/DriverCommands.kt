@@ -209,7 +209,7 @@ object DriverCommandParser {
             has(t, "detail") -> DriverQuery.DETAILS
             has(t, "meilleur", "record") -> DriverQuery.BEST_LAP
             has(t, "dernier tour", "chrono", "temps") -> DriverQuery.LAST_LAP
-            has(t, "rythme", "regularite", "moyenne") -> DriverQuery.PACE
+            has(t, "rythme", "regularite", "regulier", "reguliere", "constant", "moyenne") -> DriverQuery.PACE
             has(t, "tour", "course", "reste") -> DriverQuery.RACE_STATUS
             else -> null
         }

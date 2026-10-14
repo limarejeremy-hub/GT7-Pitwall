@@ -61,4 +61,18 @@ class RealRadioPhrasesTest {
             assertTrue(w in vocabulary, "« $w » absent du vocabulaire radio")
         }
     }
+
+    @Test
+    fun regularityQuestionsAreAnsweredFromTheMeasuredLaps() {
+        // Essai du 14/10 (v39) : « tu es régulier » parti à Gemini, qui a répondu « tu as dit que tu es régulier ».
+        assertEquals(DriverCommand.Ask(DriverQuery.PACE), p("tu es regulier"))
+        assertEquals(DriverCommand.Ask(DriverQuery.PACE), p("est-ce que je suis régulier"))
+        assertTrue(com.gt7pitwall.core.ai.RadioAi.route("tu es regulier", "tu es régulier") is com.gt7pitwall.core.ai.RadioAi.Route.Parser)
+        val c = RaceController()
+        val s = RaceSim(c)
+        s.start()
+        s.driveLaps(1)
+        s.say("tu es régulier")
+        assertTrue("au moins deux tours" in s.lastAnswer, s.lastAnswer)
+    }
 }

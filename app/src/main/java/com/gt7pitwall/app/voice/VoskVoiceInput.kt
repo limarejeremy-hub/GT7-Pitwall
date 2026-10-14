@@ -2,6 +2,8 @@ package com.gt7pitwall.app.voice
 
 import android.annotation.SuppressLint
 import android.media.AudioFormat
+import android.media.AudioManager
+import android.media.ToneGenerator
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.SystemClock
@@ -140,7 +142,20 @@ class VoskVoiceInput(
         }
     }
 
+    private var tone: ToneGenerator? = null
+
+    private fun beep() {
+        try {
+            val t = tone ?: ToneGenerator(AudioManager.STREAM_MUSIC, BEEP_VOLUME).also { tone = it }
+            t.startTone(ToneGenerator.TONE_PROP_ACK, BEEP_MS.toInt())
+        } catch (e: Exception) {
+            // Pas de bip possible : l'écoute démarre quand même.
+        }
+    }
+
     fun stop() {
+        tone?.release()
+        tone = null
         googleSession++
         googleSpeech?.cancel()
         micReleased = false
@@ -282,6 +297,14 @@ class VoskVoiceInput(
             paused = true
             _state.value = ListenState.PAUSED
         } else {
+            // Réponse attendue avec Google : on ouvre l'écoute presque aussitôt, pour ne pas manquer le début.
+            val google = googleSpeech?.takeIf { useGoogleSpeech && it.available }
+            if (awakeUntil > 0 && google != null) {
+                delay(GOOGLE_AFTER_SPEECH_MS)
+                paused = false
+                listenWithGoogle(google, startDelayMs = 0)
+                return
+            }
             delay(RESUME_DELAY_MS) // laisse la fin de la phrase s'éteindre dans le casque
             paused = false
             if (awakeUntil > 0) {
@@ -311,14 +334,14 @@ class VoskVoiceInput(
     }
 
     /** Une phrase écoutée par Google, puis le micro revient au mot de réveil. */
-    private fun listenWithGoogle(google: GoogleSpeech) {
+    private fun listenWithGoogle(google: GoogleSpeech, startDelayMs: Long = GOOGLE_START_DELAY_MS) {
         val session = ++googleSession
         awakeUntil = 1
         _state.value = ListenState.AWAKE
         expiryJob?.cancel()
         scope.launch {
             // Laisse démarrer une éventuelle phrase de l'ingénieur (« Je t'écoute ») : l'écoute suivra sa fin.
-            delay(GOOGLE_START_DELAY_MS)
+            if (startDelayMs > 0) delay(startDelayMs)
             if (session != googleSession || tts.speaking.value || audioJob == null) return@launch
             micReleased = true
             delay(MIC_POLL_MS * 2)
@@ -353,9 +376,16 @@ class VoskVoiceInput(
                 awakeUntil = 0
                 _events.tryEmit(VoiceInputEvent.Utterance(rest, free))
             } else {
-                // Avec Google, l'écoute démarre après « Je t'écoute » (fin de la phrase de l'ingénieur).
-                awake()
-                _events.tryEmit(VoiceInputEvent.Wake)
+                val google = googleSpeech?.takeIf { useGoogleSpeech && it.available }
+                if (google != null) {
+                    // Bip court au lieu de « Je t'écoute » parlé : on écoute tout de suite, sans couper le début.
+                    beep()
+                    _events.tryEmit(VoiceInputEvent.Listening)
+                    listenWithGoogle(google, startDelayMs = BEEP_MS)
+                } else {
+                    awake()
+                    _events.tryEmit(VoiceInputEvent.Wake)
+                }
             }
             return
         }
@@ -382,5 +412,8 @@ class VoskVoiceInput(
         const val PAIR_WINDOW_MS = 1_200L
         const val MIC_POLL_MS = 50L
         const val GOOGLE_START_DELAY_MS = 500L
+        const val GOOGLE_AFTER_SPEECH_MS = 150L
+        const val BEEP_MS = 150L
+        const val BEEP_VOLUME = 70
     }
 }
