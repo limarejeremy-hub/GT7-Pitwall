@@ -174,6 +174,9 @@ class RadioAiTest {
     fun followUpsGoToTheAiDuringAConversation() {
         // Hors conversation, « et au freinage » ne veut rien dire pour les mots-clés ; pendant, c'est une relance.
         assertIs<RadioAi.Route.Ai>(RadioAi.route("et au freinage", "et au freinage", inConversation = true))
+        // Bout de phrase capté par le micro resté ouvert (essai réel : « et ») : ignoré ; « pourquoi » seul est une relance.
+        assertEquals(RadioAi.Route.Ignore, RadioAi.route("et", "et", inConversation = true))
+        assertIs<RadioAi.Route.Ai>(RadioAi.route("pourquoi", "pourquoi", inConversation = true))
         // Une commande reste une commande, même en pleine conversation.
         assertIs<RadioAi.Route.Parser>(RadioAi.route("arrêt fait", "arrêt fait", inConversation = true))
         assertIs<RadioAi.Route.Parser>(RadioAi.route("combien d'essence", "combien d'essence", inConversation = false))

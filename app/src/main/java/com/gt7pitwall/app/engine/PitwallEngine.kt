@@ -180,6 +180,7 @@ class PitwallEngine(
                 // Commandes et questions simples : analyseur à mots-clés (immédiat, testé). Questions ouvertes : IA.
                 val route = RadioAi.route(event.text, event.freeText, race.inAiConversation())
                 val messages = when {
+                    route is RadioAi.Route.Ignore -> emptyList()
                     route is RadioAi.Route.Ai && lm != null && lm.ready -> askAi(lm, route.question)
                     route is RadioAi.Route.Ai && lm != null && DriverCommandParser.parse(event.text) == null -> listOf(
                         EngineerMessage("Toi : ${route.question}", Priority.INFO, MessageCategory.DRIVER),

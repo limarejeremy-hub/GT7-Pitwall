@@ -38,6 +38,9 @@ object RadioAi {
 
         /** Gemini : question ouverte ou phrase que la reconnaissance radio n'a pas suivie. */
         data class Ai(val question: String) : Route
+
+        /** Bout de phrase capté par le micro ouvert (« et », « euh ») : ignoré. */
+        data object Ignore : Route
     }
 
     /** Questions ouvertes : conseils, analyses, résumés — le terrain de l'IA, pas des mots-clés. */
@@ -61,8 +64,12 @@ object RadioAi {
         val cmd = DriverCommandParser.parse(clean)
         val statefulCommand = cmd != null && cmd !is DriverCommand.Ask && cmd != DriverCommand.Repeat
         if (statefulCommand) return Route.Parser(clean)
-        // Conversation en cours avec Gemini : la relance (« et au freinage ? », « pourquoi ? ») lui revient.
-        if (inConversation) return Route.Ai(question)
+        // Conversation en cours avec Gemini : la relance (« et au freinage ? », « pourquoi ? ») lui revient,
+        // mais pas un mot isolé capté par le micro resté ouvert.
+        if (inConversation) {
+            val words = question.split(' ').filter { it.isNotBlank() }
+            return if (words.size < 2 && words.none { it in SHORT_FOLLOW_UPS }) Route.Ignore else Route.Ai(question)
+        }
         if (OPEN_QUESTION.containsMatchIn(question)) return Route.Ai(question)
         if (unknownWords >= 2) return Route.Ai(question)
         if (freeText != null && question.split(' ').size > LONG_SENTENCE_WORDS) return Route.Ai(question)
@@ -70,6 +77,9 @@ object RadioAi {
     }
 
     private const val LONG_SENTENCE_WORDS = 7
+
+    /** Relances d'un seul mot qui ont un sens. */
+    private val SHORT_FOLLOW_UPS = setOf("pourquoi", "comment", "precise", "explique", "detaille", "encore", "ensuite", "merci")
 
     /** Phrases-types que l'IA peut renvoyer comme commande ; chacune est comprise par [DriverCommandParser]. */
     val COMMAND_EXAMPLES = listOf(
