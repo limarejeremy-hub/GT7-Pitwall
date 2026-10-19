@@ -175,6 +175,7 @@ class PitwallEngine(
             VoiceInputEvent.Wake -> deliver(EngineerMessage("Je t'écoute.", Priority.HIGH, MessageCategory.ANSWER))
             // Affiché seulement : la voix ferait attendre le pilote et couperait le début de sa phrase.
             VoiceInputEvent.Listening -> deliver(EngineerMessage("🎙 Je t'écoute…", Priority.INFO, MessageCategory.DRIVER))
+            is VoiceInputEvent.Notice -> deliver(EngineerMessage(event.text, Priority.HIGH, MessageCategory.ANSWER))
             is VoiceInputEvent.Utterance -> {
                 // Commandes et questions simples : analyseur (immédiat, testé). Questions ouvertes : IA. Fragments : ignorés.
                 val messages = conversation.onUtterance(event.text, event.freeText, languageModel, ::deliver)

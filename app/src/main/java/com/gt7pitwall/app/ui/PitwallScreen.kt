@@ -158,6 +158,7 @@ fun PitwallScreen(
                 voiceInput.useGoogleSpeech = it
             },
         )
+        RadioDiagnosticsCard(voiceInput, googleSpeech)
         DiscordCard(
             discord = discord,
             autoJoin = discordAutoJoin,
@@ -763,6 +764,45 @@ private fun LapHistoryCard(laps: List<LapRecord>) {
             }
         }
     }
+}
+
+/**
+ * Diagnostic de la radio, pour comprendre une écoute sans réponse : micro écouté, état de la reconnaissance Google,
+ * délai avant qu'elle soit prête, niveau sonore reçu, code d'erreur, passage du micro et repli sur Vosk. Aucun son.
+ */
+@Composable
+private fun RadioDiagnosticsCard(voiceInput: VoskVoiceInput, googleOn: Boolean) {
+    val listen by voiceInput.state.collectAsStateWithLifecycle()
+    val mic by voiceInput.micLabel.collectAsStateWithLifecycle()
+    val handover by voiceInput.handover.collectAsStateWithLifecycle()
+    val fallback by voiceInput.fallbackInfo.collectAsStateWithLifecycle()
+    val heard by voiceInput.heard.collectAsStateWithLifecycle()
+    val google = voiceInput.googleSpeech
+    val diag by (google?.diag ?: remember { kotlinx.coroutines.flow.MutableStateFlow(com.gt7pitwall.app.voice.GoogleDiag()) })
+        .collectAsStateWithLifecycle()
+    PitCard("Diagnostic radio") {
+        DiagLine("Écoute", listen.name.lowercase().replace('_', ' '))
+        DiagLine("Micro écouté", mic ?: "aucun")
+        DiagLine("Google", if (!googleOn) "désactivé (Vosk seul)" else if (google?.available == false) "indisponible sur ce téléphone" else diag.phase)
+        if (googleOn && diag.engine != null) {
+            DiagLine("Dernier essai Google", listOfNotNull(
+                diag.engine,
+                diag.source,
+                diag.readyMs?.let { "prête en $it ms" } ?: if (diag.outcome != null) "jamais prête" else "pas encore prête",
+                if (diag.speechDetected) "parole détectée" else "aucune parole détectée",
+                diag.maxRmsDb?.let { "niveau max ${"%.1f".format(it)} dB" },
+            ).joinToString(" • "))
+            diag.errorName?.let { DiagLine("Erreur Google", it, PitColors.Red) }
+            handover?.let { DiagLine("Passage du micro", it, if ("NON" in it) PitColors.Red else PitColors.Muted) }
+        }
+        fallback?.let { DiagLine("Repli", it, PitColors.Yellow) }
+        DiagLine("Dernière phrase", heard.ifBlank { "—" })
+    }
+}
+
+@Composable
+private fun DiagLine(label: String, value: String, color: androidx.compose.ui.graphics.Color = PitColors.Muted) {
+    Text("$label : $value", style = MaterialTheme.typography.bodySmall, color = color)
 }
 
 @Composable

@@ -44,6 +44,9 @@ sealed interface VoiceInputEvent {
      * (fiable pour les commandes) ; [freeText], de la reconnaissance libre, sert aux questions posées à l'IA.
      */
     data class Utterance(val text: String, val freeText: String? = null) : VoiceInputEvent
+
+    /** Message de la radio elle-même (« Je n'ai pas reçu ta demande… ») : dit au pilote, jamais silencieux. */
+    data class Notice(val text: String) : VoiceInputEvent
 }
 
 /**

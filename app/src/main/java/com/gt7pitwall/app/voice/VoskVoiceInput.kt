@@ -4,6 +4,9 @@ import android.media.AudioManager
 import android.media.ToneGenerator
 import android.os.SystemClock
 import com.gt7pitwall.core.radio.DriverCommandParser
+import com.gt7pitwall.core.radio.SpeechFallbackPolicy
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.withTimeoutOrNull
 import com.gt7pitwall.core.radio.VoiceInput
 import com.gt7pitwall.core.radio.VoiceInputEvent
 import kotlinx.coroutines.CoroutineScope
@@ -89,9 +92,33 @@ class VoskVoiceInput(
     @Volatile
     private var phoneMicInUse = true
 
-    /** Google : micro du Fold, ou flux du casque PS5 si la reconnaissance l'accepte (Android 13+). */
-    private fun google(): GoogleSpeech? =
-        googleSpeech?.takeIf { useGoogleSpeech && it.available && (phoneMicInUse || it.externalAudioSupported != false) }
+    /** Repli sur Vosk quand Google échoue (testé dans le module core). */
+    private val fallback = SpeechFallbackPolicy()
+
+    private val _fallbackInfo = MutableStateFlow<String?>(null)
+    /** État du repli affiché à l'écran (null : Google normal). */
+    val fallbackInfo: StateFlow<String?> = _fallbackInfo.asStateFlow()
+
+    private val _handover = MutableStateFlow<String?>(null)
+    /** Dernier passage du micro du Fold à Google : libéré, et en combien de temps. */
+    val handover: StateFlow<String?> = _handover.asStateFlow()
+
+    private fun refreshFallbackInfo() {
+        _fallbackInfo.value = when {
+            fallback.suspended -> "Google suspendu après ${fallback.consecutiveFailures} échecs : Vosk pour toutes les demandes " +
+                "(change le réglage Google pour réessayer)."
+            fallback.voskForNextRequest -> "Google a échoué : la prochaine demande passe par Vosk."
+            else -> null
+        }
+    }
+
+    /**
+     * Google : disponible, activé, pas d'échec en attente de repli ; micro du Fold, ou flux du casque PS5 si la
+     * reconnaissance l'accepte (Android 13+).
+     */
+    private fun google(): GoogleSpeech? = googleSpeech?.takeIf {
+        useGoogleSpeech && fallback.useGoogle(it.available, phoneMicInUse, it.externalAudioSupported)
+    }
 
     @Volatile
     private var paused = false
@@ -104,11 +131,19 @@ class VoskVoiceInput(
 
     @Volatile
     var useGoogleSpeech: Boolean = true
+        set(value) {
+            field = value
+            fallback.reset()
+            refreshFallbackInfo()
+        }
+
+    /** Confirmation, par la boucle d'écoute, que le micro du Fold est bien arrêté avant que Google le prenne. */
+    @Volatile
+    private var micAck: CompletableDeferred<Unit>? = null
 
     /** Le micro est rendu à la reconnaissance Google le temps d'une phrase. */
     @Volatile
     private var micReleased = false
-    private var googleSession = 0
 
     /** Dernière phrase de la reconnaissance libre, et quand elle a été reçue. */
     private var lastFree: Pair<String, Long>? = null
@@ -172,7 +207,7 @@ class VoskVoiceInput(
     fun stop() {
         tone?.release()
         tone = null
-        googleSession++
+        fallback.cancelActive()
         googleSpeech?.cancel()
         micReleased = false
         ttsJob?.cancel()
@@ -211,6 +246,7 @@ class VoskVoiceInput(
                         record.pause()
                         recording = false
                     }
+                    micAck?.complete(Unit)
                     delay(MIC_POLL_MS)
                     continue
                 }
@@ -293,7 +329,7 @@ class VoskVoiceInput(
         if (speaking) {
             // L'ingénieur reprend la parole pendant une écoute Google : on la relancera après lui.
             if (googleSpeech?.listening == true) {
-                googleSession++
+                fallback.cancelActive()
                 googleSpeech?.cancel()
                 micReleased = false
                 awakeUntil = 1
@@ -322,9 +358,81 @@ class VoskVoiceInput(
     private fun awake() {
         val google = google()
         if (google != null) {
-            listenWithGoogle(google)
+            // Laisse démarrer une éventuelle phrase de l'ingénieur : l'écoute suivra sa fin.
+            listenWithGoogle(google, startDelayMs = GOOGLE_START_DELAY_MS)
             return
         }
+        listenWithVosk()
+    }
+
+    /** Comment le pilote sait que Google l'écoute. */
+    private enum class Signal { NONE, BEEP_WHEN_READY }
+
+    /**
+     * Une phrase écoutée par Google, puis le micro revient au mot de réveil. Micro du Fold : Google ne démarre qu'après
+     * la confirmation que la boucle Vosk a arrêté son enregistrement (deux enregistrements simultanés, et Android en
+     * rend un muet). Le signal au pilote part quand Google est réellement prêt (onReadyForSpeech). En cas d'échec, le
+     * pilote est prévenu et Vosk écoute la demande suivante.
+     */
+    private fun listenWithGoogle(google: GoogleSpeech, startDelayMs: Long = 0, signal: Signal = Signal.NONE) {
+        val session = fallback.start()
+        awakeUntil = 1
+        _state.value = ListenState.AWAKE
+        expiryJob?.cancel()
+        scope.launch {
+            if (startDelayMs > 0) delay(startDelayMs)
+            // L'ingénieur parle : l'écoute sera relancée à la fin de sa phrase (onEngineerSpeaking).
+            if (tts.speaking.value || audioJob == null) return@launch
+            val external = !phoneMicInUse
+            if (external) {
+                micReleased = true
+            } else {
+                val ack = CompletableDeferred<Unit>()
+                micAck = ack
+                micReleased = true
+                val t0 = SystemClock.elapsedRealtime()
+                val released = withTimeoutOrNull(MIC_RELEASE_TIMEOUT_MS) { ack.await() } != null
+                val ms = SystemClock.elapsedRealtime() - t0
+                micAck = null
+                _handover.value = if (released) "micro du Fold libéré en $ms ms" else "micro du Fold NON libéré après $ms ms"
+            }
+            google.listenOnce(
+                audio = if (external) ExternalAudio.create() else null,
+                onReady = {
+                    if (signal == Signal.BEEP_WHEN_READY) {
+                        beep()
+                        _events.tryEmit(VoiceInputEvent.Listening)
+                    }
+                },
+            ) { result -> onGoogleResult(session, result) }
+        }
+    }
+
+    private fun onGoogleResult(session: Int, result: GoogleResult) {
+        val decision = fallback.finish(session, result.outcome, result.errorCode)
+        refreshFallbackInfo()
+        // Écoute annulée ou remplacée entre-temps (redémarrage, l'ingénieur a repris la parole) : rien à faire ici.
+        decision ?: return
+        micReleased = false
+        awakeUntil = 0
+        if (_state.value == ListenState.AWAKE) _state.value = ListenState.WAITING_WAKE_WORD
+        val text = result.text
+        if (text != null) {
+            _heard.value = text
+            val wakeRegex = Regex("^\\s*${Regex.escape(DriverCommandParser.normalize(wakeWord))}\\s*,?\\s*")
+            val norm = DriverCommandParser.normalize(text).replace(wakeRegex, "").trim()
+            if (norm.isNotEmpty()) _events.tryEmit(VoiceInputEvent.Utterance(norm, norm))
+            return
+        }
+        if (decision.fallbackToVosk) {
+            // Jamais silencieux : le pilote est prévenu, et Vosk écoute tout de suite sa demande répétée.
+            listenWithVosk()
+            decision.notice?.let { _events.tryEmit(VoiceInputEvent.Notice(it)) }
+        }
+    }
+
+    /** Fenêtre d'écoute Vosk sans mot de réveil (après un échec de Google, ou sans Google). */
+    private fun listenWithVosk() {
         awakeUntil = SystemClock.elapsedRealtime() + AWAKE_MS
         _state.value = ListenState.AWAKE
         expiryJob?.cancel()
@@ -333,39 +441,6 @@ class VoskVoiceInput(
             if (SystemClock.elapsedRealtime() >= awakeUntil && _state.value == ListenState.AWAKE) {
                 awakeUntil = 0
                 _state.value = ListenState.WAITING_WAKE_WORD
-            }
-        }
-    }
-
-    /** Une phrase écoutée par Google, puis le micro revient au mot de réveil. */
-    private fun listenWithGoogle(google: GoogleSpeech, startDelayMs: Long = GOOGLE_START_DELAY_MS) {
-        val session = ++googleSession
-        awakeUntil = 1
-        _state.value = ListenState.AWAKE
-        expiryJob?.cancel()
-        scope.launch {
-            // Laisse démarrer une éventuelle phrase de l'ingénieur (« Je t'écoute ») : l'écoute suivra sa fin.
-            if (startDelayMs > 0) delay(startDelayMs)
-            if (session != googleSession || tts.speaking.value || audioJob == null) return@launch
-            micReleased = true
-            delay(MIC_POLL_MS * 2)
-            val external = !phoneMicInUse
-            google.listenOnce(if (external) ExternalAudio.create() else null) { text ->
-                if (session != googleSession) return@listenOnce
-                micReleased = false
-                awakeUntil = 0
-                if (_state.value == ListenState.AWAKE) _state.value = ListenState.WAITING_WAKE_WORD
-                // Flux du casque refusé par Google : Vosk reprend, et l'ingénieur invite à répéter.
-                if (external && text == null && google.externalAudioSupported == false) {
-                    awake()
-                    _events.tryEmit(VoiceInputEvent.Wake)
-                    return@listenOnce
-                }
-                if (text.isNullOrBlank()) return@listenOnce
-                _heard.value = text
-                val wakeRegex = Regex("^\\s*${Regex.escape(DriverCommandParser.normalize(wakeWord))}\\s*,?\\s*")
-                val norm = DriverCommandParser.normalize(text).replace(wakeRegex, "").trim()
-                if (norm.isNotEmpty()) _events.tryEmit(VoiceInputEvent.Utterance(norm, norm))
             }
         }
     }
@@ -385,19 +460,19 @@ class VoskVoiceInput(
             val rest = norm.substring(match.range.last + 1).trim()
             if (rest.length >= 2) {
                 awakeUntil = 0
+                fallback.voskHandledRequest()
+                refreshFallbackInfo()
                 _events.tryEmit(VoiceInputEvent.Utterance(rest, free))
             } else {
                 val google = google()
                 if (google != null && !phoneMicInUse) {
                     // Casque PS5 : le bip du Fold ne s'entendrait pas ; « Je t'écoute » part sur Discord, que le micro
-                    // du casque ne capte pas : l'écoute commence tout de suite.
+                    // du casque ne capte pas : l'écoute commence tout de suite (le flux est mis en attente).
                     _events.tryEmit(VoiceInputEvent.Wake)
-                    listenWithGoogle(google, startDelayMs = 0)
+                    listenWithGoogle(google)
                 } else if (google != null) {
-                    // Bip court au lieu de « Je t'écoute » parlé : on écoute tout de suite, sans couper le début.
-                    beep()
-                    _events.tryEmit(VoiceInputEvent.Listening)
-                    listenWithGoogle(google, startDelayMs = BEEP_MS)
+                    // Bip court, et seulement quand Google écoute vraiment : le pilote ne parle pas dans le vide.
+                    listenWithGoogle(google, signal = Signal.BEEP_WHEN_READY)
                 } else {
                     awake()
                     _events.tryEmit(VoiceInputEvent.Wake)
@@ -409,6 +484,8 @@ class VoskVoiceInput(
             awakeUntil = 0
             expiryJob?.cancel()
             _state.value = ListenState.WAITING_WAKE_WORD
+            fallback.voskHandledRequest()
+            refreshFallbackInfo()
             _events.tryEmit(VoiceInputEvent.Utterance(norm, free))
         }
     }
@@ -428,6 +505,7 @@ class VoskVoiceInput(
         const val PAIR_WINDOW_MS = 1_200L
         const val MIC_POLL_MS = 50L
         const val GOOGLE_START_DELAY_MS = 500L
+        const val MIC_RELEASE_TIMEOUT_MS = 1_000L
         const val GOOGLE_AFTER_SPEECH_MS = 150L
         const val BEEP_MS = 150L
         const val BEEP_VOLUME = 70
