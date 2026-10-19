@@ -50,6 +50,7 @@ class TelemetryService : Service() {
         goForeground()
         acquireLocks()
         engine.start(intent?.getStringExtra(EXTRA_HOST))
+        (application as PitwallApp).onTelemetryStart()
         return START_NOT_STICKY
     }
 

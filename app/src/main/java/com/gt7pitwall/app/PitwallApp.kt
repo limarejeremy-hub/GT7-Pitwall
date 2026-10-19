@@ -9,6 +9,7 @@ import com.gt7pitwall.app.service.TelemetryService
 import com.gt7pitwall.app.settings.RaceStore
 import com.gt7pitwall.app.settings.SettingsStore
 import com.gt7pitwall.core.knowledge.Gt7Database
+import com.gt7pitwall.core.radio.RoutedVoiceOutput
 import com.gt7pitwall.app.voice.TtsVoiceOutput
 import com.gt7pitwall.app.voice.GoogleSpeech
 import com.gt7pitwall.app.voice.VoiceModelManager
@@ -28,13 +29,20 @@ class PitwallApp : Application() {
         private set
     val gemini = GeminiNano()
 
-    /** Prototype radio Discord (le bot tourne sur le téléphone). */
-    val discord: DiscordRadio by lazy { DiscordRadio(this, DiscordTokenStore(this)) }
+    /** Radio Discord : le bot tourne sur le téléphone et parle dans le salon vocal de la PS5. */
+    lateinit var discord: DiscordRadio
+        private set
+
+    /** Voix de l'ingénieur : Discord quand le bot est dans le salon, sinon le haut-parleur du Fold. */
+    lateinit var radioOut: RoutedVoiceOutput
+        private set
 
     override fun onCreate() {
         super.onCreate()
         settings = SettingsStore(this)
         voice = TtsVoiceOutput(this).also { it.speechRate = settings.speechRate }
+        discord = DiscordRadio(this, DiscordTokenStore(this)).also { it.speechRate = settings.speechRate }
+        radioOut = RoutedVoiceOutput(voice, discord).also { it.mirrorOnPhone = settings.discordMirrorPhone }
         voiceModels = VoiceModelManager(this)
         voiceInput = VoskVoiceInput(voiceModels, voice).also {
             it.wakeWord = settings.wakeWord
@@ -43,7 +51,7 @@ class PitwallApp : Application() {
             it.googleSpeech = GoogleSpeech(this)
             it.useGoogleSpeech = settings.googleSpeech
         }
-        engine = PitwallEngine(voice, voiceInput, loadDatabase(), RaceStore(this)).also {
+        engine = PitwallEngine(radioOut, voiceInput, loadDatabase(), RaceStore(this)).also {
             it.voiceEnabled = settings.voiceEnabled
             it.askPositionEachLap = { settings.askPositionEachLap && voiceInput.isRunning }
             it.languageModel = gemini
@@ -65,6 +73,16 @@ class PitwallApp : Application() {
         Gt7Database.parse(read("cars.csv"), read("maker.csv"), read("course.csv"))
     } catch (e: Exception) {
         Gt7Database.EMPTY
+    }
+
+    /** Lancement de la télémétrie : le bot rejoint le dernier salon si le réglage est actif. */
+    fun onTelemetryStart() {
+        if (settings.discordAutoJoin) discord.autoStart()
+    }
+
+    fun setDiscordMirror(enabled: Boolean) {
+        settings.discordMirrorPhone = enabled
+        radioOut.mirrorOnPhone = enabled
     }
 
     /** Active ou coupe l'écoute du mot de réveil (le micro doit déjà être autorisé). */

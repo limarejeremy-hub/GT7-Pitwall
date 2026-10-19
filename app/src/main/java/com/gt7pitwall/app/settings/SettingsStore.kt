@@ -46,7 +46,19 @@ class SettingsStore(context: Context) {
         get() = prefs.getBoolean(KEY_GOOGLE_SPEECH, true)
         set(value) = prefs.edit().putBoolean(KEY_GOOGLE_SPEECH, value).apply()
 
+    /** Radio Discord : connexion du bot et du dernier salon au lancement de la télémétrie. */
+    var discordAutoJoin: Boolean
+        get() = prefs.getBoolean(KEY_DISCORD_AUTO_JOIN, true)
+        set(value) = prefs.edit().putBoolean(KEY_DISCORD_AUTO_JOIN, value).apply()
+
+    /** Radio Discord : l'ingénieur parle aussi sur le haut-parleur du Fold (sinon une seule sortie). */
+    var discordMirrorPhone: Boolean
+        get() = prefs.getBoolean(KEY_DISCORD_MIRROR, false)
+        set(value) = prefs.edit().putBoolean(KEY_DISCORD_MIRROR, value).apply()
+
     companion object {
+        private const val KEY_DISCORD_AUTO_JOIN = "discord_auto_join"
+        private const val KEY_DISCORD_MIRROR = "discord_mirror_phone"
         private const val KEY_GOOGLE_SPEECH = "google_speech"
         private const val KEY_AI = "ai_enabled"
         const val DEFAULT_WAKE_WORD = "radio"

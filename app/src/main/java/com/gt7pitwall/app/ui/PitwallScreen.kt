@@ -95,6 +95,7 @@ fun PitwallScreen(
     voiceInput: VoskVoiceInput,
     gemini: GeminiNano,
     discord: DiscordRadio,
+    onDiscordMirror: (Boolean) -> Unit,
     onAiToggle: (Boolean) -> Unit,
     onStart: (String) -> Unit,
     onStop: () -> Unit,
@@ -115,6 +116,8 @@ fun PitwallScreen(
     var askPosition by rememberSaveable { mutableStateOf(settings.askPositionEachLap) }
     var googleSpeech by rememberSaveable { mutableStateOf(settings.googleSpeech) }
     var aiOn by rememberSaveable { mutableStateOf(settings.aiEnabled) }
+    var discordAutoJoin by rememberSaveable { mutableStateOf(settings.discordAutoJoin) }
+    var discordMirror by rememberSaveable { mutableStateOf(settings.discordMirrorPhone) }
     val aiState by gemini.state.collectAsStateWithLifecycle()
     val aiDetail by gemini.detail.collectAsStateWithLifecycle()
     val aiTest by gemini.testResult.collectAsStateWithLifecycle()
@@ -152,7 +155,19 @@ fun PitwallScreen(
                 voiceInput.useGoogleSpeech = it
             },
         )
-        DiscordCard(discord)
+        DiscordCard(
+            discord = discord,
+            autoJoin = discordAutoJoin,
+            onAutoJoinChange = {
+                discordAutoJoin = it
+                settings.discordAutoJoin = it
+            },
+            mirror = discordMirror,
+            onMirrorChange = {
+                discordMirror = it
+                onDiscordMirror(it)
+            },
+        )
         AiCard(
             on = aiOn,
             state = aiState,
@@ -741,16 +756,23 @@ private fun LapHistoryCard(laps: List<LapRecord>) {
 }
 
 @Composable
-private fun DiscordCard(discord: DiscordRadio) {
+private fun DiscordCard(
+    discord: DiscordRadio,
+    autoJoin: Boolean,
+    onAutoJoinChange: (Boolean) -> Unit,
+    mirror: Boolean,
+    onMirrorChange: (Boolean) -> Unit,
+) {
     val state by discord.state.collectAsStateWithLifecycle()
     val detail by discord.detail.collectAsStateWithLifecycle()
     val channels by discord.channels.collectAsStateWithLifecycle()
     var token by remember { mutableStateOf("") }
-    var selected by rememberSaveable { mutableStateOf<Long?>(null) }
-    PitCard("Radio Discord (prototype)") {
+    var selected by rememberSaveable { mutableStateOf(discord.savedChannel) }
+    PitCard("Radio Discord") {
         Text(
             "Le Fold se connecte comme bot à ton serveur Discord privé et parle dans un salon vocal. Sur la PS5, rejoins ce " +
-                "salon : l'ingénieur arrive dans le casque de la manette, par-dessus le jeu. Test possible sans GT7.",
+                "salon : l'ingénieur arrive dans le casque de la manette, par-dessus le jeu. Si Discord décroche, il " +
+                "reparle sur le haut-parleur du Fold le temps de la reconnexion.",
             color = PitColors.Muted,
             style = MaterialTheme.typography.bodySmall,
         )
@@ -783,7 +805,13 @@ private fun DiscordCard(discord: DiscordRadio) {
             DiscordState.ERROR -> "Erreur." to PitColors.Red
         }
         Text(label, color = color, fontWeight = FontWeight.Bold)
-        detail?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+        val route = when {
+            state != DiscordState.IN_VOICE -> "haut-parleur du Fold"
+            mirror -> "Discord (casque PS5) et haut-parleur du Fold"
+            else -> "Discord (casque PS5)"
+        }
+        Text("Voix de l'ingénieur : $route", style = MaterialTheme.typography.bodySmall)
+        detail?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = PitColors.Muted) }
         if (state == DiscordState.ONLINE || state == DiscordState.JOINING || state == DiscordState.IN_VOICE) {
             channels.forEach { ch ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -795,7 +823,9 @@ private fun DiscordCard(discord: DiscordRadio) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             when (state) {
                 DiscordState.OFFLINE, DiscordState.ERROR ->
-                    Button(onClick = discord::connect, modifier = Modifier.weight(1f)) { Text("Connecter le bot") }
+                    Button(onClick = { discord.connect(joinSaved = autoJoin) }, modifier = Modifier.weight(1f)) {
+                        Text("Connecter le bot")
+                    }
                 DiscordState.ONLINE -> Button(
                     onClick = { selected?.let(discord::join) },
                     enabled = selected != null,
@@ -809,6 +839,28 @@ private fun DiscordCard(discord: DiscordRadio) {
             }
         }
         if (state != DiscordState.NO_TOKEN) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Rejoindre automatiquement")
+                    Text(
+                        "Au lancement de la télémétrie (et à la connexion du bot), le bot rejoint le dernier salon utilisé.",
+                        color = PitColors.Muted,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                Switch(checked = autoJoin, onCheckedChange = onAutoJoinChange)
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Aussi sur le haut-parleur du Fold")
+                    Text(
+                        "Désactivé : une seule voix, sur Discord quand le bot est dans le salon.",
+                        color = PitColors.Muted,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                Switch(checked = mirror, onCheckedChange = onMirrorChange)
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (state != DiscordState.OFFLINE && state != DiscordState.ERROR) {
                     OutlinedButton(onClick = discord::disconnect, modifier = Modifier.weight(1f)) { Text("Déconnecter") }

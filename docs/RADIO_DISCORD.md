@@ -45,6 +45,23 @@ quitter / déconnecter. Le test ne nécessite pas GT7.
 Chaîne audio : synthèse vocale Android (même voix française) → WAV → 48 kHz mono → Opus 20 ms (MediaCodec) →
 JDA → chiffrement DAVE (libdave) + chiffrement de transport → Discord → PS5 → casque de la DualSense.
 
+## Radio en course (phase 3)
+
+- **Une seule voix** : quand le bot est dans le salon, toutes les annonces de l'ingénieur (carburant, pneus, chronos,
+  réponses, Gemini) passent par Discord ; sinon par le haut-parleur du Fold. Les deux à la fois uniquement avec le
+  réglage « Aussi sur le haut-parleur du Fold » (`RoutedVoiceOutput`, core, testé).
+- **Priorités** : file dans l'ordre ; une alerte critique coupe la phrase en cours et vide la file, comme sur le
+  haut-parleur (`SpeechQueue`, core, testé).
+- **Repli** : un message que Discord n'a pas pu diffuser (coupure) est dit sur le Fold s'il a moins de 10 s ; pendant
+  une reconnexion, la voix repasse sur le Fold.
+- **Reconnexion** : reconnexion automatique de JDA, plus une surveillance toutes les 5 s qui rejoint le salon s'il reste
+  inoccupé 20 s.
+- **Rejoindre automatiquement** (activé par défaut) : au lancement de la télémétrie, le bot se connecte et rejoint le
+  dernier salon utilisé. Le service de premier plan de la télémétrie garde le processus (et donc le bot) actif écran
+  éteint.
+- **Latence** : synthèse + encodage ≈ 1 s par phrase ; les phrases courtes répétées (« Je t'écoute. ») sont gardées en
+  mémoire, déjà encodées.
+
 ## Sécurité du token
 
 - Saisi uniquement sur le téléphone, jamais dans le code, GitHub, l'APK ni les journaux.
@@ -77,6 +94,5 @@ JDA → chiffrement DAVE (libdave) + chiffrement de transport → Discord → PS
 - Bibliothèque DAVE pour **arm64 uniquement** (le Fold) ; absente d'une compilation locale sans NDK.
 - Latence ajoutée par Discord : de l'ordre de quelques centaines de millisecondes.
 - Connexion permanente du bot : un peu de batterie et de données mobiles / Wi-Fi.
-- Prototype : la connexion vit tant que l'application tourne ; reconnexion automatique, priorités des alertes et retour
-  au haut-parleur du Fold en cas de panne arrivent en phase 3.
+- La connexion vit tant que le processus de l'application tourne (protégé par le service de télémétrie en course).
 - Réception du micro du casque PS5 par le bot : étape ultérieure (non commencée).

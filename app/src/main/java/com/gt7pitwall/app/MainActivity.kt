@@ -54,6 +54,7 @@ class MainActivity : ComponentActivity() {
                     voiceInput = app.voiceInput,
                     gemini = app.gemini,
                     discord = app.discord,
+                    onDiscordMirror = app::setDiscordMirror,
                     onAiToggle = app::setAi,
                     onStart = { address ->
                         app.settings.ps5Address = address
