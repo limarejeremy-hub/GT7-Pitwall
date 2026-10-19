@@ -43,6 +43,8 @@ data class GoogleDiag(
     val errorName: String? = null,
     val lastText: String? = null,
     val outcome: GoogleOutcome? = null,
+    /** Flux du casque : Pitwall y a détecté une voix (null : micro du Fold). Voix détectée + « rien compris » = flux ignoré. */
+    val streamVoice: Boolean? = null,
 )
 
 /**
@@ -58,6 +60,12 @@ class GoogleSpeech(private val context: Context) {
     private val main = Handler(Looper.getMainLooper())
     private var recognizer: SpeechRecognizer? = null
     private var preferOnDevice = true
+
+    /**
+     * Pour le flux du casque : d'abord la reconnaissance sur l'appareil, puis le service Google standard si elle a
+     * répondu « rien compris » alors que Pitwall avait détecté une voix dans le flux (elle ne l'a pas lu).
+     */
+    private var externalPreferOnDevice = true
 
     private val _diag = MutableStateFlow(GoogleDiag())
     val diag: StateFlow<GoogleDiag> = _diag.asStateFlow()
@@ -80,7 +88,7 @@ class GoogleSpeech(private val context: Context) {
      */
     fun listenOnce(audio: ExternalAudio? = null, onReady: () -> Unit = {}, onResult: (GoogleResult) -> Unit) {
         cancel()
-        val onDevice = preferOnDevice && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+        val onDevice = (if (audio != null) externalPreferOnDevice else preferOnDevice) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
         val started = SystemClock.elapsedRealtime()
         _diag.value = GoogleDiag(
@@ -103,6 +111,14 @@ class GoogleSpeech(private val context: Context) {
         fun deliver(result: GoogleResult, phase: String) {
             if (done) return
             done = true
+            if (audio != null) {
+                val voice = audio.heardSpeech
+                _diag.value = _diag.value.copy(streamVoice = voice)
+                // Voix bien présente dans le flux, mais rien reconnu : cette reconnaissance n'a pas lu le flux.
+                if (voice && (result.outcome == GoogleOutcome.NO_MATCH || result.outcome == GoogleOutcome.SPEECH_TIMEOUT)) {
+                    if (onDevice) externalPreferOnDevice = false else externalAudioSupported = false
+                }
+            }
             main.removeCallbacksAndMessages(sr)
             finish(sr)
             end(result, phase, onResult)
@@ -270,6 +286,9 @@ class ExternalAudio private constructor(private val pipe: Array<ParcelFileDescri
     @Volatile
     private var ending = false
     private val endpointer = SpeechEndpointer(SAMPLE_RATE)
+
+    /** Une voix a été détectée dans ce qui a été envoyé à Google. */
+    val heardSpeech: Boolean get() = endpointer.heardSpeech
 
     /** Appelé (depuis la boucle d'écoute) quand Pitwall ferme le flux, avec la raison. */
     @Volatile

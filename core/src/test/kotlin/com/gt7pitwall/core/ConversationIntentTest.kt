@@ -164,6 +164,20 @@ class ConversationIntentTest {
         assertTrue("Pas de télémétrie" in reply, reply)
     }
 
+    @Test
+    fun aMovingCarCountsAsLiveTelemetryEvenWithoutTheOnTrackFlag() {
+        // Essai réel : « Pas de télémétrie pour le moment » à 91 km/h, « En direct ».
+        val c = RaceController()
+        val moving = com.gt7pitwall.core.telemetry.TelemetryParser.parseDecrypted(TestPackets.plain(lap = 0, speedMps = 25f, flags = 0))!!
+        c.onPacket(moving)
+        assertTrue(c.telemetryLive(), "voiture qui roule : télémétrie active")
+        val loading = com.gt7pitwall.core.telemetry.TelemetryParser.parseDecrypted(
+            TestPackets.plain(lap = 0, speedMps = 0f, flags = com.gt7pitwall.core.telemetry.TelemetryPacket.FLAG_LOADING),
+        )!!
+        c.onPacket(loading)
+        assertFalse(c.telemetryLive(), "écran de chargement : pas de course suivie")
+    }
+
     // ------------------------------------------------------------------ Stratégie avec de vraies données
 
     @Test

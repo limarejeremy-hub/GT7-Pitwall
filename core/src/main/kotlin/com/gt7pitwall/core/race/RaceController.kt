@@ -125,7 +125,9 @@ class RaceController(
 
     fun onPacket(p: TelemetryPacket): List<EngineerMessage> {
         lastPacketMs = clock()
-        lastPacketOnTrack = p.isOnTrack
+        // Essai réel : à 91 km/h en piste, le drapeau « en piste » de GT7 n'était pas levé. On retient donc toute session
+        // qui envoie des paquets hors chargement (voiture en piste, en mouvement, ou course en cours).
+        lastPacketOnTrack = !p.isLoading && (p.isOnTrack || p.speedKmh > 1f || p.currentLap > 0)
         val events = tracker.update(p)
         gMeter.update(p)?.let { gForce = it }
         val out = mutableListOf<EngineerMessage>()

@@ -791,6 +791,7 @@ private fun RadioDiagnosticsCard(voiceInput: VoskVoiceInput, googleOn: Boolean) 
                 diag.readyMs?.let { "prête en $it ms" } ?: if (diag.outcome != null) "jamais prête" else "pas encore prête",
                 if (diag.speechDetected) "parole détectée" else "aucune parole détectée",
                 diag.maxRmsDb?.let { "niveau max ${"%.1f".format(it)} dB" },
+                diag.streamVoice?.let { if (it) "voix présente dans le flux" else "aucune voix dans le flux" },
             ).joinToString(" • "))
             diag.errorName?.let { DiagLine("Erreur Google", it, PitColors.Red) }
             handover?.let { DiagLine("Passage du micro", it, if ("NON" in it) PitColors.Red else PitColors.Muted) }
