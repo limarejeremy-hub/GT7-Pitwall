@@ -25,8 +25,17 @@ pilote rejoint ce salon sur la PS5. La voix de l'ingénieur arrive dans le casqu
 | Chargement | libdave-jvm cherche sa bibliothèque via `lava.native.dave-jvm.path` : on lui donne le `.so` extrait par Android (`useLegacyPackaging`). | Validé sur JVM ; à confirmer sur le Fold. |
 | Service de premier plan | Le service de télémétrie existant peut porter la connexion du bot (phase 3). Le prototype fonctionne application ouverte. | À intégrer en phase 3. |
 
-Conclusion : **techniquement faisable sur le Fold seul**, sous réserve de la validation réelle (connexion au salon et
-son sur la PS5), que seul un essai peut apporter.
+Conclusion : **faisable sur le Fold seul — validé le 19/10/2026** : bot connecté, salon vocal rejoint avec DAVE actif,
+phrase test (400 trames Opus de 20 ms) entendue dans le casque de la DualSense via le chat vocal Discord de la PS5.
+
+### Correctifs Android découverts pendant la validation
+
+- `javax.sound.sampled.AudioFormat` absent d'Android (référencé par AudioSendHandler/AudioReceiveHandler) : descripteur
+  minimal fourni dans l'app.
+- `Pattern.UNICODE_CHARACTER_CLASS` refusé par Android (classe `Checks` de JDA) : copie de JDA corrigée à la
+  compilation (`patchJdaForAndroid`, drapeau remplacé par 0, motif vérifié).
+- OkHttp 5.4+ exige compileSdk 36/37 : OkHttp 5.3.2.
+- Côté portail Discord : « Requires OAuth2 Code Grant » doit rester désactivé pour inviter le bot.
 
 ## Prototype (phase 2)
 
