@@ -216,7 +216,12 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) {
     private fun fail(message: String, e: Throwable?) {
         val token = tokens.load()
         // Par prudence, on ne laisse jamais passer le token dans un message d'erreur.
-        val why = e?.let { (it.message ?: it.javaClass.simpleName).let { m -> if (token != null) m.replace(token, "•••") else m } }
+        // Type et message de chaque cause : de quoi diagnostiquer depuis une capture d'écran.
+        val why = e?.let {
+            generateSequence(it) { t -> t.cause?.takeIf { c -> c !== t } }.take(4)
+                .joinToString(" ← ") { t -> t.javaClass.simpleName + (t.message?.let { m -> " ($m)" } ?: "") }
+                .let { m -> if (token != null) m.replace(token, "•••") else m }
+        }
         _state.value = DiscordState.ERROR
         _detail.value = if (why != null) "$message : $why" else message
     }

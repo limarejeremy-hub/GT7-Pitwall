@@ -78,6 +78,51 @@ kotlin {
     }
 }
 
+val JDA_VERSION = "6.7.0"
+
+/** JDA tel que publié, seulement pour en produire la copie Android. */
+val jdaOriginal: Configuration by configurations.creating { isTransitive = false }
+
+/**
+ * JDA compile deux expressions régulières de `Checks` avec Pattern.UNICODE_CHARACTER_CLASS (256), drapeau refusé par
+ * Android : la classe ne s'initialise pas et aucune connexion n'est possible. Sur Android, `\w` couvre déjà l'Unicode :
+ * on remplace ce drapeau par 0 (même longueur d'instruction). Le motif exact est vérifié, sinon la compilation échoue.
+ */
+val patchJdaForAndroid by tasks.registering {
+    val source = jdaOriginal
+    val target = layout.buildDirectory.file("jda-android/JDA-$JDA_VERSION-android.jar")
+    inputs.files(source)
+    outputs.file(target)
+    doLast {
+        val checks = "net/dv8tion/jda/internal/utils/Checks.class"
+        // sipush 256 ; invokestatic #366 (Pattern.compile(String, int))
+        val before = byteArrayOf(0x11, 0x01, 0x00, 0xB8.toByte(), 0x01, 0x6E)
+        val out = target.get().asFile.apply { parentFile.mkdirs() }
+        java.util.zip.ZipFile(source.singleFile).use { zip ->
+            java.util.zip.ZipOutputStream(out.outputStream()).use { dest ->
+                for (entry in zip.entries()) {
+                    var bytes = zip.getInputStream(entry).use { it.readBytes() }
+                    if (entry.name == checks) {
+                        var found = 0
+                        var i = 0
+                        while (i <= bytes.size - before.size) {
+                            if (before.indices.all { bytes[i + it] == before[it] }) {
+                                bytes[i + 1] = 0x00
+                                found++
+                                i += before.size
+                            } else i++
+                        }
+                        check(found == 2) { "JDA $JDA_VERSION : motif UNICODE_CHARACTER_CLASS trouvé $found fois au lieu de 2" }
+                    }
+                    dest.putNextEntry(java.util.zip.ZipEntry(entry.name))
+                    dest.write(bytes)
+                    dest.closeEntry()
+                }
+            }
+        }
+    }
+}
+
 dependencies {
     implementation(project(":core"))
 
@@ -91,11 +136,17 @@ dependencies {
 
     // Radio Discord (prototype) : bot JDA 6 + chiffrement de bout en bout DAVE (libdave-jvm). La bibliothèque native
     // libdave-jvm.so est compilée par la CI depuis les sources (scripts/build-dave-android.sh), jamais téléchargée.
-    implementation("net.dv8tion:JDA:6.7.0") {
-        exclude(group = "club.minnced", module = "opus-java") // voix déjà encodée en Opus par Android (MediaCodec)
-        exclude(group = "com.google.crypto.tink", module = "tink") // remplacé par tink-android (protobuf lite)
-        exclude(group = "com.squareup.okhttp3", module = "okhttp-jvm") // remplacé par la variante Android
-    }
+    // JDA est utilisé via une copie corrigée pour Android (voir patchJdaForAndroid) ; ses dépendances sont déclarées
+    // ici, sans opus-java (voix déjà encodée en Opus par MediaCodec), avec tink-android (protobuf lite, comme ML Kit)
+    // et la variante Android d'OkHttp.
+    jdaOriginal("net.dv8tion:JDA:$JDA_VERSION")
+    implementation(files(patchJdaForAndroid))
+    implementation("org.slf4j:slf4j-api:2.0.19")
+    implementation("com.neovisionaries:nv-websocket-client:2.14")
+    implementation("org.apache.commons:commons-collections4:4.6.0")
+    implementation("net.sf.trove4j:core:3.1.0")
+    implementation("com.fasterxml.jackson.core:jackson-core:2.22.2")
+    implementation("com.fasterxml.jackson.core:jackson-databind:2.22.2")
     // 5.3.2 : dernière version sans exigence de compileSdk (5.4 demande 36, 5.5 demande 37).
     implementation("com.squareup.okhttp3:okhttp") { version { strictly("5.3.2") } }
     implementation("com.google.crypto.tink:tink-android:1.18.0")
