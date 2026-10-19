@@ -1,6 +1,5 @@
 name: Sonde des sources Sport (temporaire)
 
-# Lit une fois les pages publiques des courses quotidiennes pour vérifier leur format (aucune donnée privée).
 on:
   push:
     paths:
@@ -14,32 +13,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Page gtsh-rank des courses quotidiennes
+      - name: Conditions d'utilisation
         run: |
-          curl -sSL -m 30 -A "GT7Pitwall/0.8 (+https://github.com/limarejeremy-hub/GT7-Pitwall)" -o g.html "https://gtsh-rank.com/daily/" || true
-          ls -la g.html || true
-          head -c 600 g.html; echo
-          grep -o '<script[^>]*src="[^"]*"' g.html | head -20 || true
-          grep -oE '"[^"]*(api|json)[^"]*"' g.html | sort -u | head -30 || true
-          python3 - <<'PY' || true
+          for u in https://gtsh-rank.com/terms/ https://www.gtplanet.net/terms/ https://www.gtplanet.net/forum/help/terms/; do
+            echo "===== $u"
+            curl -sSL -m 20 -A "GT7Pitwall/0.8" -o t.html -w "%{http_code}\n" "$u" || true
+            python3 - <<'PY' || true
           import re, html
-          s = open("g.html", encoding="utf-8", errors="replace").read()
+          s = open("t.html", encoding="utf-8", errors="replace").read()
           s = re.sub(r"(?s)<script.*?</script>|<style.*?</style>", " ", s)
           txt = html.unescape(re.sub(r"<[^>]+>", "\n", s))
           lines = [l.strip() for l in txt.splitlines() if l.strip()]
-          print(len(lines), "lignes")
-          print("\n".join(lines[:220]))
+          keep = [l for l in lines if re.search(r"(?i)rss|feed|scrap|automat|robot|crawl|reproduc|copy|bot|data|extract|commercial|personal", l)]
+          print("\n".join(keep[:60]))
           PY
-      - name: Conditions d'utilisation gtsh-rank et GTPlanet (liens)
-        run: |
-          grep -oiE 'href="[^"]*(terms|tos|legal|privacy|about)[^"]*"' g.html | sort -u | head || true
-          curl -sSL -m 20 -A "GT7Pitwall/0.8" https://www.gtplanet.net/terms-of-service/ -o tos.html || true
-          python3 - <<'PY' || true
-          import re, html
-          s = open("tos.html", encoding="utf-8", errors="replace").read()
-          s = re.sub(r"(?s)<script.*?</script>|<style.*?</style>", " ", s)
-          txt = html.unescape(re.sub(r"<[^>]+>", "\n", s))
-          lines = [l.strip() for l in txt.splitlines() if l.strip()]
-          keep = [l for l in lines if re.search(r"(?i)rss|feed|scrap|automat|robot|crawl|reproduc|copy", l)]
-          print("\n".join(keep[:40]))
-          PY
+          done
