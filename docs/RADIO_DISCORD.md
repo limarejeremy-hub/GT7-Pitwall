@@ -70,7 +70,9 @@ libre pour Gemini) l'écoute comme un micro. Entre deux phrases, Discord n'envoi
 
 - Réglage « Parler avec le micro du casque PS5 » (activé par défaut) ; « Écoute radio » doit être active.
 - Bascule automatique : micro PS5 quand le bot est dans le salon, micro du Fold sinon.
-- La reconnaissance Google n'écoute que le micro du Fold : avec le micro PS5, Vosk prend toute la phrase.
+- Après « radio », la phrase du casque est transmise en flux à la reconnaissance Google (`EXTRA_AUDIO_SOURCE`,
+  Android 13+), bien meilleure en français que Vosk pour les questions libres. Si la reconnaissance refuse ce flux,
+  Vosk reprend définitivement et l'ingénieur invite à répéter (« Je t'écoute »).
 - Le bouton « Test micro PS5 » reste disponible pour le diagnostic (paquets, niveau, phrases entendues).
 
 ## Sécurité du token

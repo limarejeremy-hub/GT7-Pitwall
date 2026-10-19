@@ -38,8 +38,9 @@ enum class ListenState { OFF, LOADING, WAITING_WAKE_WORD, AWAKE, PAUSED, ERROR }
  * Deux reconnaissances écoutent le même micro : l'une limitée au vocabulaire de la radio (fiable dans le bruit,
  * utilisée pour les commandes), l'autre libre ([freeTranscription], pour les questions posées à l'IA).
  *
- * Micro : celui du casque PS5 via le bot Discord quand [remoteMic] en fournit un, sinon celui du Fold. La reconnaissance
- * Google n'écoute que le Fold : avec le micro PS5, Vosk prend toute la phrase.
+ * Micro : celui du casque PS5 via le bot Discord quand [remoteMic] en fournit un, sinon celui du Fold. Avec le micro
+ * PS5, la phrase après « radio » est transmise en flux à la reconnaissance Google ; si elle refuse ce flux, Vosk la
+ * prend.
  */
 class VoskVoiceInput(
     private val models: VoiceModelManager,
@@ -88,8 +89,9 @@ class VoskVoiceInput(
     @Volatile
     private var phoneMicInUse = true
 
-    /** Google seulement quand l'écoute utilise le micro du Fold. */
-    private fun google(): GoogleSpeech? = googleSpeech?.takeIf { useGoogleSpeech && phoneMicInUse && it.available }
+    /** Google : micro du Fold, ou flux du casque PS5 si la reconnaissance l'accepte (Android 13+). */
+    private fun google(): GoogleSpeech? =
+        googleSpeech?.takeIf { useGoogleSpeech && it.available && (phoneMicInUse || it.externalAudioSupported != false) }
 
     @Volatile
     private var paused = false
@@ -197,7 +199,13 @@ class VoskVoiceInput(
             record.start()
             var recording = true
             while (scope.isActive && kotlinx.coroutines.currentCoroutineContext().isActive) {
-                // Micro prêté à la reconnaissance Google : on arrête d'enregistrer, puis on reprend.
+                // Micro du casque PS5 pendant une écoute Google : le flux lui est transmis au lieu de Vosk.
+                if (micReleased && !record.isPhoneMic) {
+                    val n = record.read(buffer)
+                    if (n > 0) googleSpeech?.feed(buffer, n)
+                    continue
+                }
+                // Micro du Fold prêté à la reconnaissance Google : on arrête d'enregistrer, puis on reprend.
                 if (micReleased) {
                     if (recording) {
                         record.pause()
@@ -341,11 +349,18 @@ class VoskVoiceInput(
             if (session != googleSession || tts.speaking.value || audioJob == null) return@launch
             micReleased = true
             delay(MIC_POLL_MS * 2)
-            google.listenOnce { text ->
+            val external = !phoneMicInUse
+            google.listenOnce(if (external) ExternalAudio.create() else null) { text ->
                 if (session != googleSession) return@listenOnce
                 micReleased = false
                 awakeUntil = 0
                 if (_state.value == ListenState.AWAKE) _state.value = ListenState.WAITING_WAKE_WORD
+                // Flux du casque refusé par Google : Vosk reprend, et l'ingénieur invite à répéter.
+                if (external && text == null && google.externalAudioSupported == false) {
+                    awake()
+                    _events.tryEmit(VoiceInputEvent.Wake)
+                    return@listenOnce
+                }
                 if (text.isNullOrBlank()) return@listenOnce
                 _heard.value = text
                 val wakeRegex = Regex("^\\s*${Regex.escape(DriverCommandParser.normalize(wakeWord))}\\s*,?\\s*")
@@ -373,7 +388,12 @@ class VoskVoiceInput(
                 _events.tryEmit(VoiceInputEvent.Utterance(rest, free))
             } else {
                 val google = google()
-                if (google != null) {
+                if (google != null && !phoneMicInUse) {
+                    // Casque PS5 : le bip du Fold ne s'entendrait pas ; « Je t'écoute » part sur Discord, que le micro
+                    // du casque ne capte pas : l'écoute commence tout de suite.
+                    _events.tryEmit(VoiceInputEvent.Wake)
+                    listenWithGoogle(google, startDelayMs = 0)
+                } else if (google != null) {
                     // Bip court au lieu de « Je t'écoute » parlé : on écoute tout de suite, sans couper le début.
                     beep()
                     _events.tryEmit(VoiceInputEvent.Listening)
