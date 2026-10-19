@@ -13,6 +13,7 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import com.gt7pitwall.core.radio.GoogleOutcome
+import com.gt7pitwall.core.radio.SpeechEndpointer
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -96,6 +97,7 @@ class GoogleSpeech(private val context: Context) {
         }
         recognizer = sr
         current = audio
+        audio?.onEnd = { label -> main.post { _diag.value = _diag.value.copy(phase = "flux du casque fermé : $label") } }
         var done = false
         var ready = false
         fun deliver(result: GoogleResult, phase: String) {
@@ -264,11 +266,20 @@ class ExternalAudio private constructor(private val pipe: Array<ParcelFileDescri
     @Volatile
     private var open = true
 
+    /** Fin de phrase détectée : le reste de la file est écrit, puis le flux est fermé (fin de flux pour Google). */
+    @Volatile
+    private var ending = false
+    private val endpointer = SpeechEndpointer(SAMPLE_RATE)
+
+    /** Appelé (depuis la boucle d'écoute) quand Pitwall ferme le flux, avec la raison. */
+    @Volatile
+    var onEnd: ((String) -> Unit)? = null
+
     private val writer = Thread {
         ParcelFileDescriptor.AutoCloseOutputStream(pipe[1]).use { out ->
             try {
                 while (open) {
-                    val chunk = queue.poll(POLL_MS, TimeUnit.MILLISECONDS) ?: continue
+                    val chunk = queue.poll(POLL_MS, TimeUnit.MILLISECONDS) ?: if (ending) break else continue
                     out.write(chunk)
                 }
             } catch (e: Exception) {
@@ -282,13 +293,18 @@ class ExternalAudio private constructor(private val pipe: Array<ParcelFileDescri
     }
 
     fun write(samples: ShortArray, n: Int) {
-        if (!open || n <= 0) return
+        if (!open || ending || n <= 0) return
         val bytes = ByteArray(n * 2)
         for (i in 0 until n) {
             bytes[2 * i] = samples[i].toInt().toByte()
             bytes[2 * i + 1] = (samples[i].toInt() shr 8).toByte()
         }
         queue.offer(bytes)
+        // Google lit un flux jusqu'à sa fin : sans fin de flux, il attend jusqu'au délai et ne rend rien.
+        endpointer.accept(samples, n)?.let { end ->
+            ending = true
+            onEnd?.invoke(end.label)
+        }
     }
 
     /** Nouveau flux (nouvel essai de reconnaissance) ; celui-ci est fermé. */
