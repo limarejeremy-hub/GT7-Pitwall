@@ -777,6 +777,7 @@ private fun RadioDiagnosticsCard(voiceInput: VoskVoiceInput, googleOn: Boolean) 
     val handover by voiceInput.handover.collectAsStateWithLifecycle()
     val fallback by voiceInput.fallbackInfo.collectAsStateWithLifecycle()
     val heard by voiceInput.heard.collectAsStateWithLifecycle()
+    val source by voiceInput.lastSource.collectAsStateWithLifecycle()
     val google = voiceInput.googleSpeech
     val diag by (google?.diag ?: remember { kotlinx.coroutines.flow.MutableStateFlow(com.gt7pitwall.app.voice.GoogleDiag()) })
         .collectAsStateWithLifecycle()
@@ -798,6 +799,7 @@ private fun RadioDiagnosticsCard(voiceInput: VoskVoiceInput, googleOn: Boolean) 
         }
         fallback?.let { DiagLine("Repli", it, PitColors.Yellow) }
         DiagLine("Dernière phrase", heard.ifBlank { "—" })
+        source?.let { DiagLine("Reconnue par", it) }
     }
 }
 
@@ -933,7 +935,7 @@ private fun DiscordCard(
                     Text("Parler avec le micro du casque PS5")
                     Text(
                         "Quand le bot est dans le salon, la radio écoute ta voix dans Discord (« radio, … ») au lieu du " +
-                            "micro du Fold. La reconnaissance Google ne s'applique qu'au micro du Fold.",
+                            "micro du Fold. Google est essayé sur ce flux, et Vosk écoute la même phrase en secours.",
                         color = PitColors.Muted,
                         style = MaterialTheme.typography.bodySmall,
                     )
