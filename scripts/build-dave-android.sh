@@ -34,7 +34,10 @@ cmake -S "$WORK/natives" -B "$WORK/build-arm64" -G Ninja \
   -DANDROID_ABI=arm64-v8a \
   -DANDROID_PLATFORM=android-31 \
   -DANDROID_STL=c++_static \
-  -DCMAKE_BUILD_TYPE=Release
+  -DCMAKE_BUILD_TYPE=Release \
+  -DBORINGSSL_INCLUDE_DIR="$WORK/natives/boringssl/include"
+# BORINGSSL_INCLUDE_DIR : la chaîne Android limite find_path au sysroot du NDK ; mlspp ne trouverait pas la
+# BoringSSL embarquée (« BoringSSL required but not found »).
 cmake --build "$WORK/build-arm64" --target dave-jvm --parallel
 
 mkdir -p "$OUT/arm64-v8a"
