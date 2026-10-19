@@ -29,6 +29,16 @@ if [ "$ACTUAL" != "$COMMIT" ]; then
   exit 1
 fi
 
+# Seule adaptation au code : le jni.h d'Android déclare AttachCurrentThread(JNIEnv**, …) et non (void**, …).
+JNI_UTILS="$WORK/natives/src/main/cpp/jni_utils.h"
+ORIG='jvm_->AttachCurrentThread(reinterpret_cast<void **>(&env_), nullptr)'
+if [ "$(grep -cF "$ORIG" "$JNI_UTILS")" != "1" ]; then
+  echo "Correctif JNI Android : ligne attendue introuvable dans jni_utils.h" >&2
+  exit 1
+fi
+sed -i 's|jvm_->AttachCurrentThread(reinterpret_cast<void \*\*>(&env_), nullptr)|jvm_->AttachCurrentThread(\&env_, nullptr)|' "$JNI_UTILS"
+grep -qF 'jvm_->AttachCurrentThread(&env_, nullptr)' "$JNI_UTILS"
+
 cmake -S "$WORK/natives" -B "$WORK/build-arm64" -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
   -DANDROID_ABI=arm64-v8a \
