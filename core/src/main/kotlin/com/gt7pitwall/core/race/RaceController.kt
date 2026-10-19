@@ -39,6 +39,7 @@ import com.gt7pitwall.core.strategy.FuelStrategy
 import com.gt7pitwall.core.strategy.FuelUnits
 import com.gt7pitwall.core.strategy.Confidence
 import com.gt7pitwall.core.strategy.HistoryModel
+import com.gt7pitwall.core.strategy.OptionKind
 import com.gt7pitwall.core.strategy.StrategyOptions
 import com.gt7pitwall.core.strategy.StrategyReport
 import com.gt7pitwall.core.strategy.PitLedger
@@ -486,6 +487,7 @@ class RaceController(
                 listOfNotNull(ed.trackName.value, ed.cars.value?.let { "voitures $it" }, ed.bop.value?.let { "BoP $it" }).joinToString(", ") + "."
         }
         ruleGaps.takeIf { it.isNotEmpty() }?.let { g -> lines += "Règlement inconnu sur : ${g.joinToString(", ") { it.label }}." }
+        strategyBrief?.let { lines += it.facts() }
         history.let { h -> lines += "Historique : ${h.comparable} session(s) comparable(s) archivée(s), dont ${h.sameEvent} avec le même règlement." }
         carName?.let { lines += "Voiture : $it." }
         course?.let { lines += "Circuit : ${it.label}." }
@@ -776,14 +778,99 @@ class RaceController(
             previousStops = plan?.stops?.map { it.endOfLap } ?: emptyList(),
         )
         val planning = p.fuelCapacity > 0f || rules.mandatoryStops > 0 || missing.isNotEmpty() || rules.tyreStintLaps != null
-        plan = if (planning) RacePlanner.plan(input) else null
-        strategy = if (planning && plan != null) compareStrategies(input, model, measuredAvg, learnedFuel != null && live?.perLap == null) else null
+        val previous = plan
+        var next = if (planning) RacePlanner.plan(input) else null
+        val report = if (planning && next != null) compareStrategies(input, model, measuredAvg, learnedFuel != null && live?.perLap == null) else null
+        var reason: String? = null
+        // Une alternative ne remplace le plan que si elle reste recommandée d'un tour sur l'autre, ou si son gain dépasse
+        // nettement l'incertitude : pas de changement de stratégie pour un avantage théorique à chaque tour.
+        if (report != null && !report.indistinguishable && report.recommended != OptionKind.NORMAL) {
+            val opt = report.recommendedOption
+            val key = "${opt.kind}:${opt.stopLaps}"
+            if (key != switchKey) {
+                switchKey = key
+                switchSinceLap = p.currentLap
+            }
+            val gain = -(opt.deltaMs ?: 0)
+            val strong = report.uncertaintyMs != null && gain > 2 * report.uncertaintyMs
+            if ((p.currentLap > switchSinceLap || strong) && opt.plan != null) {
+                next = opt.plan
+                reason = report.reason
+                switchKey = null
+            }
+        } else {
+            switchKey = null
+        }
+        if (reason == null && previous != null && next != null) reason = planChangeReason(previous, next, p.currentLap)
+        plan = next
+        strategy = report
+        if (reason != null) {
+            engineer.planReason = reason
+            lastPlanChange = PlanChange(p.currentLap, reason)
+        }
         val stopLaps = plan?.stops?.map { it.endOfLap } ?: emptyList()
         if (plan != null && planLog.lastOrNull()?.stopLaps != stopLaps) {
-            planLog += PlanEntry(p.currentLap, stopLaps, fuelPerLap = plan?.perLap, fuelSource = plan?.fuelSource?.name)
+            planLog += PlanEntry(p.currentLap, stopLaps, reason, fuelPerLap = plan?.perLap, fuelSource = plan?.fuelSource?.name)
             while (planLog.size > MAX_PLANS) planLog.removeAt(0)
         }
         return engineer.onPlan(plan, p.currentLap)
+    }
+
+    /** Dernier changement de plan, et pourquoi (pour « pourquoi tu changes notre stratégie ? »). */
+    data class PlanChange(val lap: Int, val reason: String)
+
+    var lastPlanChange: PlanChange? = null
+        private set
+
+    /** Réponses stratégiques structurées pour la radio : calculées ici, jamais par l'IA. */
+    val strategyBrief: com.gt7pitwall.core.strategy.StrategyBrief?
+        get() {
+            val report = strategy ?: return null
+            val p = plan ?: return null
+            val lap = (snapshot.packet?.currentLap ?: 0).coerceAtLeast(1)
+            return com.gt7pitwall.core.strategy.StrategyBrief.of(
+                report, p, lap, fuel, snapshot.packet?.fuelCapacity,
+                lastPlanChange?.let { "tour ${it.lap} : ${it.reason}" },
+            )
+        }
+    private var switchKey: String? = null
+    private var switchSinceLap = 0
+
+    /**
+     * Pourquoi les tours d'arrêt à venir ont changé, d'après ce qui a été mesuré ou déclaré ; null si rien n'a changé
+     * (un arrêt effectué qui sort du plan n'est pas un changement).
+     */
+    private fun planChangeReason(old: RacePlan, new: RacePlan, lap: Int): String? {
+        val before = old.stops.map { it.endOfLap }.filter { it >= lap }
+        val after = new.stops.map { it.endOfLap }
+        if (before == after) return null
+        // Un arrêt qui vient d'être fait sort du plan : le reste est inchangé.
+        if (ledger.stopList.lastOrNull()?.let { lap - it.lap in 0..1 } == true && before.drop(1) == after) return null
+        val cap = snapshot.packet?.fuelCapacity
+        val causes = mutableListOf<String>()
+        val op = old.perLap
+        val np = new.perLap
+        if (old.fuelSource != DataSource.MEASURED && new.fuelSource == DataSource.MEASURED) {
+            causes += "La consommation mesurée remplace l'estimation" + (np?.let { " : ${FuelUnits.perLap(it, cap)}" } ?: "")
+        } else if (op != null && np != null && kotlin.math.abs(np - op) / op > 0.03f) {
+            causes += "Notre consommation est ${if (np > op) "supérieure" else "inférieure"} à la prévision : " +
+                "${FuelUnits.perLap(np, cap)} au lieu de ${FuelUnits.perLap(op, cap)}"
+        }
+        if (new.stops.count { it.tyreToFit != null } > old.stops.count { it.tyreToFit != null && it.endOfLap >= lap }) {
+            causes += "Il reste des gommes imposées à monter"
+        }
+        val firstBefore = before.firstOrNull()
+        val firstAfter = after.firstOrNull()
+        val effect = when {
+            firstAfter == null -> "Plus d'arrêt nécessaire."
+            firstBefore == null -> "Un arrêt devient nécessaire, fin du tour $firstAfter."
+            after.size > before.size -> "Il faut un arrêt de plus."
+            after.size < before.size -> "On économise un arrêt."
+            firstAfter < firstBefore -> "J'avance l'arrêt au tour $firstAfter : le plan précédent devenait risqué."
+            firstAfter > firstBefore -> "On peut retarder l'arrêt au tour $firstAfter : l'autonomie le permet."
+            else -> "Les arrêts suivants sont recalculés."
+        }
+        return (causes.joinToString(". ").let { if (it.isEmpty()) "" else "$it. " } + effect).trim()
     }
 
     /**

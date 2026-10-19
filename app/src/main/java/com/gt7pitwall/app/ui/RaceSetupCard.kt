@@ -188,6 +188,8 @@ fun RaceSetupCard(
                 if (plan.startTyreUnknown) Text("Pneus de départ non déclarés.", color = PitColors.Yellow)
             }
 
+            StrategySection(state)
+
             HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
             Text("Registre de course", style = MaterialTheme.typography.labelSmall, color = PitColors.Muted)
             if (state.stops.isEmpty()) {
@@ -457,6 +459,52 @@ private fun WeeklyEditionSection(
         )
         TextButton(onClick = onRefresh) { Text("Actualiser") }
     }
+}
+
+/**
+ * Plan recommandé et alternatives : prochain arrêt, carburant (pourcentage du réservoir), pneus, temps estimé ou absence
+ * de comparaison fiable, pourquoi, et sur quoi reposent les chiffres.
+ */
+@Composable
+private fun StrategySection(state: PitwallUiState) {
+    val report = state.strategy ?: return
+    val brief = state.brief
+    HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
+    Text("PLAN RECOMMANDÉ", style = MaterialTheme.typography.labelMedium, color = PitColors.Muted, letterSpacing = 1.5.sp)
+    brief?.let { Text(it.recommendation, fontWeight = FontWeight.Bold, color = PitColors.Green) }
+    Text(report.reason, style = MaterialTheme.typography.bodySmall)
+    if (report.unverifiedRules.isNotEmpty()) {
+        Text(
+            "Non validé réglementairement : ${report.unverifiedRules.joinToString(", ")} inconnu(s).",
+            color = PitColors.Red,
+            style = MaterialTheme.typography.bodySmall,
+        )
+    }
+    report.options.forEach { o ->
+        val label = when (o.kind) {
+            com.gt7pitwall.core.strategy.OptionKind.NORMAL -> "Normale"
+            com.gt7pitwall.core.strategy.OptionKind.EARLY -> "Anticipée"
+            com.gt7pitwall.core.strategy.OptionKind.EXTENDED -> "Prolongée"
+        }
+        val stops = if (o.stopLaps.isEmpty()) "sans arrêt" else "arrêt fin T" + o.stopLaps.joinToString(", T")
+        val detail = when {
+            !o.feasible -> "irréalisable : ${o.issues.firstOrNull() ?: "?"}"
+            o.deltaMs == null -> "temps non chiffrable"
+            o.kind == com.gt7pitwall.core.strategy.OptionKind.NORMAL -> "référence"
+            o.deltaMs == 0L -> "même temps estimé"
+            else -> (if (o.deltaMs < 0) "−" else "+") + com.gt7pitwall.core.strategy.StrategyOptions.seconds(o.deltaMs)
+        }
+        Text(
+            "${if (o.kind == report.recommended) "▶ " else "   "}$label : $stops • $detail",
+            style = MaterialTheme.typography.bodySmall,
+            color = if (!o.feasible) PitColors.Muted else if (o.kind == report.recommended) PitColors.Green else androidx.compose.ui.graphics.Color.Unspecified,
+        )
+    }
+    report.uncertaintyMs?.let {
+        Text("Incertitude sur les écarts : ± ${com.gt7pitwall.core.strategy.StrategyOptions.seconds(it)}", color = PitColors.Muted, style = MaterialTheme.typography.bodySmall)
+    }
+    brief?.lastChange?.let { Text("Dernier changement : $it", color = PitColors.Yellow, style = MaterialTheme.typography.bodySmall) }
+    Text("Données : ${report.basis.joinToString(" • ")}", color = PitColors.Muted, style = MaterialTheme.typography.bodySmall)
 }
 
 private fun FieldStatus?.known(): Boolean = this == null || (this != FieldStatus.UNKNOWN && this != FieldStatus.CONFLICT)

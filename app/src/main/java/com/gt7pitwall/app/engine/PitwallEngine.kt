@@ -92,6 +92,10 @@ data class PitwallUiState(
     val ruleGaps: List<RuleField> = emptyList(),
     /** Programme Sport connu : fraîcheur, erreur de lecture, péremption. */
     val schedule: ScheduleState? = null,
+    /** Stratégies comparées (normale, anticipée, prolongée) et recommandation. */
+    val strategy: com.gt7pitwall.core.strategy.StrategyReport? = null,
+    /** Réponses stratégiques prêtes (recommandation, prolonger, autres qui rentrent, carburant pour finir). */
+    val brief: com.gt7pitwall.core.strategy.StrategyBrief? = null,
 )
 
 /**
@@ -338,6 +342,8 @@ class PitwallEngine(
             edition = race.edition,
             ruleGaps = race.ruleGaps,
             schedule = race.schedule,
+            strategy = race.strategy,
+            brief = if (force) race.strategyBrief else _state.value.brief ?: race.strategyBrief,
         )
     }
 

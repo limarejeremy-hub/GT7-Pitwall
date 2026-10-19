@@ -449,6 +449,9 @@ class RaceEngineer {
      * en une phrase courte (le plan complet reste disponible sur demande). Rien après l'arrivée.
      * Les avertissements graves sont critiques, au plus une fois tous les [WARNING_REPEAT_LAPS] tours.
      */
+    /** Pourquoi le plan vient de changer (dit avec l'annonce du nouveau plan, puis oublié). */
+    var planReason: String? = null
+
     fun onPlan(newPlan: RacePlan?, currentLap: Int = snapshotLap): List<EngineerMessage> {
         plan = newPlan
         if (raceOver || newPlan == null) return emptyList()
@@ -471,12 +474,14 @@ class RaceEngineer {
             announcedStops = stops
             val changed = stops.size != stillAhead?.size || stops.firstOrNull() != stillAhead.firstOrNull()
             if (changed) {
-                out += msg(planUpdateSentence(newPlan), Priority.HIGH, MessageCategory.FUEL)
+                val why = planReason?.let { " $it" } ?: ""
+                out += msg(planUpdateSentence(newPlan) + why, Priority.HIGH, MessageCategory.FUEL)
                     .copy(dedupKey = "plan:" + stops.joinToString(",") { "${it.first}/${it.second}" })
             }
         } else {
             announcedStops = stops
         }
+        planReason = null
         return out
     }
 
