@@ -1,5 +1,6 @@
 package com.gt7pitwall.app.ui
 
+import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -50,6 +51,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -78,6 +80,7 @@ import com.gt7pitwall.core.engineer.Priority
 import com.gt7pitwall.core.radio.DriverCommand
 import com.gt7pitwall.core.radio.DriverQuery
 import com.gt7pitwall.core.session.LapRecord
+import com.gt7pitwall.core.telemetry.PositionProbe
 import com.gt7pitwall.core.strategy.FuelAdvice
 import com.gt7pitwall.core.strategy.FuelReport
 import com.gt7pitwall.core.telemetry.ConnectionStatus
@@ -181,6 +184,7 @@ fun PitwallScreen(
             },
         )
         if (devTools) BenchCard(bench)
+        if (devTools) PositionProbeCard(engine)
         DiscordCard(
             discord = discord,
             autoJoin = discordAutoJoin,
@@ -963,6 +967,81 @@ private fun BenchCard(bench: SherpaBench) {
                     DiagLine("sherpa", "« ${a.text} »${w(a.wer)} — ${a.latencyMs} ms" + if (a.screenOff) " — écran éteint" else "")
                     DiagLine(if (a.voskFree) "Vosk (libre)" else "Vosk (radio)", a.vosk?.let { "« $it »${w(a.voskWer)}" } ?: "rien au même moment")
                 }
+            }
+        }
+    }
+}
+
+/**
+ * Diagnostic des champs 0x84 / 0x86 : valeurs brutes, état, proportions, journal exportable. Rien n'est annoncé
+ * à la radio ni utilisé par la stratégie : il sert à comparer avec la position affichée par le HUD de GT7.
+ */
+@Composable
+private fun PositionProbeCard(engine: PitwallEngine) {
+    val s by engine.probe.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    var hud by rememberSaveable { mutableStateOf("") }
+    fun mark(label: String) {
+        engine.positionProbe.mark(label, System.currentTimeMillis())
+        engine.refreshProbe()
+    }
+    PitCard("Diagnostic position UDP (0x84 / 0x86)") {
+        Text(
+            "Valeurs brutes envoyées par GT7, à comparer avec la position du HUD. Aucune position n'est annoncée ni " +
+                "utilisée par la stratégie. Les écarts avec les adversaires ne sont dans aucun paquet connu.",
+            style = MaterialTheme.typography.bodySmall,
+            color = PitColors.Muted,
+        )
+        DiagLine("0x84 (position ?)", s.raw84?.toString() ?: "—", PitColors.Green)
+        DiagLine("0x86 (voitures ?)", s.raw86?.toString() ?: "—", PitColors.Green)
+        DiagLine("Tour / état", "${s.lap ?: "—"} / ${s.state ?: "aucun paquet"}")
+        DiagLine("Paquets", s.packets.toString())
+        fun shares(c: PositionProbe.Counts) = "${c.share(c.valid)} % positifs, ${c.share(c.minusOne)} % à -1, ${c.share(c.other)} % autres"
+        DiagLine("0x84", shares(s.counts84))
+        DiagLine("0x86", shares(s.counts86))
+        if (s.dropped > 0) DiagLine("Lignes anciennes retirées", s.dropped.toString(), PitColors.Yellow)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { mark("dépassement fait") }, modifier = Modifier.weight(1f)) { Text("J'ai doublé") }
+            OutlinedButton(onClick = { mark("je me suis fait doubler") }, modifier = Modifier.weight(1f)) { Text("Doublé") }
+            OutlinedButton(onClick = { mark("arrivée") }, modifier = Modifier.weight(1f)) { Text("Arrivée") }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(
+                value = hud,
+                onValueChange = { v -> hud = v.filter { it.isDigit() }.take(2) },
+                label = { Text("Position HUD") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
+                modifier = Modifier.weight(1f),
+            )
+            Button(onClick = { mark("HUD P$hud"); hud = "" }, enabled = hud.isNotEmpty()) { Text("Noter") }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = {
+                    val send = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_SUBJECT, "GT7 Pitwall — diagnostic position UDP")
+                        putExtra(Intent.EXTRA_TEXT, engine.positionProbe.export())
+                    }
+                    context.startActivity(Intent.createChooser(send, "Exporter le journal"))
+                },
+                modifier = Modifier.weight(1f),
+            ) { Text("Exporter") }
+            OutlinedButton(onClick = { engine.positionProbe.reset(); engine.refreshProbe() }, modifier = Modifier.weight(1f)) {
+                Text("Réinitialiser")
+            }
+        }
+        if (s.events.isNotEmpty()) {
+            Text("Derniers changements (le plus récent en haut)", style = MaterialTheme.typography.labelMedium, color = PitColors.Muted)
+            val fmt = remember { java.text.SimpleDateFormat("HH:mm:ss", Locale.FRANCE) }
+            s.events.asReversed().forEach { e ->
+                Text(
+                    "${fmt.format(java.util.Date(e.timeMs))}  tour ${e.lap}  0x84=${e.raw84}  0x86=${e.raw86}  ${e.state} — ${e.reason}",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = PitColors.Muted,
+                )
             }
         }
     }

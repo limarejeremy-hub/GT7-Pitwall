@@ -44,6 +44,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import com.gt7pitwall.core.telemetry.PositionProbe
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -139,6 +140,19 @@ class PitwallEngine(
     private val _aiTrace = MutableStateFlow<AiTrace?>(null)
     /** Dernier échange avec l'IA (diagnostic affiché dans la carte « Ingénieur IA »). */
     val aiTrace: StateFlow<AiTrace?> = _aiTrace.asStateFlow()
+
+    /**
+     * Diagnostic des champs 0x84 / 0x86 (outils de développement) : observe seulement, rien n'est transmis à la
+     * stratégie ni annoncé à la radio.
+     */
+    val positionProbe = PositionProbe()
+    private val _probe = MutableStateFlow(positionProbe.summary())
+    val probe: StateFlow<PositionProbe.Summary> = _probe.asStateFlow()
+    private var lastProbeMs = 0L
+
+    fun refreshProbe() {
+        _probe.value = positionProbe.summary()
+    }
 
     /** Demander la position à chaque tour (si la radio vocale écoute). */
     @Volatile
@@ -301,6 +315,14 @@ class PitwallEngine(
     }
 
     private suspend fun onPacket(p: TelemetryPacket) {
+        val now = System.currentTimeMillis()
+        runCatching {
+            positionProbe.onPacket(p, now)
+            if (now - lastProbeMs >= PROBE_REFRESH_MS) {
+                lastProbeMs = now
+                refreshProbe()
+            }
+        }
         mutex.withLock {
             race.engineer.askPositionEachLap = askPositionEachLap()
             val messages = race.onPacket(p)
@@ -356,6 +378,7 @@ class PitwallEngine(
 
     private companion object {
         const val UI_REFRESH_MS = 50L
+        const val PROBE_REFRESH_MS = 500L
         const val MAX_RADIO_LOG = 50
         const val RULES_DEBOUNCE_MS = 1_500L
         const val HISTORY_REFRESH_MS = 2_000L

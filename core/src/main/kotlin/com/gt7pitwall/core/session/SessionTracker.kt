@@ -182,7 +182,8 @@ class SessionTracker(
             }
         }
 
-        if (!gridAnnounced && p.preRacePosition > 0 && p.preRaceCarCount > 0) {
+        // Seulement avant le départ : si 0x84 évolue en course (non vérifié), rien n'est annoncé (voir PositionProbe).
+        if (!gridAnnounced && p.currentLap == 0 && p.preRacePosition > 0 && p.preRaceCarCount > 0) {
             gridAnnounced = true
             events += SessionEvent.GridPosition(p.preRacePosition, p.preRaceCarCount)
         }
