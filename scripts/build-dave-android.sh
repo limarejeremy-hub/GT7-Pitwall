@@ -29,7 +29,7 @@ if [ "$ACTUAL" != "$COMMIT" ]; then
   exit 1
 fi
 
-# Seule adaptation au code : le jni.h d'Android déclare AttachCurrentThread(JNIEnv**, …) et non (void**, …).
+# Adaptations Android (2) : le jni.h d'Android déclare AttachCurrentThread(JNIEnv**, …) et non (void**, …).
 JNI_UTILS="$WORK/natives/src/main/cpp/jni_utils.h"
 ORIG='jvm_->AttachCurrentThread(reinterpret_cast<void **>(&env_), nullptr)'
 if [ "$(grep -cF "$ORIG" "$JNI_UTILS")" != "1" ]; then
@@ -38,6 +38,17 @@ if [ "$(grep -cF "$ORIG" "$JNI_UTILS")" != "1" ]; then
 fi
 sed -i 's|jvm_->AttachCurrentThread(reinterpret_cast<void \*\*>(&env_), nullptr)|jvm_->AttachCurrentThread(\&env_, nullptr)|' "$JNI_UTILS"
 grep -qF 'jvm_->AttachCurrentThread(&env_, nullptr)' "$JNI_UTILS"
+
+# Sur Android, libdave définit KeyPairContextType comme JNIEnv* (clés persistantes Android). Les clés persistantes
+# sont désactivées (PERSISTENT_KEYS=OFF) : libdave compile persisted_key_pair_null.cpp, qui ignore ce contexte.
+BIND_SESSION="$WORK/natives/src/main/cpp/bind_session.cpp"
+CTX='static_cast<mls::KeyPairContextType>(sessionContextStorage())'
+if [ "$(grep -cF "$CTX" "$BIND_SESSION")" != "1" ]; then
+  echo "Correctif Android : ligne attendue introuvable dans bind_session.cpp" >&2
+  exit 1
+fi
+sed -i 's|static_cast<mls::KeyPairContextType>(sessionContextStorage())|mls::KeyPairContextType{}|' "$BIND_SESSION"
+grep -qF 'mls::KeyPairContextType{}' "$BIND_SESSION"
 
 cmake -S "$WORK/natives" -B "$WORK/build-arm64" -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
