@@ -43,7 +43,8 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val lock = Mutex()
     private val speech by lazy { SpeechPcm(appContext) }
-    private val sender = OpusQueueSender()
+    // Créé à la première utilisation : aucune classe de JDA n'est chargée au lancement de l'application.
+    private val sender by lazy { OpusQueueSender() }
     private var jda: JDA? = null
 
     private val _state = MutableStateFlow(if (tokens.hasToken) DiscordState.OFFLINE else DiscordState.NO_TOKEN)
@@ -176,9 +177,10 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) {
 
     fun leave() {
         scope.launch {
-            jda?.guilds?.forEach { it.audioManager.closeAudioConnection() }
+            val client = jda ?: return@launch
+            client.guilds.forEach { it.audioManager.closeAudioConnection() }
             sender.clear()
-            if (jda != null) _state.value = DiscordState.ONLINE
+            _state.value = DiscordState.ONLINE
         }
     }
 
@@ -186,9 +188,9 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) {
     fun disconnect() {
         val client = jda ?: return
         jda = null
-        sender.clear()
         scope.launch {
             runCatching {
+                sender.clear()
                 client.guilds.forEach { it.audioManager.closeAudioConnection() }
                 client.shutdown()
                 if (!client.awaitShutdown(SHUTDOWN_S, TimeUnit.SECONDS)) client.shutdownNow()
