@@ -1,0 +1,54 @@
+name: Sonde des sources Sport (temporaire)
+
+# Lit une fois les pages publiques des courses quotidiennes pour vérifier leur format (aucune donnée privée).
+on:
+  push:
+    paths:
+      - .github/workflows/probe-sources.yml
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: robots.txt
+        run: |
+          for u in https://www.gtplanet.net/robots.txt https://www.dg-edge.com/robots.txt https://gtsh-rank.com/robots.txt; do
+            echo "===== $u"; curl -sSL -m 20 -A "GT7Pitwall/0.8 (+https://github.com/limarejeremy-hub/GT7-Pitwall)" "$u" | head -60 || true
+          done
+      - name: Flux RSS GTPlanet (courses quotidiennes)
+        run: |
+          curl -sSL -m 30 -A "GT7Pitwall/0.8" -o feed.xml "https://www.gtplanet.net/tag/gran-turismo-7-daily-races/feed/" || true
+          ls -la feed.xml || true
+          head -c 1500 feed.xml || true
+          echo; echo "===== premier article (contenu)"
+          python3 - <<'PY' || true
+          import re, html, xml.etree.ElementTree as ET
+          t = ET.parse("feed.xml").getroot()
+          ns = {"content": "http://purl.org/rss/1.0/modules/content/"}
+          items = t.findall("./channel/item")
+          print("articles :", len(items))
+          for it in items[:3]:
+              print("TITRE", it.findtext("title"), "|", it.findtext("pubDate"), "|", it.findtext("link"))
+          it = items[0]
+          body = it.findtext("content:encoded", namespaces=ns) or it.findtext("description") or ""
+          print("LONGUEUR CONTENU", len(body))
+          print(body[:12000])
+          PY
+      - name: Page DG EDGE des courses quotidiennes
+        run: |
+          curl -sSL -m 30 -A "GT7Pitwall/0.8" -o dg.html "https://www.dg-edge.com/events/dailies" || true
+          ls -la dg.html || true
+          grep -o '<script[^>]*id="__NEXT_DATA__"[^>]*>' dg.html | head -3 || true
+          python3 - <<'PY' || true
+          import re, html
+          s = open("dg.html", encoding="utf-8", errors="replace").read()
+          s = re.sub(r"(?s)<script.*?</script>|<style.*?</style>", " ", s)
+          txt = html.unescape(re.sub(r"<[^>]+>", "\n", s))
+          lines = [l.strip() for l in txt.splitlines() if l.strip()]
+          print("\n".join(lines[:250]))
+          PY
+          grep -oi 'href="[^"]*\(terms\|tos\|legal\|privacy\)[^"]*"' dg.html | sort -u | head || true
