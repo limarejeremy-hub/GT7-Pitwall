@@ -2,6 +2,8 @@ package com.gt7pitwall.app
 
 import android.app.Application
 import com.gt7pitwall.app.ai.GeminiNano
+import com.gt7pitwall.app.discord.DiscordRadio
+import com.gt7pitwall.app.discord.DiscordTokenStore
 import com.gt7pitwall.app.engine.PitwallEngine
 import com.gt7pitwall.app.service.TelemetryService
 import com.gt7pitwall.app.settings.RaceStore
@@ -25,6 +27,9 @@ class PitwallApp : Application() {
     lateinit var voiceInput: VoskVoiceInput
         private set
     val gemini = GeminiNano()
+
+    /** Prototype radio Discord (le bot tourne sur le téléphone). */
+    val discord: DiscordRadio by lazy { DiscordRadio(this, DiscordTokenStore(this)) }
 
     override fun onCreate() {
         super.onCreate()

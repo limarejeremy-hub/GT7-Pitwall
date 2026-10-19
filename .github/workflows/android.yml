@@ -16,7 +16,7 @@ jobs:
   build:
     name: Tests + APK debug
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Récupérer le code
         uses: actions/checkout@v4
@@ -32,6 +32,19 @@ jobs:
 
       - name: Tests unitaires (décodage GT7, tours, carburant, ingénieur)
         run: ./gradlew --no-daemon --stacktrace :core:test
+
+      - name: Cache de la bibliothèque DAVE (arm64)
+        id: dave-cache
+        uses: actions/cache@v4
+        with:
+          path: app/build/dave-natives
+          key: dave-android-arm64-${{ hashFiles('scripts/build-dave-android.sh') }}
+
+      - name: Compiler DAVE (libdave-jvm) pour Android arm64 depuis les sources
+        if: steps.dave-cache.outputs.cache-hit != 'true'
+        run: |
+          command -v ninja >/dev/null || sudo apt-get install -y ninja-build
+          bash scripts/build-dave-android.sh app/build/dave-natives
 
       - name: Compiler l'APK debug
         run: ./gradlew --no-daemon --stacktrace :app:assembleDebug

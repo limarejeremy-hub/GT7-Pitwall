@@ -54,6 +54,22 @@ android {
     buildFeatures {
         compose = true
     }
+
+    sourceSets["main"].jniLibs.srcDir(layout.buildDirectory.dir("dave-natives"))
+
+    packaging {
+        // libdave-jvm se charge par chemin de fichier : la bibliothèque doit être extraite à l'installation.
+        jniLibs.useLegacyPackaging = true
+        resources.excludes += setOf(
+            "META-INF/versions/*/module-info.class",
+            "module-info.class",
+            "META-INF/DEPENDENCIES",
+            "META-INF/INDEX.LIST",
+            "META-INF/LICENSE*",
+            "META-INF/NOTICE*",
+            "META-INF/FastDoubleParser-*",
+        )
+    }
 }
 
 kotlin {
@@ -72,6 +88,18 @@ dependencies {
 
     // Ingénieur IA : Gemini Nano sur le téléphone (ML Kit GenAI Prompt API, gratuit, hors ligne via AICore).
     implementation("com.google.mlkit:genai-prompt:1.0.0-beta4")
+
+    // Radio Discord (prototype) : bot JDA 6 + chiffrement de bout en bout DAVE (libdave-jvm). La bibliothèque native
+    // libdave-jvm.so est compilée par la CI depuis les sources (scripts/build-dave-android.sh), jamais téléchargée.
+    implementation("net.dv8tion:JDA:6.7.0") {
+        exclude(group = "club.minnced", module = "opus-java") // voix déjà encodée en Opus par Android (MediaCodec)
+        exclude(group = "com.google.crypto.tink", module = "tink") // remplacé par tink-android (protobuf lite)
+        exclude(group = "com.squareup.okhttp3", module = "okhttp-jvm") // remplacé par la variante Android
+    }
+    implementation("com.squareup.okhttp3:okhttp:5.5.0")
+    implementation("com.google.crypto.tink:tink-android:1.18.0")
+    implementation("moe.kyokobot.libdave:impl-jni:0.2.0")
+    implementation("moe.kyokobot.libdave:adapter-jda:0.2.0")
 
     // Reconnaissance vocale hors ligne, gratuite et open source (Apache 2.0).
     implementation("com.alphacephei:vosk-android:0.3.47@aar")

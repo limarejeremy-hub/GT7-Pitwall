@@ -20,6 +20,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -36,6 +37,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -47,12 +49,15 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.gt7pitwall.app.ai.AiState
 import com.gt7pitwall.app.ai.GeminiNano
 import com.gt7pitwall.core.ai.AiTrace
+import com.gt7pitwall.app.discord.DiscordRadio
+import com.gt7pitwall.app.discord.DiscordState
 import com.gt7pitwall.app.engine.PitwallEngine
 import com.gt7pitwall.app.engine.PitwallUiState
 import com.gt7pitwall.app.settings.SettingsStore
@@ -89,6 +94,7 @@ fun PitwallScreen(
     voiceModels: VoiceModelManager,
     voiceInput: VoskVoiceInput,
     gemini: GeminiNano,
+    discord: DiscordRadio,
     onAiToggle: (Boolean) -> Unit,
     onStart: (String) -> Unit,
     onStop: () -> Unit,
@@ -146,6 +152,7 @@ fun PitwallScreen(
                 voiceInput.useGoogleSpeech = it
             },
         )
+        DiscordCard(discord)
         AiCard(
             on = aiOn,
             state = aiState,
@@ -728,6 +735,85 @@ private fun LapHistoryCard(laps: List<LapRecord>) {
                     Modifier.weight(0.8f),
                     fontFamily = FontFamily.Monospace,
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DiscordCard(discord: DiscordRadio) {
+    val state by discord.state.collectAsStateWithLifecycle()
+    val detail by discord.detail.collectAsStateWithLifecycle()
+    val channels by discord.channels.collectAsStateWithLifecycle()
+    var token by remember { mutableStateOf("") }
+    var selected by rememberSaveable { mutableStateOf<Long?>(null) }
+    PitCard("Radio Discord (prototype)") {
+        Text(
+            "Le Fold se connecte comme bot à ton serveur Discord privé et parle dans un salon vocal. Sur la PS5, rejoins ce " +
+                "salon : l'ingénieur arrive dans le casque de la manette, par-dessus le jeu. Test possible sans GT7.",
+            color = PitColors.Muted,
+            style = MaterialTheme.typography.bodySmall,
+        )
+        if (state == DiscordState.NO_TOKEN) {
+            OutlinedTextField(
+                value = token,
+                onValueChange = { token = it },
+                singleLine = true,
+                label = { Text("Token du bot") },
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Button(
+                onClick = {
+                    discord.saveToken(token)
+                    token = ""
+                },
+                enabled = token.isNotBlank(),
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Enregistrer (chiffré sur le téléphone)") }
+        }
+        val (label, color) = when (state) {
+            DiscordState.NO_TOKEN -> "Aucun token enregistré." to PitColors.Muted
+            DiscordState.OFFLINE -> "Déconnecté." to PitColors.Muted
+            DiscordState.CONNECTING -> "Connexion…" to PitColors.Yellow
+            DiscordState.ONLINE -> "Bot connecté." to PitColors.Green
+            DiscordState.JOINING -> "Connexion au salon vocal…" to PitColors.Yellow
+            DiscordState.IN_VOICE -> "Dans le salon vocal." to PitColors.Green
+            DiscordState.ERROR -> "Erreur." to PitColors.Red
+        }
+        Text(label, color = color, fontWeight = FontWeight.Bold)
+        detail?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+        if (state == DiscordState.ONLINE || state == DiscordState.JOINING || state == DiscordState.IN_VOICE) {
+            channels.forEach { ch ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    RadioButton(selected = selected == ch.id, onClick = { selected = ch.id })
+                    Text("${ch.guild} • 🔊 ${ch.name}", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            when (state) {
+                DiscordState.OFFLINE, DiscordState.ERROR ->
+                    Button(onClick = discord::connect, modifier = Modifier.weight(1f)) { Text("Connecter le bot") }
+                DiscordState.ONLINE -> Button(
+                    onClick = { selected?.let(discord::join) },
+                    enabled = selected != null,
+                    modifier = Modifier.weight(1f),
+                ) { Text("Rejoindre le salon") }
+                DiscordState.IN_VOICE -> {
+                    Button(onClick = discord::sayTest, modifier = Modifier.weight(1f)) { Text("Phrase test") }
+                    OutlinedButton(onClick = discord::leave, modifier = Modifier.weight(1f)) { Text("Quitter le salon") }
+                }
+                else -> Unit
+            }
+        }
+        if (state != DiscordState.NO_TOKEN) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (state != DiscordState.OFFLINE && state != DiscordState.ERROR) {
+                    OutlinedButton(onClick = discord::disconnect, modifier = Modifier.weight(1f)) { Text("Déconnecter") }
+                }
+                TextButton(onClick = discord::forgetToken, modifier = Modifier.weight(1f)) { Text("Effacer le token") }
             }
         }
     }

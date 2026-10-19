@@ -53,6 +53,7 @@ class MainActivity : ComponentActivity() {
                     voiceModels = app.voiceModels,
                     voiceInput = app.voiceInput,
                     gemini = app.gemini,
+                    discord = app.discord,
                     onAiToggle = app::setAi,
                     onStart = { address ->
                         app.settings.ps5Address = address
