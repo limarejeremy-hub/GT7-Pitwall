@@ -2,6 +2,7 @@ package com.gt7pitwall.core.ai
 
 import com.gt7pitwall.core.radio.DriverCommand
 import com.gt7pitwall.core.radio.DriverCommandParser
+import com.gt7pitwall.core.radio.StatementGuard
 
 /**
  * Faits que l'IA a le droit d'utiliser : phrases déjà produites par l'ingénieur à partir de la télémétrie GT7,
@@ -109,6 +110,9 @@ object RadioAi {
         if (intent in IntentClassifier.LOCAL) return Route.Local(question, intent)
         // « Répète » : toujours compris, même en pleine conversation (un mot seul n'y est pas un fragment).
         if (cmd == DriverCommand.Repeat) return Route.Parser(clean)
+        // Stratégie envisagée, souhaitée, hypothétique ou à propos des autres (« je pense rentrer maintenant »,
+        // « si je rentre au tour 5 ? ») : une discussion, jamais une donnée de course ni un calcul tout fait.
+        if (intent == Intent.STRATEGY && StatementGuard.mode(question) in DISCUSSION_MODES) return Route.Ai(question)
         // Demande de stratégie que l'analyseur connaît (essence, pneus, plan…) : le calcul déterministe répond,
         // même en pleine conversation avec Gemini.
         // Une question ouverte (« résume ma course », « tu penses que… ») reste pour Gemini, avec ces calculs en faits.
@@ -133,6 +137,10 @@ object RadioAi {
     }
 
     private const val LONG_SENTENCE_WORDS = 7
+
+    private val DISCUSSION_MODES = setOf(
+        StatementGuard.Mode.HYPOTHETICAL, StatementGuard.Mode.FUTURE, StatementGuard.Mode.WISH, StatementGuard.Mode.ABOUT_OTHERS,
+    )
 
     /** Hypothèse (« si… », « et si… », « qu'est-ce qu'on fait si… ») : une question de principe. */
     private val HYPOTHETICAL = Regex("(^|\\s)(et )?si (je|j'|on|il|ils|elle|elles|le|la|les|un|une|devant|derriere|ca|y a)|qu'est ce qu'on fait si|on fait quoi si")

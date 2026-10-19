@@ -5,6 +5,8 @@ import com.gt7pitwall.core.engineer.MessageCategory
 import com.gt7pitwall.core.engineer.Priority
 import com.gt7pitwall.core.race.RaceController
 import com.gt7pitwall.core.radio.DriverCommandParser
+import com.gt7pitwall.core.radio.StatementGuard
+import com.gt7pitwall.core.radio.Vetting
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
@@ -45,11 +47,30 @@ class RadioConversation(
             route is RadioAi.Route.NoRaceData -> mutex.withLock { race.localReply(route.question, LocalReplies.NO_RACE_DATA) }
             route is RadioAi.Route.Help -> mutex.withLock { help(route.question, route.topic) }
             route is RadioAi.Route.Ai && model != null && model.ready -> ask(model, route.question, onThinking)
+            // Sans Gemini, une intention ou une hypothèse sur la stratégie reçoit quand même une réponse honnête.
+            route is RadioAi.Route.Ai && DriverCommandParser.parse(text) == null && strategyDiscussion(route.question) != null ->
+                mutex.withLock {
+                    val (reply, intention) = strategyDiscussion(route.question)!!
+                    intention?.let(race::noteIntention)
+                    race.localReply(route.question, reply)
+                }
             route is RadioAi.Route.Ai && model != null && DriverCommandParser.parse(text) == null -> listOf(
                 EngineerMessage("Toi : ${route.question}", Priority.INFO, MessageCategory.DRIVER),
                 EngineerMessage("Gemini n'est pas prêt : ${model.status}", Priority.HIGH, MessageCategory.ANSWER),
             )
-            else -> mutex.withLock { race.utterance(text) }
+            else -> {
+                // Commande vocale : sa forme (négation, intention, question…) décide si elle s'applique. Une intention
+                // ou une hypothèse sur la stratégie devient une discussion avec Gemini quand il est prêt.
+                val original = freeText?.takeIf { it.isNotBlank() } ?: text
+                val cmd = DriverCommandParser.parse(text)
+                val discuss = cmd?.let { mutex.withLock { race.vet(it, original) } } as? Vetting.Discuss
+                if (discuss != null && discuss.mode in DISCUSSED_WITH_AI && model != null && model.ready) {
+                    mutex.withLock { discuss.intention?.let(race::noteIntention) }
+                    ask(model, original, onThinking)
+                } else {
+                    mutex.withLock { race.utterance(text, original) }
+                }
+            }
         }
     }
 
@@ -83,6 +104,24 @@ class RadioConversation(
         val reply = RadioAi.parse(raw, question, context.facts, history, previousAnswers = context.history.map { it.answer })
         lastTrace = AiTrace(question, raw, verdict(reply, raw), clock() - started)
         return mutex.withLock { race.aiReply(question, reply, clock(), intent) }
+    }
+
+    /** Réponse sans IA à une intention, une hypothèse ou une remarque sur les autres, en stratégie ; rien n'est modifié. */
+    private fun strategyDiscussion(question: String): Pair<String, String?>? {
+        if (IntentClassifier.classify(question) != Intent.STRATEGY) return null
+        return when (StatementGuard.mode(question)) {
+            StatementGuard.Mode.FUTURE, StatementGuard.Mode.WISH ->
+                "Compris, c'est noté comme intention : je n'enregistre rien tant que ce n'est pas fait." to "« ${question.trim()} »"
+            StatementGuard.Mode.HYPOTHETICAL -> "C'est une hypothèse : je ne change rien à la stratégie." to null
+            StatementGuard.Mode.ABOUT_OTHERS -> "Noté pour l'adversaire : GT7 ne me transmet pas ses arrêts, je ne change rien de notre côté." to null
+            else -> null
+        }
+    }
+
+    private companion object {
+        val DISCUSSED_WITH_AI = setOf(
+            StatementGuard.Mode.FUTURE, StatementGuard.Mode.WISH, StatementGuard.Mode.HYPOTHETICAL, StatementGuard.Mode.ABOUT_OTHERS,
+        )
     }
 
     private class Context(val facts: AiFacts, val history: List<RadioAi.Exchange>, val telemetryLive: Boolean, val lastIntent: Intent?)

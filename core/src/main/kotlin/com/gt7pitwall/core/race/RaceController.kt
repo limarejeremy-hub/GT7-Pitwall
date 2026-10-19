@@ -19,6 +19,10 @@ import com.gt7pitwall.core.knowledge.CarTrackRecord
 import com.gt7pitwall.core.knowledge.Course
 import com.gt7pitwall.core.knowledge.Gt7Database
 import com.gt7pitwall.core.radio.DriverCommand
+import com.gt7pitwall.core.radio.Vetting
+import com.gt7pitwall.core.radio.GateContext
+import com.gt7pitwall.core.radio.CommandSource
+import com.gt7pitwall.core.radio.CommandGate
 import com.gt7pitwall.core.radio.DriverCommandParser
 import com.gt7pitwall.core.radio.DriverQuery
 import com.gt7pitwall.core.session.PitAssessment
@@ -135,6 +139,8 @@ class RaceController(
                 candidatesAnnounced = false
                 pitWindowPackets = 0
                 aiExchanges.clear()
+                intentions.clear()
+                pendingConfirmation = null
                 lastAiAnswerMs = null
                 tyreLifeAsked = false
             }
@@ -183,6 +189,11 @@ class RaceController(
                 out += replan()
             }
             DriverCommand.Yes -> {
+                // Déclaration confirmée par le pilote : appliquée telle quelle.
+                pendingConfirmation?.let { pending ->
+                    pendingConfirmation = null
+                    return command(pending)
+                }
                 val confirmed = ledger.confirmPending()
                 out += answer(
                     when {
@@ -194,6 +205,10 @@ class RaceController(
                 out += replanOrWait()
             }
             DriverCommand.No -> {
+                if (pendingConfirmation != null) {
+                    pendingConfirmation = null
+                    return deliver(answer(listOf("D'accord, je ne change rien.")))
+                }
                 out += answer(
                     when {
                         ledger.rejectPending() -> listOf("D'accord, je ne compte pas cet arrêt.")
@@ -246,10 +261,58 @@ class RaceController(
     }
 
     /** Phrase reconnue par la radio vocale. */
-    fun utterance(text: String): List<EngineerMessage> {
+    /**
+     * Phrase reconnue par la radio vocale. [original] : la phrase complète (reconnaissance libre), dont la forme
+     * (négation, futur, question…) décide si la commande s'applique.
+     */
+    fun utterance(text: String, original: String = text): List<EngineerMessage> {
         val echo = EngineerMessage("Toi : $text", Priority.INFO, MessageCategory.DRIVER)
         val cmd = DriverCommandParser.parse(text)
-        return listOf(echo) + if (cmd == null) deliver(listOf(engineer.notUnderstood(text))) else command(cmd)
+        return listOf(echo) + if (cmd == null) deliver(listOf(engineer.notUnderstood(text))) else voiceCommand(cmd, original, CommandSource.VOICE)
+    }
+
+    /** Commande en attente du « oui » du pilote (déclaration incertaine, ou proposée par Gemini). */
+    private var pendingConfirmation: DriverCommand? = null
+
+    /** Intentions et préférences du pilote (pas des faits) : données à l'IA pour discuter la stratégie. */
+    private val intentions = ArrayDeque<String>()
+
+    private fun gateContext(): GateContext {
+        val lap = snapshot.packet?.currentLap ?: 0
+        val recentDeclared = ledger.stopList.lastOrNull()
+            ?.takeIf { it.evidence == StopEvidence.DRIVER_DECLARED && lap - it.lap in 0..1 }?.number
+        return GateContext(telemetryLive(), recentDeclared, ledger.awaitingTyreChangeAnswer, engineer.driverPosition)
+    }
+
+    /** Décision du garde pour une commande vocale, sans l'appliquer (la conversation choisit qui répond). */
+    fun vet(command: DriverCommand, text: String, source: CommandSource = CommandSource.VOICE): Vetting =
+        CommandGate.vet(command, text, source, gateContext())
+
+    /**
+     * Commande vocale (Vosk, Google ou Gemini) : validée par [CommandGate] avant de modifier quoi que ce soit.
+     * Les boutons de l'écran passent par [command] directement.
+     */
+    fun voiceCommand(command: DriverCommand, text: String, source: CommandSource): List<EngineerMessage> {
+        // Une autre phrase que « oui » / « non » abandonne la confirmation en attente : rien n'est appliqué.
+        if (command != DriverCommand.Yes && command != DriverCommand.No) pendingConfirmation = null
+        return when (val v = vet(command, text, source)) {
+            is Vetting.Execute -> command(v.command)
+            is Vetting.Redirect -> command(v.command)
+            is Vetting.Confirm -> {
+                pendingConfirmation = v.command
+                deliver(listOf(EngineerMessage(v.question, Priority.HIGH, MessageCategory.ANSWER, expectsReply = true)))
+            }
+            is Vetting.Discuss -> {
+                v.intention?.let(::noteIntention)
+                deliver(listOf(EngineerMessage(v.reply, Priority.HIGH, MessageCategory.ANSWER)))
+            }
+        }
+    }
+
+    /** Intention ou préférence du pilote, gardée pour la discussion stratégique (jamais un événement de course). */
+    fun noteIntention(text: String) {
+        intentions.addLast(text)
+        while (intentions.size > MAX_INTENTIONS) intentions.removeFirst()
     }
 
     /**
@@ -265,7 +328,8 @@ class RaceController(
         val echo = EngineerMessage("Toi : $question", Priority.INFO, MessageCategory.DRIVER)
         lastAiAnswerMs = if (reply is AiReply.Command) null else nowMs
         val out = when (reply) {
-            is AiReply.Command -> command(reply.command)
+            // Gemini ne fait que reformuler : sa commande passe par le même garde, et attend le « oui » du pilote.
+            is AiReply.Command -> voiceCommand(reply.command, question, CommandSource.GEMINI)
             is AiReply.Answer -> {
                 aiExchanges.addLast(RadioAi.Exchange(question, reply.text, intent))
                 while (aiExchanges.size > AI_HISTORY) aiExchanges.removeFirst()
@@ -338,6 +402,7 @@ class RaceController(
             lines += "Pneus : ils tiennent $life tours d'après toi ; $age tours faits avec le train actuel."
         }
         lines += if (engineer.raining) "Pluie signalée par le pilote." else "Pas de pluie signalée par le pilote."
+        intentions.forEach { lines += "Intention du pilote, pas encore réalisée : $it." }
         for (lap in snap.laps.takeLast(AI_LAPS)) {
             val parts = mutableListOf<String>()
             parts += lap.timeMs?.takeIf { it > 0 }?.let { FrenchFormat.lapTimeSpeech(it) } ?: "chrono inconnu"
@@ -532,6 +597,7 @@ class RaceController(
         const val AI_HISTORY = 3
         const val AI_CONVERSATION_MS = 45_000L
         const val TELEMETRY_LIVE_MS = 3_000L
+        const val MAX_INTENTIONS = 3
 
         val AI_TOPICS = mapOf(
             DriverQuery.FUEL to "Carburant",
@@ -556,7 +622,7 @@ class RaceController(
     }
 
     private val awaitingAnswer: Boolean
-        get() = ledger.awaitingTyreDeclaration || ledger.awaitingTyreChangeAnswer || ledger.pending != null
+        get() = pendingConfirmation != null || ledger.awaitingTyreDeclaration || ledger.awaitingTyreChangeAnswer || ledger.pending != null
 
     private fun tyres(c: DriverCommand.Tyres, lap: Int): List<String> {
         val compound = TyreCompound.fromSpeech(c.text, rules.allowedTyres, rules.requiredTyres)

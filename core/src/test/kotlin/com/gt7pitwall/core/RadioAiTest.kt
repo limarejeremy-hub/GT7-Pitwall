@@ -105,11 +105,14 @@ class RadioAiTest {
         assertTrue(f.lines.any { it.startsWith("Tour 2 :") }, f.text)
         assertTrue(f.lines.first().startsWith("GT7 ne transmet pas"))
 
-        // Commande comprise par l'IA : même effet qu'à la voix.
+        // Commande comprise par l'IA : Gemini ne fait que reformuler, rien ne change sans le « oui » du pilote.
         val cmd = RadioAi.parse("COMMANDE: les pneus tiennent 6 tours", "mes pneus durent 6 tours", f)
         s.said += c.aiReply("mes pneus durent 6 tours", cmd)
-        assertEquals(6, c.rules.tyreStintLaps)
+        assertEquals(null, c.rules.tyreStintLaps, "pas appliqué sans confirmation")
+        assertEquals("Tu confirmes : les pneus tiennent 6 tours ?", s.lastAnswer)
         assertTrue(s.texts.contains("Toi : mes pneus durent 6 tours"))
+        s.said += c.utterance("oui")
+        assertEquals(6, c.rules.tyreStintLaps, "confirmé par le pilote : même effet qu'à la voix")
 
         s.said += c.aiReply("il fait beau ?", AiReply.Rejected(AiReply.Reason.UNKNOWN))
         assertTrue("GT7 ne me la transmet pas" in s.lastAnswer, s.lastAnswer)

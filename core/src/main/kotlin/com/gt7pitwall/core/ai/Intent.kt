@@ -66,7 +66,7 @@ object IntentClassifier {
         "plein", "ravitaill", "relais", "strategie", "plan", "reglement", "obligatoire", "obligation", "tours restants",
         "combien de tours", "position", "classement", "place", "trafic", "ma course", "la course", "gomme", "gommes",
         "changer mes pneus", "changer les pneus", "pneus durs", "pneus mediums", "pneus tendres", "usure",
-        "penalite", "drapeau",
+        "penalite", "drapeau", "rentrer", "rentre aux", "rentrent", "prolonger", "relais",
     )
 
     /** Mots qui désignent clairement un geste de pilotage, même dans une question qui touche aussi la stratégie. */

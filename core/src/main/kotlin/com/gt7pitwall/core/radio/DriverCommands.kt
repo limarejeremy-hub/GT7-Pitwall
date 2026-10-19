@@ -130,7 +130,9 @@ object DriverCommandParser {
             .trim()
 
     fun parse(text: String): DriverCommand? {
-        val t = normalize(text)
+        // Google ponctue (« J'ai fait mon arrêt. »), Vosk non : la ponctuation ne doit pas cacher un mot.
+        // Le « ? » reste, séparé, comme indice de question.
+        val t = normalize(text).replace(Regex("[.,!;:«»\"]"), " ").replace("?", " ?").replace(Regex("\\s+"), " ").trim()
         if (t.isEmpty()) return null
 
         if (has(t, "repete", "repeter", "redis")) return DriverCommand.Repeat
@@ -348,6 +350,10 @@ object DriverCommandParser {
             "vingt-deuxième", "vingt-troisième", "vingt-quatrième", "vingt-cinquième", "trentième",
             "deux", "trois", "quatre", "cinq", "six", "sept", "huit", "neuf", "dix", "onze", "douze", "treize",
             "quatorze", "quinze", "seize", "dix-sept", "dix-huit", "dix-neuf", "trente",
+            // Forme de la phrase (CommandGate) : négation, futur, souhait, hypothèse, question, les autres, le doute.
+            "n'ai", "ai", "ne", "jamais", "encore", "vais", "va", "vas", "veux", "voudrais", "pense", "crois", "peut-être",
+            "si", "on", "quoi", "doit", "faut", "sont", "celui", "ceux", "ils", "autres", "devant", "derrière", "moi", "nous",
+            "rentrer", "rentrent", "maintenant", "mettre", "prolonger", "relais", "son", "leur",
         )
         return (words.distinct() + "[unk]")
     }
