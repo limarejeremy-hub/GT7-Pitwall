@@ -210,7 +210,7 @@ class SectorsAndRadioTest {
         // Au tour suivant, l'appel au stand (et l'alerte carburant, critique aussi) précèdent le compte rendu du tour 5.
         val boxIdx = said.indexOfFirst { it.startsWith("Box, box ! Rentre au stand à la fin de ce tour, ajoute environ") }
         assertTrue(boxIdx in (said.indexOfFirst { it.startsWith("Tour 4 :") } + 1) until said.indexOfFirst { it.startsWith("Tour 5 :") }, text)
-        assertTrue("litres" in said[boxIdx])
+        assertTrue("% du réservoir" in said[boxIdx])
         val lap5 = said.first { it.startsWith("Tour 5 :") }
         assertTrue("Il faudra ravitailler" !in lap5, lap5)
     }

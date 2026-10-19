@@ -12,7 +12,7 @@ enum class StopEvidence {
     DRIVER_DECLARED,
 }
 
-data class PitStopRecord(val number: Int, val lap: Int, val evidence: StopEvidence, val litersAdded: Float?)
+data class PitStopRecord(val number: Int, val lap: Int, val evidence: StopEvidence, val fuelAdded: Float?)
 
 /** Arrêt possible (sans ravitaillement) en attente de confirmation du pilote. */
 data class StopCandidate(val lap: Int, val locationKnown: Boolean)
@@ -50,9 +50,9 @@ class PitLedger {
         awaitingTyreChangeAnswer = false
     }
 
-    fun recordRefuel(lap: Int, liters: Float): PitStopRecord {
+    fun recordRefuel(lap: Int, amount: Float): PitStopRecord {
         pending = null
-        return add(lap, StopEvidence.REFUEL, liters)
+        return add(lap, StopEvidence.REFUEL, amount)
     }
 
     fun propose(lap: Int, locationKnown: Boolean): StopCandidate =
@@ -103,6 +103,6 @@ class PitLedger {
 
     fun missingRequired(rules: RaceRules): Set<TyreCompound> = rules.requiredTyres - tyresUsed(rules.startTyre)
 
-    private fun add(lap: Int, evidence: StopEvidence, liters: Float?): PitStopRecord =
-        PitStopRecord(stops.size + 1, lap, evidence, liters).also { stops += it }
+    private fun add(lap: Int, evidence: StopEvidence, amount: Float?): PitStopRecord =
+        PitStopRecord(stops.size + 1, lap, evidence, amount).also { stops += it }
 }

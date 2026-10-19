@@ -28,7 +28,7 @@ enum class PitAssessment {
  */
 class PitDetector(private val refuelThreshold: Float = 0.05f) {
 
-    data class Visit(val lap: Int, val refuelLiters: Float, val stoppedSeconds: Float, val assessment: PitAssessment, val locationKnown: Boolean)
+    data class Visit(val lap: Int, val refuelAmount: Float, val stoppedSeconds: Float, val assessment: PitAssessment, val locationKnown: Boolean)
 
     private val speeds = FloatArray(HISTORY)
     private var count = 0
@@ -40,7 +40,7 @@ class PitDetector(private val refuelThreshold: Float = 0.05f) {
     /** Un passage est en cours (ravitaillement ou immobilisation), jusqu'à la sortie des stands. */
     val inVisit: Boolean get() = open
     private var visitLap = 0
-    private var liters = 0f
+    private var fuel = 0f
     private var stoppedPackets = 0
     private var stillPackets = 0
     private var fastPackets = 0
@@ -52,7 +52,7 @@ class PitDetector(private val refuelThreshold: Float = 0.05f) {
         head = 0
         open = false
         rise.reset()
-        liters = 0f
+        fuel = 0f
         stoppedPackets = 0
         stillPackets = 0
         fastPackets = 0
@@ -78,14 +78,14 @@ class PitDetector(private val refuelThreshold: Float = 0.05f) {
                 risen > refuelThreshold -> {
                     openVisit(p, outline, assess = false)
                     pitLike = true
-                    liters = risen
+                    fuel = risen
                 }
                 stillPackets >= OPEN_STOPPED_PACKETS -> openVisit(p, outline, assess = true)
                 else -> return null
             }
         }
 
-        if (!opened && fuelUp > FuelRise.NOISE) liters += fuelUp
+        if (!opened && fuelUp > FuelRise.NOISE) fuel += fuelUp
         if (stationary) stoppedPackets++
         fastPackets = if (p.speedKmh >= CLOSE_KMH) fastPackets + 1 else 0
         if (fastPackets < CLOSE_FAST_PACKETS) return null
@@ -94,17 +94,17 @@ class PitDetector(private val refuelThreshold: Float = 0.05f) {
         open = false
         rise.reset()
         val assessment = when {
-            liters >= MIN_REFUEL_LITERS -> PitAssessment.REFUEL
+            fuel >= MIN_REFUEL -> PitAssessment.REFUEL
             pitLike -> PitAssessment.PIT_LIKE_STOP
             else -> PitAssessment.TRACK_STOP
         }
-        return Visit(visitLap, liters, stoppedPackets / 60f, assessment, locationKnown)
+        return Visit(visitLap, fuel, stoppedPackets / 60f, assessment, locationKnown)
     }
 
     private fun openVisit(p: TelemetryPacket, outline: TrackOutline?, assess: Boolean) {
         open = true
         visitLap = p.currentLap
-        liters = 0f
+        fuel = 0f
         stoppedPackets = 0
         fastPackets = 0
         locationKnown = outline != null && outline.xs.size >= 2
@@ -164,7 +164,7 @@ class PitDetector(private val refuelThreshold: Float = 0.05f) {
         const val OPEN_STOPPED_PACKETS = 120 // 2 s immobile
         const val CLOSE_KMH = 120f
         const val CLOSE_FAST_PACKETS = 60 // 1 s au-dessus de 120 km/h : sortie des stands
-        const val MIN_REFUEL_LITERS = 0.5f
+        const val MIN_REFUEL = 0.5f
         const val VIOLENT_WINDOW = 120
         const val VIOLENT_G = 2.5f
         const val LIMITER_PACKETS = 180 // 3 s à vitesse limitée

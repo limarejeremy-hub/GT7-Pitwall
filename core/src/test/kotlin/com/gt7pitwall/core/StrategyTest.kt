@@ -59,7 +59,7 @@ class StrategyTest {
             if (idx < p.stops.size) {
                 val stop = p.stops[idx]
                 assertTrue(stop.endOfLap < p.totalLaps, "pas d'arrêt à la fin du dernier tour")
-                val add = stop.liters!!
+                val add = stop.fuel!!
                 assertTrue(fuel + add <= i.tank + 0.5f, "plein supérieur au réservoir")
                 fuel += add
             }
@@ -74,7 +74,7 @@ class StrategyTest {
         val p = plan(input(gameLaps = 10))
         assertEquals(1, p.stops.size)
         assertEquals(5, p.stops[0].endOfLap)
-        assertEquals(49, p.stops[0].liters)
+        assertEquals(49, p.stops[0].fuel)
         assertTrue(p.stops[0].forFuel)
         assertEquals(DataSource.GAME, p.lapsSource)
         assertEquals(DataSource.MEASURED, p.fuelSource)
@@ -148,7 +148,7 @@ class StrategyTest {
         val after = plan(i2)
         // Le relais reste équilibré (arrêt à mi-course) mais il faut plus d'essence, et le plan reste tenable.
         assertEquals(before.stops.first().endOfLap, after.stops.first().endOfLap)
-        assertTrue(after.stops.first().liters!! > before.stops.first().liters!!)
+        assertTrue(after.stops.first().fuel!! > before.stops.first().fuel!!)
         assertConsistent(after, i2)
         // Forte hausse : le premier relais ne tient plus, l'arrêt avance.
         val i3 = i1.copy(perLap = 20f)
@@ -182,7 +182,7 @@ class StrategyTest {
     fun currentLapProgressIsTakenIntoAccount() {
         val full = plan(input(gameLaps = 10, lap = 5, remaining = 1f, fuel = 50f, perLap = 10f))
         val half = plan(input(gameLaps = 10, lap = 5, remaining = 0.5f, fuel = 50f, perLap = 10f))
-        assertTrue(half.stops.first().liters!! <= full.stops.first().liters!!)
+        assertTrue(half.stops.first().fuel!! <= full.stops.first().fuel!!)
     }
 
     @Test
@@ -214,7 +214,7 @@ class StrategyTest {
     fun unknownConsumptionKeepsLitresUnknown() {
         val p = plan(input(rules = RaceRules(totalLaps = 12, mandatoryStops = 2), perLap = null))
         assertEquals(listOf(4, 8), p.stops.map { it.endOfLap })
-        assertTrue(p.stops.all { it.liters == null })
+        assertTrue(p.stops.all { it.fuel == null })
         assertEquals(DataSource.RULES, p.lapsSource)
         assertNull(RacePlanner.plan(input(rules = RaceRules(totalLaps = 12), perLap = null)))
     }

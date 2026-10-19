@@ -137,9 +137,9 @@ class RaceSim(
 
     /**
      * Arrêt au stand réaliste : entrée 400 m avant la ligne, 72 km/h dans la voie (15 m à l'extérieur),
-     * franchit la ligne, s'arrête 60 m après, ravitaille [liters], ressort et accélère.
+     * franchit la ligne, s'arrête 60 m après, ravitaille [fuel] (unités GT7), ressort et accélère.
      */
-    fun pitStop(liters: Float, stopSeconds: Float = 6f) {
+    fun pitStop(fuel: Float, stopSeconds: Float = 6f) {
         val pitR = radius + 15f
         val entry = (2 * PI - 400.0 / radius).toFloat()
         while (theta < entry) step(80f)
@@ -148,7 +148,7 @@ class RaceSim(
         while (lap == startLap) step(20f, pitR)
         while (theta < 60f / radius) step(20f, pitR)
         repeat(30) { step(20f - it * 0.66f, pitR) }
-        stand(stopSeconds, pitR, addFuel = liters)
+        stand(stopSeconds, pitR, addFuel = fuel)
         repeat(240) { step(5f + it * 0.25f, pitR) } // sortie et ré-accélération
         repeat(120) { step(65f) }
     }

@@ -69,9 +69,9 @@ class PitVoiceAndTyreCallTest {
         s.start()
         s.driveLaps(2)
         // 10 L en 6 s : moins de 0,05 L par paquet, la hausse doit être cumulée pour être vue.
-        s.pitStop(liters = 10f)
+        s.pitStop(fuel = 10f)
         assertEquals(StopEvidence.REFUEL, c.ledger.stopList.single().evidence)
-        assertEquals(10f, c.ledger.stopList.single().litersAdded!!, 0.2f)
+        assertEquals(10f, c.ledger.stopList.single().fuelAdded!!, 0.2f)
         s.say("j'ai fait un arrêt aux stands")
         assertEquals(1, c.ledger.stopCount, "un seul passage")
         assertTrue("déjà enregistré" in s.lastAnswer, s.lastAnswer)
@@ -89,7 +89,7 @@ class PitVoiceAndTyreCallTest {
         s.driveLaps(2)
         val stop = c.plan!!.stops.single()
         while (s.lap < stop.endOfLap) s.driveLaps(1)
-        s.pitStop(liters = stop.liters!!.toFloat())
+        s.pitStop(fuel = stop.fuel!!.toFloat())
         s.driveLaps(14 - s.lap)
         s.driveLaps(1) // dernier tour commencé
         s.say("je suis cinquième")
@@ -120,7 +120,7 @@ class PitVoiceAndTyreCallTest {
         assertTrue(s.texts.any { it.startsWith("Stand au prochain tour") && "On changera les pneus" in it })
 
         // Arrêt sans essence : l'ingénieur demande confirmation, puis si les pneus ont été changés.
-        s.pitStop(liters = 0f)
+        s.pitStop(fuel = 0f)
         assertTrue(s.said.last().expectsReply && "effectué ton arrêt" in s.texts.last(), s.texts.last())
         s.say("oui")
         assertTrue("As-tu changé les pneus ?" in s.lastAnswer, s.lastAnswer)
@@ -139,7 +139,7 @@ class PitVoiceAndTyreCallTest {
         s.say("les pneus tiennent huit tours")
         val stop = c.plan!!.stops.single()
         while (s.lap < stop.endOfLap) s.driveLaps(1)
-        s.pitStop(liters = 0f)
+        s.pitStop(fuel = 0f)
         s.say("oui")
         s.say("non")
         assertTrue("mêmes pneus" in s.lastAnswer, s.lastAnswer)

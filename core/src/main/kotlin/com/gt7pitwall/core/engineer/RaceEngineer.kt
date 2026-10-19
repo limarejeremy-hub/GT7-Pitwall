@@ -70,6 +70,14 @@ class RaceEngineer {
     /** Plan de course calculé par le moteur à partir du règlement (null sans règlement exploitable). */
     var plan: RacePlan? = null
 
+    /** Capacité du réservoir transmise par GT7 : le carburant est dit en pourcentage du réservoir, jamais en litres. */
+    private var fuelCapacity: Float? = null
+
+    private fun fuelText(units: Number?): String =
+        units?.let { com.gt7pitwall.core.strategy.FuelUnits.amount(it.toFloat(), fuelCapacity) } ?: "une quantité à calculer"
+
+    private fun perLapText(units: Float): String = com.gt7pitwall.core.strategy.FuelUnits.perLap(units, fuelCapacity)
+
     /** Arrêts restants du dernier plan annoncé (tour, pneus) : on ne réannonce que si le prochain arrêt ou leur nombre change. */
     private var announcedStops: List<Pair<Int, Boolean>>? = null
 
@@ -96,6 +104,7 @@ class RaceEngineer {
     var askPositionEachLap: Boolean = false
 
     fun onUpdate(events: List<SessionEvent>, snapshot: SessionSnapshot, fuel: FuelReport?): List<EngineerMessage> {
+        snapshot.packet?.let { fuelCapacity = it.fuelCapacity.takeIf { c -> c > 0f } }
         val out = mutableListOf<EngineerMessage>()
         snapshotLap = snapshot.packet?.currentLap ?: 0
         val lapCompletedNow = events.any { it is SessionEvent.LapCompleted }
@@ -171,6 +180,7 @@ class RaceEngineer {
 
     /** Ce que le pilote dit à la radio. */
     fun handle(command: DriverCommand, snapshot: SessionSnapshot, fuel: FuelReport?): EngineerMessage {
+        snapshot.packet?.let { fuelCapacity = it.fuelCapacity.takeIf { c -> c > 0f } }
         val reply = when (command) {
             is DriverCommand.Ask -> return answer(command.query, snapshot, fuel).also { lastSpoken = it }
             is DriverCommand.ReportPosition -> {
@@ -253,6 +263,7 @@ class RaceEngineer {
 
     /** Réponse à une question du pilote (boutons de l'écran, et demain la voix). */
     fun answer(query: DriverQuery, snapshot: SessionSnapshot, fuel: FuelReport?): EngineerMessage {
+        snapshot.packet?.let { fuelCapacity = it.fuelCapacity.takeIf { c -> c > 0f } }
         val p = snapshot.packet
         snapshotLap = p?.currentLap ?: snapshotLap
         val text = when (query) {
@@ -479,7 +490,7 @@ class RaceEngineer {
         append("Nouveau plan : prochain arrêt fin du tour ${next.endOfLap}")
         when {
             next.mandatoryOnly -> append(", obligatoire sans essence")
-            next.forFuel -> append(", ${next.liters} litres")
+            next.forFuel -> append(", ${fuelText(next.fuel)}")
             next.noFuelNeeded -> append(", sans essence")
         }
         stopTyres(next)?.let { append(", ").append(it) }
@@ -529,7 +540,7 @@ class RaceEngineer {
                         append("fin du tour ${s.endOfLap}")
                         when {
                             s.mandatoryOnly -> append(", obligatoire sans essence")
-                            s.forFuel -> append(", ${s.liters} litres")
+                            s.forFuel -> append(", ${fuelText(s.fuel)}")
                             s.noFuelNeeded -> append(", sans essence")
                         }
                         if (s.mandatory && s.forFuel) append(", compte pour l'arrêt obligatoire")
@@ -538,7 +549,7 @@ class RaceEngineer {
                 },
             )
             append(".")
-            if (p.perLap == null) append(" Les litres seront calculés après un tour mesuré.")
+            if (p.perLap == null) append(" La quantité de carburant sera calculée après un tour mesuré.")
             p.pitLaneDeltaS?.let { append(" Chaque passage par les stands coûte environ ${it.roundToInt()} secondes plus le plein.") }
         }
         if (p.requiredTyres.isNotEmpty()) append(" Gommes imposées : ${p.requiredTyres.joinToString(", ") { it.spoken }}.")
@@ -566,7 +577,7 @@ class RaceEngineer {
     private fun fuelSentence(f: FuelReport, verbose: Boolean): String {
         val range = f.lapsOfFuel?.let { "Carburant pour ${laps(it)}. " } ?: ""
         val perLap = if (verbose && f.perLap != null) {
-            "Consommation ${decimal(f.perLap)} par tour sur ${f.samples} ${if (f.samples > 1) "tours" else "tour"}. "
+            "Consommation ${perLapText(f.perLap)} sur ${f.samples} ${if (f.samples > 1) "tours" else "tour"}. "
         } else {
             ""
         }
@@ -578,13 +589,13 @@ class RaceEngineer {
             is FuelAdvice.RangeOnly -> "Je ne connais pas la distance restante, seulement l'autonomie."
             is FuelAdvice.Comfortable -> "On finit la course, marge de ${laps(a.marginLaps)}."
             is FuelAdvice.Tight ->
-                "Ça va être juste : vise ${decimal(a.targetPerLap)} par tour."
+                "Ça va être juste : vise ${perLapText(a.targetPerLap)}."
             // Avec un plan de course, la radio donne les chiffres du plan (une seule source de vérité).
             is FuelAdvice.PitRequired -> plan?.nextStop(snapshotLap)?.takeIf { it.forFuel }?.let { s ->
-                "Arrêt prévu à la fin du tour ${s.endOfLap}, environ ${s.liters} litres."
+                "Arrêt prévu à la fin du tour ${s.endOfLap}, environ ${fuelText(s.fuel)}."
             } ?: buildString {
                 append("Il faudra ravitailler : rentre au plus tard à la fin du tour ${a.latestPitLap}, ")
-                append("ajoute environ ${a.fuelToAdd.roundToInt()} litres.")
+                append("ajoute environ ${fuelText(a.fuelToAdd)}.")
                 if (a.stopsNeeded > 1) append(" Il faudra ${a.stopsNeeded} arrêts.")
                 if (a.savingNeeded in 0f..0.10f) {
                     append(" Sinon, économise ${(a.savingNeeded * 100).roundToInt()} pour cent par tour pour aller au bout.")
@@ -611,7 +622,7 @@ class RaceEngineer {
                     append("Box, box ! Rentre au stand à la fin de ce tour")
                     when {
                         next.mandatoryOnly -> append(", arrêt obligatoire, pas besoin d'essence.")
-                        next.forFuel -> append(", ajoute environ ${next.liters} litres.")
+                        next.forFuel -> append(", ajoute environ ${fuelText(next.fuel)}.")
                         next.noFuelNeeded -> append(", pas besoin d'essence.")
                         else -> append(".")
                     }
@@ -634,9 +645,8 @@ class RaceEngineer {
             }
         }
         val a = fuel?.advice as? FuelAdvice.PitRequired ?: return null
-        val liters = a.fuelToAdd.roundToInt()
         return when (currentLap) {
-            a.latestPitLap -> "Box, box ! Rentre au stand à la fin de ce tour, ajoute environ $liters litres."
+            a.latestPitLap -> "Box, box ! Rentre au stand à la fin de ce tour, ajoute environ ${fuelText(a.fuelToAdd)}."
             a.latestPitLap - 1 -> "Stand au prochain tour, prépare-toi."
             else -> null
         }

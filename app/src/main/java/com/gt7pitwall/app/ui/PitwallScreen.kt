@@ -610,11 +610,12 @@ private fun FuelCard(fuel: FuelReport?, p: TelemetryPacket?) {
         Row(verticalAlignment = Alignment.Bottom) {
             Text("${(fraction * 100).roundToInt()} %", fontSize = 34.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.width(8.dp))
-            Text("${f1(fuel.fuelLevel)} L / ${f1(fuel.fuelCapacity)} L", color = PitColors.Muted, modifier = Modifier.padding(bottom = 6.dp))
+            // Unités internes de GT7 (pas des litres démontrés) : affichées pour information seulement.
+            Text("du réservoir (GT7 : ${f1(fuel.fuelLevel)} / ${f1(fuel.fuelCapacity)})", color = PitColors.Muted, modifier = Modifier.padding(bottom = 6.dp))
         }
         Bar(fraction, if (fraction < 0.15f) PitColors.Red else PitColors.Cyan)
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Metric("Conso / tour", fuel.perLap?.let { "${f2(it)} L" } ?: "—", Modifier.weight(1f))
+            Metric("Conso / tour", fuel.perLap?.let { com.gt7pitwall.core.strategy.FuelUnits.short(it, fuel.fuelCapacity) } ?: "—", Modifier.weight(1f))
             Metric("Autonomie", fuel.lapsOfFuel?.let { "${f1(it)} t" } ?: "—", Modifier.weight(1f))
             Metric("Reste course", fuel.raceLapsRemaining?.let { "${f1(it)} t" } ?: "—", Modifier.weight(1f))
         }
@@ -625,12 +626,13 @@ private fun FuelCard(fuel: FuelReport?, p: TelemetryPacket?) {
                 style = MaterialTheme.typography.bodySmall,
             )
         }
-        AdviceBox(fuel.advice)
+        AdviceBox(fuel.advice, fuel.fuelCapacity)
     }
 }
 
 @Composable
-private fun AdviceBox(advice: FuelAdvice) {
+private fun AdviceBox(advice: FuelAdvice, capacity: Float) {
+    fun pct(units: Float) = com.gt7pitwall.core.strategy.FuelUnits.short(units, capacity)
     val (text, color) = when (advice) {
         FuelAdvice.Measuring -> "Mesure en cours : il faut un tour complet observé depuis la ligne." to PitColors.Muted
         FuelAdvice.NoConsumption -> "Le niveau ne baisse pas : pas de consommation sur cette épreuve." to PitColors.Green
@@ -639,12 +641,12 @@ private fun AdviceBox(advice: FuelAdvice) {
         is FuelAdvice.RangeOnly ->
             "Distance de course inconnue (course au temps ou essais) : autonomie ${f1(advice.lapsOfFuel)} tours." to PitColors.Cyan
         is FuelAdvice.Comfortable -> "OK pour finir • marge ${f1(advice.marginLaps)} tour(s)" to PitColors.Green
-        is FuelAdvice.Tight -> "JUSTE • vise ${f2(advice.targetPerLap)} par tour" to PitColors.Yellow
+        is FuelAdvice.Tight -> "JUSTE • vise ${pct(advice.targetPerLap)} du réservoir par tour" to PitColors.Yellow
         is FuelAdvice.PitRequired -> buildString {
-            append("RAVITAILLER • au plus tard fin du tour ${advice.latestPitLap} • ajouter ~${advice.fuelToAdd.roundToInt()}")
+            append("RAVITAILLER • au plus tard fin du tour ${advice.latestPitLap} • ajouter ~${pct(advice.fuelToAdd)} du réservoir")
             if (advice.stopsNeeded > 1) append(" • ${advice.stopsNeeded} arrêts")
             if (advice.savingNeeded in 0f..0.10f) {
-                append("\nOu économiser ${(advice.savingNeeded * 100).roundToInt()} % (cible ${f2(advice.targetPerLap)} / tour)")
+                append("\nOu économiser ${(advice.savingNeeded * 100).roundToInt()} % (cible ${pct(advice.targetPerLap)} / tour)")
             }
         } to PitColors.Red
     }

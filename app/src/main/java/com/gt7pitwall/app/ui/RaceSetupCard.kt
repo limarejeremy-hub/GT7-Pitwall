@@ -48,6 +48,7 @@ import com.gt7pitwall.core.sport.FieldStatus
 import com.gt7pitwall.core.sport.RefreshPolicy
 import com.gt7pitwall.core.sport.RuleField
 import com.gt7pitwall.core.strategy.DataSource
+import com.gt7pitwall.core.strategy.FuelUnits
 import com.gt7pitwall.core.strategy.PlanWarning
 import com.gt7pitwall.core.strategy.RaceRules
 import com.gt7pitwall.core.strategy.StopEvidence
@@ -118,7 +119,7 @@ fun RaceSetupCard(
             state.memory?.let { m ->
                 val parts = buildList {
                     m.bestLapMs?.let { add("meilleur ${FrenchFormat.lapTime(it)}") }
-                    m.fuelPerLapX1?.let { add(String.format(Locale.FRANCE, "%.2f L/tour à ×1", it)) }
+                    m.fuelPerLapX1?.let { add(FuelUnits.perLap(it, state.snapshot.packet?.fuelCapacity) + " à ×1") }
                 }
                 if (parts.isNotEmpty()) Text("Mémoire : ${parts.joinToString(" • ")}", color = PitColors.Cyan, style = MaterialTheme.typography.bodySmall)
             }
@@ -155,7 +156,7 @@ fun RaceSetupCard(
             } else {
                 Text(
                     (if (plan.estimatedLaps) "Course estimée à ${plan.totalLaps} tours" else "Course de ${plan.totalLaps} tours") +
-                        (plan.perLap?.let { String.format(Locale.FRANCE, " • %.2f L/tour", it) } ?: ""),
+                        (plan.perLap?.let { " • " + FuelUnits.perLap(it, state.snapshot.packet?.fuelCapacity) } ?: ""),
                     fontWeight = FontWeight.Bold,
                 )
                 Text(sourceLabel(plan.lapsSource, plan.fuelSource), color = PitColors.Muted, style = MaterialTheme.typography.bodySmall)
@@ -167,12 +168,12 @@ fun RaceSetupCard(
                 } else {
                     plan.stops.forEachIndexed { i, s ->
                         val reasons = buildList {
-                            if (s.forFuel) add("${s.liters} L")
+                            if (s.forFuel) add(FuelUnits.short((s.fuel ?: 0).toFloat(), state.snapshot.packet?.fuelCapacity))
                             if (s.mandatory) add("obligatoire")
                             if (s.noFuelNeeded) add("sans essence")
                             s.tyreToFit?.let { add("monter ${it.name}") }
                             if (s.changeTyres && s.tyreToFit == null) add("pneus neufs")
-                            if (s.liters == null) add("litres après un tour mesuré")
+                            if (s.fuel == null) add("quantité après un tour mesuré")
                         }
                         Text(
                             "Arrêt ${i + 1} : fin du tour ${s.endOfLap} • ${reasons.joinToString(" • ")}",
@@ -194,7 +195,7 @@ fun RaceSetupCard(
             }
             state.stops.forEach { st ->
                 val proof = when (st.evidence) {
-                    StopEvidence.REFUEL -> "ravitaillement ${(st.litersAdded ?: 0f).roundToInt()} L"
+                    StopEvidence.REFUEL -> "ravitaillement " + FuelUnits.short(st.fuelAdded ?: 0f, state.snapshot.packet?.fuelCapacity)
                     StopEvidence.DRIVER_CONFIRMED -> "confirmé par toi"
                     StopEvidence.DRIVER_DECLARED -> "déclaré par toi"
                 }

@@ -12,7 +12,7 @@ data class CarTrackRecord(
     val bestLapMs: Int?,
     /** Rythme typique : moyenne des tours à moins de 7 % du meilleur. */
     val typicalLapMs: Int?,
-    /** Consommation par tour ramenée à un multiplicateur ×1 (litres). */
+    /** Consommation par tour ramenée à un multiplicateur ×1 (unités GT7). */
     val fuelPerLapX1: Float?,
     /** Nombre de tours mesurés ayant servi à la consommation. */
     val fuelSamples: Int,

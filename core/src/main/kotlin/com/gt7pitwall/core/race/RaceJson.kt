@@ -111,7 +111,10 @@ object RaceJson {
         r.tyres.forEach { t -> tyres.put(JSONObject().put("lap", t.lap).put("compound", t.compound?.name ?: "")) }
         val plans = JSONArray()
         r.plans.forEach { p ->
-            plans.put(JSONObject().put("lap", p.lap).put("stops", JSONArray(p.stopLaps)).put("reason", p.reason ?: ""))
+            plans.put(
+                JSONObject().put("lap", p.lap).put("stops", JSONArray(p.stopLaps)).put("reason", p.reason ?: "")
+                    .put("fuelPerLap", p.fuelPerLap?.toDouble() ?: -1.0).put("fuelSource", p.fuelSource ?: ""),
+            )
         }
         val notes = JSONArray()
         r.notes.forEach { n -> notes.put(JSONObject().put("lap", n.lap).put("text", n.text)) }
@@ -164,7 +167,13 @@ object RaceJson {
             tyres = objects("tyres").map { t -> TyreEntry(t.optInt("lap"), TyreCompound.parseCodes(t.optString("compound", "")).firstOrNull()) },
             plans = objects("plans").map { p ->
                 val a = p.optJSONArray("stops") ?: JSONArray()
-                PlanEntry(p.optInt("lap"), (0 until a.length()).map { a.getInt(it) }, p.optString("reason", "").ifBlank { null })
+                PlanEntry(
+                    p.optInt("lap"),
+                    (0 until a.length()).map { a.getInt(it) },
+                    p.optString("reason", "").ifBlank { null },
+                    floatOrNull(p, "fuelPerLap"),
+                    p.optString("fuelSource", "").ifBlank { null },
+                )
             },
             notes = objects("notes").map { n -> DriverNote(n.optInt("lap"), n.optString("text", "")) },
         )

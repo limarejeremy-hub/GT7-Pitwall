@@ -211,7 +211,7 @@ class ProfilesAndSessionsTest {
         s.controller.setRules(RaceRules(totalLaps = 10, requiredTyres = setOf(TyreCompound.RM, TyreCompound.RH), startTyre = TyreCompound.RM))
         s.start()
         s.driveLaps(4)
-        s.pitStop(liters = 40f)
+        s.pitStop(fuel = 40f)
         s.say("j'ai mis les durs")
         s.driveLaps(1)
         val r = store.sessions.single()

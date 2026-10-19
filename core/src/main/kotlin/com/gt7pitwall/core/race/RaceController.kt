@@ -36,6 +36,11 @@ import com.gt7pitwall.core.sport.SportAutofill
 import com.gt7pitwall.core.strategy.DataSource
 import com.gt7pitwall.core.strategy.FuelReport
 import com.gt7pitwall.core.strategy.FuelStrategy
+import com.gt7pitwall.core.strategy.FuelUnits
+import com.gt7pitwall.core.strategy.Confidence
+import com.gt7pitwall.core.strategy.HistoryModel
+import com.gt7pitwall.core.strategy.StrategyOptions
+import com.gt7pitwall.core.strategy.StrategyReport
 import com.gt7pitwall.core.strategy.PitLedger
 import com.gt7pitwall.core.strategy.PitStopRecord
 import com.gt7pitwall.core.strategy.RacePlan
@@ -110,6 +115,14 @@ class RaceController(
     private var rulesReminded = false
 
     var plan: RacePlan? = null
+        private set
+
+    /** Comparaison des stratégies (normale, anticipée, prolongée), recalculée avec le plan. */
+    var strategy: StrategyReport? = null
+        private set
+
+    /** Ce que l'historique comparable apprend à Pitwall pour cette épreuve, voiture et circuit. */
+    var historyModel: HistoryModel = HistoryModel.EMPTY
         private set
     var fuel: FuelReport? = null
         private set
@@ -494,7 +507,7 @@ class RaceController(
         for (lap in snap.laps.takeLast(AI_LAPS)) {
             val parts = mutableListOf<String>()
             parts += lap.timeMs?.takeIf { it > 0 }?.let { FrenchFormat.lapTimeSpeech(it) } ?: "chrono inconnu"
-            lap.fuelUsed?.let { parts += "${FrenchFormat.decimal(it)} d'essence" }
+            lap.fuelUsed?.let { parts += "${FuelUnits.amount(it, snap.packet?.fuelCapacity)} de carburant consommés" }
             if (lap.refuelled) parts += "ravitaillement"
             lap.lockups?.let { parts += "$it blocages de roue" }
             lap.wheelspins?.let { parts += "$it patinages" }
@@ -650,7 +663,7 @@ class RaceController(
             updatedAtMs = clock(),
             outcome = outcome,
             laps = laps.map { LapEntry(it.lapNumber, it.timeMs, it.fuelUsed, it.refuelled) },
-            stops = ledger.stopList.map { StopEntry(it.lap, it.evidence, it.litersAdded) },
+            stops = ledger.stopList.map { StopEntry(it.lap, it.evidence, it.fuelAdded) },
             startTyre = rules.startTyre,
             tyres = ledger.changes.map { TyreEntry(it.lap, it.compound) },
             plans = planLog.toList(),
@@ -674,7 +687,7 @@ class RaceController(
         val r = currentRecord(final) ?: sessions[sessionId]?.copy(
             outcome = final,
             updatedAtMs = clock(),
-            stops = ledger.stopList.map { StopEntry(it.lap, it.evidence, it.litersAdded) },
+            stops = ledger.stopList.map { StopEntry(it.lap, it.evidence, it.fuelAdded) },
             tyres = ledger.changes.map { TyreEntry(it.lap, it.compound) },
             plans = planLog.toList(),
             notes = driverNotes.toList(),
@@ -685,7 +698,8 @@ class RaceController(
 
     /** Une fois par session, au premier tour : règlement non confirmé pour l'épreuve choisie. */
     private fun rulesReminder(): List<EngineerMessage> {
-        if (rulesReminded || profile.confirmed) return emptyList()
+        // Épreuves Sport seulement : un règlement « autre épreuve » saisi à la main n'est pas rappelé à chaque course.
+        if (rulesReminded || profile.confirmed || profile.id.series == Series.OTHER) return emptyList()
         rulesReminded = true
         return listOf(
             EngineerMessage(
@@ -723,14 +737,19 @@ class RaceController(
         val p = snap.packet ?: return emptyList()
         val live = FuelStrategy.compute(snap)
         val rec = memoryRecord
+        // Historique : sessions comparables archivées d'abord (avec leur niveau de confiance), sinon l'ancienne mémoire.
+        val model = HistoryModel.learn(sessionContext, sessions.values, excludeId = sessionId).also { historyModel = it }
+        val learnedFuel = model.fuelPerLap?.takeIf { it.confidence != Confidence.INSUFFICIENT }
         val (perLap, fuelSource) = when {
             live?.perLap != null -> live.perLap to DataSource.MEASURED
+            learnedFuel != null -> learnedFuel.mean.toFloat() to DataSource.HISTORY
             rec?.fuelPerLapX1 != null -> rec.fuelPerLapX1 * rules.fuelMultiplier to DataSource.HISTORY
             else -> null to null
         }
         val measuredAvg = LapAnalyzer.analyze(snap.laps).recentAverageMs
             ?: snap.laps.lastOrNull { (it.timeMs ?: 0) > 0 && !it.refuelled }?.timeMs
-        val avg = measuredAvg ?: rec?.typicalLapMs
+        val learnedPace = model.lapTimeMs?.takeIf { it.confidence != Confidence.INSUFFICIENT }
+        val avg = measuredAvg ?: learnedPace?.mean?.toInt() ?: rec?.typicalLapMs
         val start = snap.fuelAtLapStart
         val currentLapRemaining = if (live?.perLap != null && start != null && !snap.refuelledThisLap) {
             1f - ((start - p.fuelLevel) / live.perLap).coerceIn(0f, 1f)
@@ -739,35 +758,72 @@ class RaceController(
         }
         val missing = missingTyres
         engineer.missingTyres = missing
-        plan = if (p.fuelCapacity > 0f || rules.mandatoryStops > 0 || missing.isNotEmpty() || rules.tyreStintLaps != null) {
-            RacePlanner.plan(
-                RacePlanner.Input(
-                    rules = rules,
-                    gameTotalLaps = p.totalLaps,
-                    currentLap = p.currentLap,
-                    currentLapRemaining = currentLapRemaining,
-                    fuelNow = p.fuelLevel,
-                    tank = p.fuelCapacity,
-                    perLap = perLap,
-                    fuelSource = fuelSource,
-                    avgLapMs = avg,
-                    raceElapsedMs = snap.raceElapsedMs,
-                    stopsDone = ledger.stopCount,
-                    tyresMissing = missing.toList(),
-                    tyreAgeLaps = ledger.tyreAge(p.currentLap.coerceAtLeast(1)),
-                    pitLaneDeltaS = course?.pitLaneDeltaS,
-                    previousStops = plan?.stops?.map { it.endOfLap } ?: emptyList(),
-                ),
-            )
-        } else {
-            null
-        }
+        val input = RacePlanner.Input(
+            rules = rules,
+            gameTotalLaps = p.totalLaps,
+            currentLap = p.currentLap,
+            currentLapRemaining = currentLapRemaining,
+            fuelNow = p.fuelLevel,
+            tank = p.fuelCapacity,
+            perLap = perLap,
+            fuelSource = fuelSource,
+            avgLapMs = avg,
+            raceElapsedMs = snap.raceElapsedMs,
+            stopsDone = ledger.stopCount,
+            tyresMissing = missing.toList(),
+            tyreAgeLaps = ledger.tyreAge(p.currentLap.coerceAtLeast(1)),
+            pitLaneDeltaS = course?.pitLaneDeltaS,
+            previousStops = plan?.stops?.map { it.endOfLap } ?: emptyList(),
+        )
+        val planning = p.fuelCapacity > 0f || rules.mandatoryStops > 0 || missing.isNotEmpty() || rules.tyreStintLaps != null
+        plan = if (planning) RacePlanner.plan(input) else null
+        strategy = if (planning && plan != null) compareStrategies(input, model, measuredAvg, learnedFuel != null && live?.perLap == null) else null
         val stopLaps = plan?.stops?.map { it.endOfLap } ?: emptyList()
         if (plan != null && planLog.lastOrNull()?.stopLaps != stopLaps) {
-            planLog += PlanEntry(p.currentLap, stopLaps)
+            planLog += PlanEntry(p.currentLap, stopLaps, fuelPerLap = plan?.perLap, fuelSource = plan?.fuelSource?.name)
             while (planLog.size > MAX_PLANS) planLog.removeAt(0)
         }
         return engineer.onPlan(plan, p.currentLap)
+    }
+
+    /**
+     * Trois stratégies comparées avec le même calcul que le plan. Rythme : mesuré dans cette course, sinon appris ; dérive
+     * des chronos dans un relais et perte par arrêt : apprises sur les courses comparables, sinon voie des stands de la base.
+     */
+    private fun compareStrategies(input: RacePlanner.Input, model: HistoryModel, measuredAvg: Int?, fuelFromHistory: Boolean): StrategyReport? {
+        val learnedPace = model.lapTimeMs?.takeIf { it.confidence != Confidence.INSUFFICIENT }
+        val laneMs = course?.pitLaneDeltaS?.let { it * 1000.0 }
+        val pace = StrategyOptions.Pace(
+            lapMs = measuredAvg?.toDouble() ?: learnedPace?.mean,
+            lapSpreadMs = learnedPace?.spread ?: 0.0,
+            slopeMsPerLap = model.paceSlopeMsPerLap?.mean,
+            slopeSpread = model.paceSlopeMsPerLap?.spread ?: 0.0,
+            pitLossMs = model.pitLossMs?.mean ?: laneMs,
+            // Voie des stands seule : le temps du plein n'y est pas ; marge d'incertitude d'autant.
+            pitLossSpread = model.pitLossMs?.spread ?: laneMs?.let { it * 0.5 } ?: 0.0,
+            pitLossFromLaneOnly = model.pitLossMs == null && laneMs != null,
+        )
+        val basis = buildList {
+            when {
+                input.fuelSource == DataSource.MEASURED -> add("consommation mesurée dans cette course")
+                fuelFromHistory -> model.fuelPerLap?.let { add("consommation apprise (${it.confidence.label} : ${it.basis()})") }
+                input.fuelSource == DataSource.HISTORY -> add("consommation de l'ancienne mémoire, à confirmer")
+                else -> add("consommation pas encore connue")
+            }
+            when {
+                measuredAvg != null -> add("rythme mesuré dans cette course")
+                learnedPace != null -> add("rythme appris (${learnedPace.confidence.label} : ${learnedPace.basis()})")
+                else -> add("rythme inconnu")
+            }
+            model.paceSlopeMsPerLap?.let { add("chronos qui évoluent de ${StrategyOptions.seconds(it.mean.toLong())} par tour de relais (mesuré, ${it.sessions} courses)") }
+            when {
+                model.pitLossMs != null -> add("perte par arrêt apprise (${model.pitLossMs.basis("arrêts")})")
+                laneMs != null -> add("perte par arrêt : voie des stands seulement (base GT7), sans le temps du plein")
+                else -> add("perte par arrêt inconnue")
+            }
+            if (model.sessionsExcluded > 0) add("${model.sessionsExcluded} course(s) de cette épreuve écartée(s) car non comparables")
+        }
+        return StrategyOptions.compare(input, pace, basis, ruleGaps.map { it.label })
     }
 
     // ------------------------------------------------------------------ Arrêts et gommes
@@ -778,7 +834,7 @@ class RaceController(
         val hasObligations = rules.mandatoryStops > 0 || rules.requiredTyres.isNotEmpty() || rules.tyreStintLaps != null
         return when (v.assessment) {
             PitAssessment.REFUEL -> {
-                val rec = ledger.recordRefuel(v.lap, v.refuelLiters)
+                val rec = ledger.recordRefuel(v.lap, v.refuelAmount)
                 info(stopRecorded(rec) + afterStopQuestions(), Priority.HIGH, expectsReply = awaitingAnswer)
             }
             PitAssessment.PIT_LIKE_STOP -> if (hasObligations) {
@@ -805,7 +861,7 @@ class RaceController(
 
     private fun stopRecorded(rec: PitStopRecord): List<String> {
         val proof = when (rec.evidence) {
-            StopEvidence.REFUEL -> "ravitaillement de ${(rec.litersAdded ?: 0f).roundToInt()} litres"
+            StopEvidence.REFUEL -> "ravitaillement de ${FuelUnits.amount(rec.fuelAdded ?: 0f, snapshot.packet?.fuelCapacity)}"
             StopEvidence.DRIVER_CONFIRMED -> "confirmé par toi"
             StopEvidence.DRIVER_DECLARED -> "déclaré par toi"
         }

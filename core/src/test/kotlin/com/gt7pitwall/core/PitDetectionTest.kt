@@ -26,21 +26,21 @@ class PitDetectionTest {
     fun realRefuelIsCountedOnceEvenAcrossTheLine() {
         val s = sim()
         s.fuel = 50f // assez de place dans le réservoir pour 30 L
-        s.pitStop(liters = 30f)
+        s.pitStop(fuel = 30f)
         s.driveLaps(1)
         val stops = s.controller.ledger.stopList
         assertEquals(1, stops.size, s.texts.toString())
         assertEquals(StopEvidence.REFUEL, stops[0].evidence)
-        assertEquals(30f, stops[0].litersAdded!!, 0.5f)
-        assertTrue(s.texts.any { it.startsWith("Arrêt 1 enregistré : ravitaillement de 30 litres. Arrêts obligatoires : 1 sur 1.") }, s.texts.toString())
+        assertEquals(30f, stops[0].fuelAdded!!, 0.5f)
+        assertTrue(s.texts.any { it.startsWith("Arrêt 1 enregistré : ravitaillement de 30 % du réservoir. Arrêts obligatoires : 1 sur 1.") }, s.texts.toString())
     }
 
     @Test
     fun twoSeparatePitStopsAreTwoStops() {
         val s = sim(RaceRules(mandatoryStops = 2))
-        s.pitStop(liters = 20f)
+        s.pitStop(fuel = 20f)
         s.driveLaps(2)
-        s.pitStop(liters = 20f)
+        s.pitStop(fuel = 20f)
         s.driveLaps(1)
         assertEquals(2, s.controller.ledger.stopCount)
         assertEquals(listOf(1, 2), s.controller.ledger.stopList.map { it.number })
@@ -49,7 +49,7 @@ class PitDetectionTest {
     @Test
     fun stopWithoutRefuelAsksConfirmationAndCountsOnlyOnYes() {
         val s = sim()
-        s.pitStop(liters = 0f, stopSeconds = 8f) // changement de pneus seul
+        s.pitStop(fuel = 0f, stopSeconds = 8f) // changement de pneus seul
         assertEquals(0, s.controller.ledger.stopCount)
         val q = s.said.last { "Tu as bien effectué ton arrêt" in it.text }
         assertEquals(Priority.CRITICAL, q.priority)
@@ -63,7 +63,7 @@ class PitDetectionTest {
     @Test
     fun driverCanRejectAPossibleStop() {
         val s = sim()
-        s.pitStop(liters = 0f, stopSeconds = 8f)
+        s.pitStop(fuel = 0f, stopSeconds = 8f)
         s.say("non")
         assertEquals(0, s.controller.ledger.stopCount)
         assertNull(s.controller.ledger.pending)
@@ -111,7 +111,7 @@ class PitDetectionTest {
     @Test
     fun withoutObligationsAStopWithoutFuelIsNotQuestioned() {
         val s = sim(RaceRules())
-        s.pitStop(liters = 0f, stopSeconds = 8f)
+        s.pitStop(fuel = 0f, stopSeconds = 8f)
         assertNull(s.controller.ledger.pending)
         assertTrue(s.texts.none { "Tu as bien effectué" in it })
     }
@@ -137,7 +137,7 @@ class PitDetectionTest {
             startTyre = TyreCompound.RM,
         )
         val s = sim(rules)
-        s.pitStop(liters = 25f)
+        s.pitStop(fuel = 25f)
         assertEquals(1, s.controller.ledger.stopCount)
         assertEquals(setOf(TyreCompound.RH), s.controller.missingTyres)
         val stopMsg = s.said.last { it.text.startsWith("Arrêt 1 enregistré") }
@@ -164,7 +164,7 @@ class PitDetectionTest {
     @Test
     fun answerOfConfirmationIsCategorisedAsAnswer() {
         val s = sim()
-        s.pitStop(liters = 0f, stopSeconds = 8f)
+        s.pitStop(fuel = 0f, stopSeconds = 8f)
         s.say("oui")
         assertEquals(MessageCategory.ANSWER, s.said.last { "Arrêt 1 enregistré" in it.text }.category)
         assertNotNull(s.controller.ledger.stopList.singleOrNull())

@@ -34,8 +34,18 @@ data class StopEntry(val lap: Int, val evidence: StopEvidence, val fuelAdded: Fl
 /** Pneus déclarés par le pilote (GT7 ne transmet pas la gomme). */
 data class TyreEntry(val lap: Int, val compound: TyreCompound?)
 
-/** Plan annoncé à un moment de la course : tours d'arrêt prévus, et pourquoi il a changé. */
-data class PlanEntry(val lap: Int, val stopLaps: List<Int>, val reason: String? = null)
+/**
+ * Plan annoncé à un moment de la course : tours d'arrêt prévus, consommation sur laquelle il reposait (pour mesurer
+ * ensuite l'erreur de prévision), et pourquoi il a changé.
+ */
+data class PlanEntry(
+    val lap: Int,
+    val stopLaps: List<Int>,
+    val reason: String? = null,
+    val fuelPerLap: Float? = null,
+    /** MEASURED, HISTORY… (d'où venait la consommation). */
+    val fuelSource: String? = null,
+)
 
 /** Déclaration utile du pilote (« je perds l'avant », « on rentre au tour 8 »), jamais une mesure. */
 data class DriverNote(val lap: Int, val text: String)

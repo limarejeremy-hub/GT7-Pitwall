@@ -30,7 +30,10 @@ data class TelemetryPacket(
     val velocityZ: Float,
     val bodyHeight: Float,
     val engineRpm: Float,
-    /** Niveau de carburant en litres (capacité : 100 pour la plupart des voitures, 5 en kart, 0 en électrique). */
+    /**
+     * Niveau de carburant, unité interne de GT7 (capacité : 100 pour la plupart des voitures, 5 en kart, 0 en électrique,
+     * quelle que soit la taille réelle du réservoir) : rien ne prouve que ce soient des litres (voir FuelUnits).
+     */
     val fuelLevel: Float,
     val fuelCapacity: Float,
     /** Vitesse en mètres par seconde. */

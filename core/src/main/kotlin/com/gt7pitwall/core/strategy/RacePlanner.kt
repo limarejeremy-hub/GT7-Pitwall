@@ -11,8 +11,8 @@ enum class DataSource { GAME, RULES, MEASURED, HISTORY, ESTIMATED }
 data class PlannedStop(
     /** Rentrer au stand à la fin de ce tour. */
     val endOfLap: Int,
-    /** Litres à ajouter (null si la consommation n'est pas connue). */
-    val liters: Int?,
+    /** Carburant à ajouter, en unités GT7 (null si la consommation n'est pas connue). */
+    val fuel: Int?,
     /** Arrêt nécessaire pour le carburant. */
     val forFuel: Boolean,
     /** Arrêt qui compte pour les arrêts imposés par le règlement. */
@@ -23,10 +23,10 @@ data class PlannedStop(
     val changeTyres: Boolean = false,
 ) {
     /** Arrêt réglementaire sans besoin d'essence. */
-    val mandatoryOnly: Boolean get() = mandatory && !forFuel && liters != null
+    val mandatoryOnly: Boolean get() = mandatory && !forFuel && fuel != null
 
-    /** Consommation connue et aucun litre à ajouter (arrêt pour les pneus ou le règlement). */
-    val noFuelNeeded: Boolean get() = !forFuel && liters != null
+    /** Consommation connue et rien à ajouter (arrêt pour les pneus ou le règlement). */
+    val noFuelNeeded: Boolean get() = !forFuel && fuel != null
 }
 
 enum class PlanWarning {
@@ -129,7 +129,7 @@ object RacePlanner {
             0
         } else {
             val need = (lapsToGo + SAFETY_LAPS) * perLap
-            // Assez pour finir sans la marge : pas d'arrêt pour quelques décilitres, la radio dira de gérer.
+            // Assez pour finir sans la marge : pas d'arrêt pour quelques dixièmes, la radio dira de gérer.
             if (need <= i.fuelNow || lapsToGo * perLap <= i.fuelNow) 0 else ceil((need - i.fuelNow) / i.tank).toInt()
         }
         // Durée de vie des pneus donnée par le pilote : relais limités à T tours (le premier à T - tours déjà faits).
@@ -177,14 +177,14 @@ object RacePlanner {
         var tyreAge = i.tyreAgeLaps
         for (s in 0 until k) {
             lap += stints[s]
-            var liters: Int? = null
+            var added: Int? = null
             if (perLap != null) {
                 val used = if (s == 0) (r + stints[0] - 1) * perLap else stints[s] * perLap
                 fuel -= used
                 val needNext = (stints[s + 1] + SAFETY_LAPS) * perLap
                 val add = (needNext - fuel).coerceIn(0f, (i.tank - fuel).coerceAtLeast(0f))
                 fuel += add
-                liters = add.roundToInt()
+                added = add.roundToInt()
             }
             // Pneus : on change si le relais suivant dépasserait leur durée de vie, ou pour monter une gomme imposée.
             tyreAge += stints[s]
@@ -193,15 +193,15 @@ object RacePlanner {
             if (change) tyreAge = 0
             stops += PlannedStop(
                 endOfLap = lap,
-                liters = liters,
-                forFuel = liters != null && liters >= 1,
+                fuel = added,
+                forFuel = added != null && added >= 1,
                 mandatory = s < mandatoryLeft,
                 tyreToFit = tyreToFit,
                 changeTyres = change,
             )
         }
-        // Un arrêt sans essence, sans obligation ni pneus n'a aucune raison d'être (arrondi de litres).
-        return result(stops.filter { it.forFuel || it.mandatory || it.changeTyres || it.liters == null })
+        // Un arrêt sans essence, sans obligation ni pneus n'a aucune raison d'être (arrondi du carburant).
+        return result(stops.filter { it.forFuel || it.mandatory || it.changeTyres || it.fuel == null })
     }
 
     private fun keptStints(i: Input, lapIndex: Int, total: Int, k: Int, r: Float, perLap: Float?): IntArray? {
