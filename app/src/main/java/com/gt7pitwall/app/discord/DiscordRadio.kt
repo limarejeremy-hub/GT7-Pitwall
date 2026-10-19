@@ -38,9 +38,12 @@ import net.dv8tion.jda.internal.utils.JDALogger
 import org.json.JSONObject
 import org.vosk.Model
 import org.vosk.Recognizer
+import com.gt7pitwall.app.voice.PcmSource
 import java.io.File
 import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 
 enum class DiscordState { NO_TOKEN, OFFLINE, CONNECTING, ONLINE, JOINING, IN_VOICE, ERROR }
@@ -100,9 +103,69 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
     /** Test du micro PS5 en cours (null : arrêté). */
     val mic: StateFlow<MicReport?> = _mic.asStateFlow()
     private var micJob: Job? = null
-    @Volatile
-    private var micPackets: Channel<Pair<Long, ByteArray>>? = null
-    private val receiver by lazy { PsMicReceiver { user, opus -> micPackets?.trySend(user to opus) } }
+
+    /** Destinataires de la voix reçue du salon (écoute de la radio, test du micro). */
+    private val micSinks = CopyOnWriteArrayList<(Long, ByteArray) -> Unit>()
+    private val receiver by lazy { PsMicReceiver { user, opus -> micSinks.forEach { it(user, opus) } } }
+
+    private fun addMicSink(sink: (Long, ByteArray) -> Unit) {
+        micSinks += sink
+        val audio = wantedChannel?.let { jda?.getVoiceChannelById(it) }?.guild?.audioManager ?: return
+        if (audio.receivingHandler == null) audio.receivingHandler = receiver
+    }
+
+    private fun removeMicSink(sink: (Long, ByteArray) -> Unit) {
+        micSinks -= sink
+        if (micSinks.isEmpty()) runCatching { jda?.guilds?.forEach { it.audioManager.receivingHandler = null } }
+    }
+
+    /**
+     * Micro du casque PS5 pour la radio du pilote : la voix reçue du salon, décodée en 16 kHz mono. Entre deux phrases
+     * (Discord n'envoie rien), la source rend du silence, comme un micro. Null si le bot n'est pas dans le salon.
+     */
+    fun openMicSource(): PcmSource? = if (live) DiscordMicSource() else null
+
+    private inner class DiscordMicSource : PcmSource {
+        override val label = "micro du casque PS5 (Discord)"
+        override val isPhoneMic = false
+        private val packets = LinkedBlockingQueue<ByteArray>(MIC_BUFFER)
+        private val sink: (Long, ByteArray) -> Unit = { _, opus -> packets.offer(opus) }
+        private var decoder: OpusDecoderStream? = null
+        private var pending = ShortArray(0)
+
+        override fun start() {
+            if (decoder == null) decoder = OpusDecoderStream()
+            addMicSink(sink)
+        }
+
+        override fun read(buffer: ShortArray): Int {
+            if (pending.isEmpty()) {
+                val opus = packets.poll(SILENCE_STEP_MS, TimeUnit.MILLISECONDS)
+                pending = if (opus == null) {
+                    ShortArray((OpusDecoderStream.OUTPUT_RATE * SILENCE_STEP_MS / 1000).toInt())
+                } else {
+                    decoder?.decode(opus) ?: ShortArray(0)
+                }
+                if (pending.isEmpty()) return 0
+            }
+            val n = minOf(buffer.size, pending.size)
+            pending.copyInto(buffer, 0, 0, n)
+            pending = pending.copyOfRange(n, pending.size)
+            return n
+        }
+
+        override fun pause() {
+            removeMicSink(sink)
+            packets.clear()
+        }
+
+        override fun release() {
+            removeMicSink(sink)
+            packets.clear()
+            decoder?.release()
+            decoder = null
+        }
+    }
 
     private val _channels = MutableStateFlow<List<VoiceChannelInfo>>(emptyList())
     val channels: StateFlow<List<VoiceChannelInfo>> = _channels.asStateFlow()
@@ -282,17 +345,19 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
         }
         if (micJob?.isActive == true) return
         val packets = Channel<Pair<Long, ByteArray>>(MIC_BUFFER, BufferOverflow.DROP_OLDEST)
-        micPackets = packets
+        val sink: (Long, ByteArray) -> Unit = { user, opus -> packets.trySend(user to opus) }
         _mic.value = MicReport(note = if (modelDir == null) MIC_NO_MODEL else "Chargement de la reconnaissance…")
         micJob = scope.launch(Dispatchers.Default) {
             try {
-                channel.guild.audioManager.receivingHandler = receiver
+                addMicSink(sink)
                 runMicTest(client, packets, modelDir)
             } catch (e: Throwable) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 val why = generateSequence(e) { t -> t.cause?.takeIf { c -> c !== t } }.take(3)
                     .joinToString(" ← ") { t -> t.javaClass.simpleName + (t.message?.let { m -> " ($m)" } ?: "") }
                 _mic.value = (_mic.value ?: MicReport()).copy(note = "Erreur : $why")
+            } finally {
+                removeMicSink(sink)
             }
         }
     }
@@ -300,9 +365,7 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
     fun stopMicTest() {
         micJob?.cancel()
         micJob = null
-        micPackets = null
         _mic.value = null
-        runCatching { jda?.guilds?.forEach { it.audioManager.receivingHandler = null } }
     }
 
     private suspend fun runMicTest(client: JDA, packets: Channel<Pair<Long, ByteArray>>, modelDir: File?) {
@@ -313,6 +376,7 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
         _mic.value = report
         var silenceFedMs = SILENCE_TAIL_MS
         var lastPublish = 0L
+        var peak = 0
         try {
             while (true) {
                 val item = withTimeoutOrNull(SILENCE_STEP_MS) { packets.receive() }
@@ -323,23 +387,25 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
                         report = recognize(recognizer, silence, report)
                         silenceFedMs += SILENCE_STEP_MS
                     }
-                    report = report.copy(level = 0)
-                    _mic.value = report
+                    peak = 0
+                    _mic.value = report.copy(level = 0)
                     continue
                 }
                 silenceFedMs = 0
                 val (user, opus) = item
                 val pcm = decoder.decode(opus)
+                peak = maxOf(peak, level(pcm))
                 report = report.copy(
                     packets = report.packets + 1,
-                    speaker = report.speaker ?: (client.getUserById(user)?.name ?: "utilisateur $user"),
-                    level = level(pcm),
+                    speaker = report.speaker ?: userName(client, user),
+                    level = peak,
                 )
                 if (recognizer != null && pcm.isNotEmpty()) report = recognize(recognizer, pcm, report)
                 val now = System.currentTimeMillis()
                 if (now - lastPublish >= PUBLISH_MS) {
                     lastPublish = now
                     _mic.value = report
+                    peak = 0
                 }
             }
         } finally {
@@ -348,6 +414,12 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
             model?.close()
         }
     }
+
+    /** Nom du compte qui parle (pas de cache des membres en mode léger : demandé une fois à Discord). */
+    private fun userName(client: JDA, id: Long): String =
+        client.getUserById(id)?.name
+            ?: runCatching { client.retrieveUserById(id).complete().name }.getOrNull()
+            ?: "utilisateur $id"
 
     private fun recognize(recognizer: Recognizer, pcm: ShortArray, report: MicReport): MicReport =
         if (recognizer.acceptWaveForm(pcm, pcm.size)) {

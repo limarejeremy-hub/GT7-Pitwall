@@ -56,7 +56,13 @@ class SettingsStore(context: Context) {
         get() = prefs.getBoolean(KEY_DISCORD_MIRROR, false)
         set(value) = prefs.edit().putBoolean(KEY_DISCORD_MIRROR, value).apply()
 
+    /** Radio Discord : la radio du pilote écoute le micro du casque PS5 quand le bot est dans le salon. */
+    var discordMicInput: Boolean
+        get() = prefs.getBoolean(KEY_DISCORD_MIC, true)
+        set(value) = prefs.edit().putBoolean(KEY_DISCORD_MIC, value).apply()
+
     companion object {
+        private const val KEY_DISCORD_MIC = "discord_mic_input"
         private const val KEY_DISCORD_AUTO_JOIN = "discord_auto_join"
         private const val KEY_DISCORD_MIRROR = "discord_mirror_phone"
         private const val KEY_GOOGLE_SPEECH = "google_speech"

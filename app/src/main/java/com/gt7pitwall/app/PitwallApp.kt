@@ -10,6 +10,14 @@ import com.gt7pitwall.app.settings.RaceStore
 import com.gt7pitwall.app.settings.SettingsStore
 import com.gt7pitwall.core.knowledge.Gt7Database
 import com.gt7pitwall.core.radio.RoutedVoiceOutput
+import com.gt7pitwall.app.discord.DiscordState
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import com.gt7pitwall.app.voice.TtsVoiceOutput
 import com.gt7pitwall.app.voice.GoogleSpeech
 import com.gt7pitwall.app.voice.VoiceModelManager
@@ -50,6 +58,13 @@ class PitwallApp : Application() {
             it.freeTranscription = settings.aiEnabled
             it.googleSpeech = GoogleSpeech(this)
             it.useGoogleSpeech = settings.googleSpeech
+            it.remoteMic = { if (settings.discordMicInput) discord.openMicSource() else null }
+        }
+        // Le bot entre dans le salon ou en sort : l'écoute bascule entre le micro du casque PS5 et celui du Fold.
+        CoroutineScope(SupervisorJob() + Dispatchers.Main).launch {
+            discord.state.map { it == DiscordState.IN_VOICE }.distinctUntilChanged().drop(1).collect {
+                if (settings.discordMicInput) voiceInput.restart()
+            }
         }
         engine = PitwallEngine(radioOut, voiceInput, loadDatabase(), RaceStore(this)).also {
             it.voiceEnabled = settings.voiceEnabled
@@ -78,6 +93,11 @@ class PitwallApp : Application() {
     /** Lancement de la télémétrie : le bot rejoint le dernier salon si le réglage est actif. */
     fun onTelemetryStart() {
         if (settings.discordAutoJoin) discord.autoStart()
+    }
+
+    fun setDiscordMic(enabled: Boolean) {
+        settings.discordMicInput = enabled
+        voiceInput.restart()
     }
 
     fun setDiscordMirror(enabled: Boolean) {

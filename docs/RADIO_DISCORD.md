@@ -62,6 +62,17 @@ JDA → chiffrement DAVE (libdave) + chiffrement de transport → Discord → PS
 - **Latence** : synthèse + encodage ≈ 1 s par phrase ; les phrases courtes répétées (« Je t'écoute. ») sont gardées en
   mémoire, déjà encodées.
 
+## Micro du casque PS5 (validé le 19/10/2026)
+
+Le bot reçoit la voix du salon (JDA la déchiffre — transport et DAVE — et, sans opus-java, la transmet en Opus), le
+décodeur Opus d'Android la convertit en 16 kHz mono, et la radio du pilote (Vosk : mot « radio », commandes, phrase
+libre pour Gemini) l'écoute comme un micro. Entre deux phrases, Discord n'envoie rien : la source rend du silence.
+
+- Réglage « Parler avec le micro du casque PS5 » (activé par défaut) ; « Écoute radio » doit être active.
+- Bascule automatique : micro PS5 quand le bot est dans le salon, micro du Fold sinon.
+- La reconnaissance Google n'écoute que le micro du Fold : avec le micro PS5, Vosk prend toute la phrase.
+- Le bouton « Test micro PS5 » reste disponible pour le diagnostic (paquets, niveau, phrases entendues).
+
 ## Sécurité du token
 
 - Saisi uniquement sur le téléphone, jamais dans le code, GitHub, l'APK ni les journaux.
@@ -95,4 +106,3 @@ JDA → chiffrement DAVE (libdave) + chiffrement de transport → Discord → PS
 - Latence ajoutée par Discord : de l'ordre de quelques centaines de millisecondes.
 - Connexion permanente du bot : un peu de batterie et de données mobiles / Wi-Fi.
 - La connexion vit tant que le processus de l'application tourne (protégé par le service de télémétrie en course).
-- Réception du micro du casque PS5 par le bot : étape ultérieure (non commencée).

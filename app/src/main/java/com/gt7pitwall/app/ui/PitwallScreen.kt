@@ -96,6 +96,7 @@ fun PitwallScreen(
     gemini: GeminiNano,
     discord: DiscordRadio,
     onDiscordMirror: (Boolean) -> Unit,
+    onDiscordMic: (Boolean) -> Unit,
     onAiToggle: (Boolean) -> Unit,
     onStart: (String) -> Unit,
     onStop: () -> Unit,
@@ -118,6 +119,8 @@ fun PitwallScreen(
     var aiOn by rememberSaveable { mutableStateOf(settings.aiEnabled) }
     var discordAutoJoin by rememberSaveable { mutableStateOf(settings.discordAutoJoin) }
     var discordMirror by rememberSaveable { mutableStateOf(settings.discordMirrorPhone) }
+    var discordMic by rememberSaveable { mutableStateOf(settings.discordMicInput) }
+    val micLabel by voiceInput.micLabel.collectAsStateWithLifecycle()
     val aiState by gemini.state.collectAsStateWithLifecycle()
     val aiDetail by gemini.detail.collectAsStateWithLifecycle()
     val aiTest by gemini.testResult.collectAsStateWithLifecycle()
@@ -168,6 +171,12 @@ fun PitwallScreen(
                 onDiscordMirror(it)
             },
             micModelDir = voiceModels::installedDir,
+            micInput = discordMic,
+            onMicInputChange = {
+                discordMic = it
+                onDiscordMic(it)
+            },
+            listeningOn = micLabel,
         )
         AiCard(
             on = aiOn,
@@ -764,6 +773,9 @@ private fun DiscordCard(
     mirror: Boolean,
     onMirrorChange: (Boolean) -> Unit,
     micModelDir: () -> java.io.File?,
+    micInput: Boolean,
+    onMicInputChange: (Boolean) -> Unit,
+    listeningOn: String?,
 ) {
     val state by discord.state.collectAsStateWithLifecycle()
     val mic by discord.mic.collectAsStateWithLifecycle()
@@ -814,6 +826,10 @@ private fun DiscordCard(
             else -> "Discord (casque PS5)"
         }
         Text("Voix de l'ingénieur : $route", style = MaterialTheme.typography.bodySmall)
+        Text(
+            "Ta voix : " + (listeningOn ?: "écoute radio coupée (active « Écoute radio » dans la carte Radio vocale)"),
+            style = MaterialTheme.typography.bodySmall,
+        )
         detail?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = PitColors.Muted) }
         if (state == DiscordState.ONLINE || state == DiscordState.JOINING || state == DiscordState.IN_VOICE) {
             channels.forEach { ch ->
@@ -868,6 +884,18 @@ private fun DiscordCard(
                     )
                 }
                 Switch(checked = autoJoin, onCheckedChange = onAutoJoinChange)
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Parler avec le micro du casque PS5")
+                    Text(
+                        "Quand le bot est dans le salon, la radio écoute ta voix dans Discord (« radio, … ») au lieu du " +
+                            "micro du Fold. La reconnaissance Google ne s'applique qu'au micro du Fold.",
+                        color = PitColors.Muted,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                Switch(checked = micInput, onCheckedChange = onMicInputChange)
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {

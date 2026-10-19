@@ -1,11 +1,7 @@
 package com.gt7pitwall.app.voice
 
-import android.annotation.SuppressLint
-import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.ToneGenerator
-import android.media.AudioRecord
-import android.media.MediaRecorder
 import android.os.SystemClock
 import com.gt7pitwall.core.radio.DriverCommandParser
 import com.gt7pitwall.core.radio.VoiceInput
@@ -41,6 +37,9 @@ enum class ListenState { OFF, LOADING, WAITING_WAKE_WORD, AWAKE, PAUSED, ERROR }
  *
  * Deux reconnaissances écoutent le même micro : l'une limitée au vocabulaire de la radio (fiable dans le bruit,
  * utilisée pour les commandes), l'autre libre ([freeTranscription], pour les questions posées à l'IA).
+ *
+ * Micro : celui du casque PS5 via le bot Discord quand [remoteMic] en fournit un, sinon celui du Fold. La reconnaissance
+ * Google n'écoute que le Fold : avec le micro PS5, Vosk prend toute la phrase.
  */
 class VoskVoiceInput(
     private val models: VoiceModelManager,
@@ -78,6 +77,19 @@ class VoskVoiceInput(
 
     private var model: Model? = null
     private var audioJob: Job? = null
+
+    /** Micro du casque PS5 (bot Discord dans le salon), ou null : micro du Fold. */
+    var remoteMic: () -> PcmSource? = { null }
+
+    private val _micLabel = MutableStateFlow<String?>(null)
+    /** Micro écouté en ce moment (null : écoute arrêtée). */
+    val micLabel: StateFlow<String?> = _micLabel.asStateFlow()
+
+    @Volatile
+    private var phoneMicInUse = true
+
+    /** Google seulement quand l'écoute utilise le micro du Fold. */
+    private fun google(): GoogleSpeech? = googleSpeech?.takeIf { useGoogleSpeech && phoneMicInUse && it.available }
 
     @Volatile
     private var paused = false
@@ -126,11 +138,13 @@ class VoskVoiceInput(
                 }
                 // Sans vocabulaire limité, la reconnaissance principale est déjà libre.
                 val free = if (freeTranscription && limitedVocabulary) Recognizer(m, SAMPLE_RATE) else null
-                val record = openMicrophone() ?: run {
+                val record = remoteMic() ?: PhoneMic.open(SAMPLE_RATE.toInt(), BUFFER_SAMPLES) ?: run {
                     rec.close()
                     free?.close()
                     error("Micro indisponible")
                 }
+                phoneMicInUse = record.isPhoneMic
+                _micLabel.value = record.label
                 paused = false
                 audioJob = scope.launch(Dispatchers.IO) { listen(record, rec, free) }
                 _state.value = ListenState.WAITING_WAKE_WORD
@@ -165,6 +179,7 @@ class VoskVoiceInput(
         audioJob?.cancel() // la boucle ferme le micro et les reconnaisseurs
         audioJob = null
         awakeUntil = 0
+        _micLabel.value = null
         _state.value = ListenState.OFF
     }
 
@@ -175,45 +190,27 @@ class VoskVoiceInput(
         start()
     }
 
-    @SuppressLint("MissingPermission") // l'écoute n'est lancée qu'après l'autorisation du micro
-    private fun openMicrophone(): AudioRecord? {
-        val min = AudioRecord.getMinBufferSize(SAMPLE_RATE.toInt(), AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-        if (min <= 0) return null
-        val r = AudioRecord(
-            MediaRecorder.AudioSource.VOICE_RECOGNITION,
-            SAMPLE_RATE.toInt(),
-            AudioFormat.CHANNEL_IN_MONO,
-            AudioFormat.ENCODING_PCM_16BIT,
-            maxOf(min, BUFFER_SAMPLES * 2 * 4),
-        )
-        if (r.state != AudioRecord.STATE_INITIALIZED) {
-            r.release()
-            return null
-        }
-        return r
-    }
-
     /** Boucle micro : chaque bloc audio alimente les deux reconnaissances ; rien n'est écouté pendant la pause. */
-    private suspend fun listen(record: AudioRecord, rec: Recognizer, free: Recognizer?) {
+    private suspend fun listen(record: PcmSource, rec: Recognizer, free: Recognizer?) {
         val buffer = ShortArray(BUFFER_SAMPLES)
         try {
-            record.startRecording()
+            record.start()
             var recording = true
             while (scope.isActive && kotlinx.coroutines.currentCoroutineContext().isActive) {
                 // Micro prêté à la reconnaissance Google : on arrête d'enregistrer, puis on reprend.
                 if (micReleased) {
                     if (recording) {
-                        record.stop()
+                        record.pause()
                         recording = false
                     }
                     delay(MIC_POLL_MS)
                     continue
                 }
                 if (!recording) {
-                    record.startRecording()
+                    record.start()
                     recording = true
                 }
-                val n = record.read(buffer, 0, buffer.size)
+                val n = record.read(buffer)
                 if (n < 0) error("Erreur micro ($n)")
                 if (n == 0 || paused) continue
                 if (rec.acceptWaveForm(buffer, n)) {
@@ -233,7 +230,6 @@ class VoskVoiceInput(
                 _state.value = ListenState.ERROR
             }
         } finally {
-            runCatching { record.stop() }
             record.release()
             rec.close()
             free?.close()
@@ -298,7 +294,7 @@ class VoskVoiceInput(
             _state.value = ListenState.PAUSED
         } else {
             // Réponse attendue avec Google : on ouvre l'écoute presque aussitôt, pour ne pas manquer le début.
-            val google = googleSpeech?.takeIf { useGoogleSpeech && it.available }
+            val google = google()
             if (awakeUntil > 0 && google != null) {
                 delay(GOOGLE_AFTER_SPEECH_MS)
                 paused = false
@@ -316,7 +312,7 @@ class VoskVoiceInput(
     }
 
     private fun awake() {
-        val google = googleSpeech?.takeIf { useGoogleSpeech && it.available }
+        val google = google()
         if (google != null) {
             listenWithGoogle(google)
             return
@@ -376,7 +372,7 @@ class VoskVoiceInput(
                 awakeUntil = 0
                 _events.tryEmit(VoiceInputEvent.Utterance(rest, free))
             } else {
-                val google = googleSpeech?.takeIf { useGoogleSpeech && it.available }
+                val google = google()
                 if (google != null) {
                     // Bip court au lieu de « Je t'écoute » parlé : on écoute tout de suite, sans couper le début.
                     beep()
