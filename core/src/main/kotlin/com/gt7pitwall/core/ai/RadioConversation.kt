@@ -4,6 +4,8 @@ import com.gt7pitwall.core.engineer.EngineerMessage
 import com.gt7pitwall.core.engineer.MessageCategory
 import com.gt7pitwall.core.engineer.Priority
 import com.gt7pitwall.core.race.RaceController
+import com.gt7pitwall.core.race.StrategyDialogue
+import com.gt7pitwall.core.radio.DriverCommand
 import com.gt7pitwall.core.radio.DriverCommandParser
 import com.gt7pitwall.core.radio.StatementGuard
 import com.gt7pitwall.core.radio.Vetting
@@ -36,6 +38,9 @@ class RadioConversation(
         model: LanguageModel?,
         onThinking: (EngineerMessage) -> Unit = {},
     ): List<EngineerMessage> {
+        // Question stratégique ou observation : le moteur répond lui-même (plan, comparaison, carburant), jamais Gemini,
+        // et rien n'est enregistré (ni arrêt, ni pneus). Les commandes qui changent l'état gardent leur chemin.
+        strategyDialogue(text, freeText)?.let { return it }
         val route = mutex.withLock {
             RadioAi.route(text, freeText, race.inAiConversation(clock()), race.awaitingDriverAnswer, race.telemetryLive())
         }
@@ -71,6 +76,24 @@ class RadioConversation(
                     mutex.withLock { race.utterance(text, original) }
                 }
             }
+        }
+    }
+
+    private suspend fun strategyDialogue(text: String, freeText: String?): List<EngineerMessage>? {
+        val heard = freeText?.takeIf { it.isNotBlank() } ?: text
+        if (DriverCommandParser.normalize(heard).startsWith("question")) return null
+        return mutex.withLock {
+            val ask = StrategyDialogue.classify(heard, race.afterStrategyAnswer(clock())) ?: return@withLock null
+            val cmd = DriverCommandParser.parse(text)
+            val stateful = cmd != null && cmd !is DriverCommand.Ask && cmd != DriverCommand.Repeat
+            // Une observation ou une phrase mal reconnue qui est aussi une commande reste à l'analyseur et au garde.
+            if (stateful && (ask is StrategyDialogue.Ask.Observe || ask is StrategyDialogue.Ask.Unclear)) return@withLock null
+            // Hors course ou en pleine discussion de pilotage, « l'avant glisse en sortie » est une question de pilotage.
+            if (ask is StrategyDialogue.Ask.Observe && (!race.telemetryLive() || race.inAiConversation(clock()))) return@withLock null
+            // « Je vais prolonger d'un tour » : intention notée, et l'ingénieur dit ce qu'il en pense.
+            val intention = StatementGuard.mode(heard) in INTENTION_MODES
+            if (intention) race.noteIntention("« ${heard.trim()} »")
+            race.strategyAnswer(ask, heard.trim(), clock(), intention)
         }
     }
 
@@ -119,6 +142,7 @@ class RadioConversation(
     }
 
     private companion object {
+        val INTENTION_MODES = setOf(StatementGuard.Mode.FUTURE, StatementGuard.Mode.WISH)
         val DISCUSSED_WITH_AI = setOf(
             StatementGuard.Mode.FUTURE, StatementGuard.Mode.WISH, StatementGuard.Mode.HYPOTHETICAL, StatementGuard.Mode.ABOUT_OTHERS,
         )

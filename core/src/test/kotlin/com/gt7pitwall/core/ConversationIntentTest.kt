@@ -141,9 +141,10 @@ class ConversationIntentTest {
         assertFalse(r1.any { Regex("\\d").containsMatchIn(it.text) }, "aucun chiffre inventé : $r1")
         assertTrue(r1.single().text.contains("télémétrie"), r1.toString())
 
-        // Demande connue de l'analyseur : sa réponse déterministe, sans Gemini.
+        // Question stratégique : conseil général annoncé comme tel, sans chiffre de course, sans Gemini.
         val r2 = answers(say(conv, model, "c'est quoi la meilleure stratégie pour cette course ?"))
-        assertTrue(r2.single().text.startsWith("Je n'ai pas de plan"), r2.toString())
+        assertTrue(r2.single().text.startsWith("Conseil général, sans télémétrie"), r2.toString())
+        assertFalse(Regex("\\d").containsMatchIn(r2.single().text), r2.toString())
         // Question de stratégie libre : la réponse honnête « pas de données ».
         val r3 = answers(say(conv, model, "tu penses qu'il y aura beaucoup de trafic ?"))
         assertEquals(LocalReplies.NO_RACE_DATA, r3.single().text)

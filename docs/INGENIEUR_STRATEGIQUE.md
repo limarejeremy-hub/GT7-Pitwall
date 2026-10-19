@@ -121,8 +121,67 @@ concordantes donneraient « confirmé », discordantes « contradictoire » (non
   - carburant pour finir ;
   - dernier changement de plan.
 
-## Jalon C : à venir
+## Jalon C : ingénieur de course conversationnel (livré)
 
-- Questions stratégiques à la radio, reliées à `StrategyBrief`.
-- Déclarations du pilote (adhérence, trafic, arrêts des autres).
-- Explication des changements de plan.
+### Fonctionnement
+
+- **Aiguillage** : `RadioConversation.onUtterance` passe d'abord la phrase à `StrategyDialogue.classify`. Une question
+  stratégique ou une observation est répondue par le moteur (`RaceController.strategyAnswer`), jamais par Gemini.
+- **Commandes inchangées** : les commandes qui changent l'état (« j'ai fait mon arrêt », règlement, pneus) gardent
+  leur chemin, avec CommandGate et StatementGuard.
+- **Aucun enregistrement sur une question** : ni arrêt, ni pneus, ni règlement. Une hypothèse ou une intention
+  (« je vais prolonger d'un tour ») est notée comme intention et annoncée comme telle.
+- **Questions reconnues** (Vosk ne transcrit pas de « ? », la tournure suffit) :
+
+| Exemple | Réponse calculée à partir de |
+| --- | --- |
+| « Quelle est notre meilleure stratégie ? » | recommandation et raison de `StrategyReport` |
+| « Pourquoi on rentre au tour 5 ? » | prochain arrêt du plan : carburant, obligation, gomme. Si le tour cité est faux, il est corrigé |
+| « On peut prolonger d'un tour ? » | option « relais prolongé » : faisable ou non, gain ou non |
+| « On peut avancer l'arrêt ? » | option « arrêt anticipé » |
+| « Devant moi ils rentrent, on fait quoi ? » | notre plan seulement : GT7 ne transmet rien sur les adversaires |
+| « Combien de carburant pour finir ? » | carburant pour finir, en % du réservoir ou en unités GT7 |
+| « Qu'est-ce qui a changé depuis le plan initial ? » | premier plan archivé, plan actuel, raison du changement, observations |
+| « Pourquoi ? », « tu es sûr ? » (dans les 45 s) | données utilisées par la comparaison |
+
+- **Observations du pilote** (adhérence avant ou arrière, pneus qui fatiguent, trafic, dégâts) :
+  - gardées 5 tours, transmises à l'IA comme « déclaré par le pilote (non mesuré) » ;
+  - confrontées aux chronos mesurés du relais ;
+  - la stratégie n'est recalculée que sur les mesures, le trafic ne change jamais le plan ;
+  - une négation (« je ne perds pas l'avant ») ne mémorise rien.
+- **Pente des chronos du relais en cours** : si au moins 4 tours propres montrent une dégradation significative, elle
+  entre dans la comparaison des stratégies.
+- **Sans télémétrie** : « Conseil général, sans télémétrie : … », sans aucun chiffre de course.
+- **Phrase mal reconnue** sur un sujet stratégique : l'ingénieur demande de préciser.
+
+### Protocole de test PS5 (environ 10 minutes)
+
+Préparation : épreuve Sport choisie (A, B ou C), Discord connecté, casque PS5, Vosk. Course d'au moins 8 tours
+avec un arrêt carburant nécessaire, ou une course personnalisée en consommation ×2 ou plus.
+
+1. **Avant le départ** (au stand, sans télémétrie) : « Radio, quelle est notre meilleure stratégie ? »
+   Attendu : « Conseil général, sans télémétrie… », aucun chiffre.
+2. **Tour 3 ou 4** :
+   - « Quelle est notre meilleure stratégie ? » : stratégie, tour d'arrêt, % du réservoir ;
+   - « Pourquoi ? » : les données utilisées ;
+   - « Pourquoi on rentre au tour 2 ? » : le vrai tour d'arrêt, et la correction.
+3. **Même tour** :
+   - « On peut prolonger d'un tour ? » : oui ou non, avec la raison ;
+   - « On peut avancer l'arrêt ? ».
+4. « Devant moi ils commencent à rentrer, on fait quoi ? »
+   Attendu : aucune position ni écart inventé, notre plan.
+5. « Je perds de l'adhérence à l'avant. »
+   Attendu : « Noté… d'après toi », confrontation aux chronos. **Vérifier à l'écran qu'aucun changement de pneus
+   n'est enregistré.**
+6. « Combien de carburant pour finir ? »
+   Attendu : des %, jamais de litres.
+7. « Je vais prolonger d'un tour. »
+   Attendu : « Noté comme intention… ». **Vérifier qu'aucun arrêt n'est compté.**
+8. Faire l'arrêt réel, puis :
+   - « Qu'est-ce qui a changé depuis notre plan initial ? » ;
+   - « Combien de carburant pour finir ? ».
+   Attendu : un seul arrêt compté, celui détecté.
+
+À noter pour chaque étape : la phrase reconnue (« Toi : … » à l'écran), la réponse, le délai ressenti, et toute
+réponse fausse ou inattendue. Les tests GitHub vérifient la logique sur des courses simulées ; seule cette séance dit
+si la reconnaissance du casque et le délai conviennent en course.

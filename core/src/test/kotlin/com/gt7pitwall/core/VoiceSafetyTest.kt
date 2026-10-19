@@ -112,8 +112,13 @@ class VoiceSafetyTest {
                 val model = Model("Avec ton essence, tu peux rester dehors encore un peu ; on décide au prochain passage.")
                 val out = say(c, s, model)
                 assertEquals(before, state(c), s)
-                // Discussion stratégique : Gemini répond, avec l'intention dans les faits si elle a été notée.
-                assertTrue(out.single().fromAi, "$s → $out")
+                if ("prolonger" in phrase) {
+                    // Question stratégique déguisée en intention : le moteur répond, jamais Gemini, et rien n'est enregistré.
+                    assertTrue(!out.single().fromAi && "intention" in out.single().text, "$s → $out")
+                } else {
+                    // Discussion stratégique : Gemini répond, avec l'intention dans les faits si elle a été notée.
+                    assertTrue(out.single().fromAi, "$s → $out")
+                }
             }
         }
         // Sans Gemini : réponse honnête, rien d'enregistré, intention gardée pour la stratégie.

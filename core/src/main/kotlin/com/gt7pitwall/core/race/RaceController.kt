@@ -223,6 +223,8 @@ class RaceController(
                 pitWindowPackets = 0
                 aiExchanges.clear()
                 intentions.clear()
+                observations.clear()
+                lastStrategyAnswerMs = null
                 rulesReminded = false
                 pendingConfirmation = null
                 lastAiAnswerMs = null
@@ -488,6 +490,7 @@ class RaceController(
         }
         ruleGaps.takeIf { it.isNotEmpty() }?.let { g -> lines += "Règlement inconnu sur : ${g.joinToString(", ") { it.label }}." }
         strategyBrief?.let { lines += it.facts() }
+        activeObservations.forEach { o -> lines += "Déclaré par le pilote au tour ${o.lap} (non mesuré) : ${o.kind.label}." }
         history.let { h -> lines += "Historique : ${h.comparable} session(s) comparable(s) archivée(s), dont ${h.sameEvent} avec le même règlement." }
         carName?.let { lines += "Voiture : $it." }
         course?.let { lines += "Circuit : ${it.label}." }
@@ -880,11 +883,13 @@ class RaceController(
     private fun compareStrategies(input: RacePlanner.Input, model: HistoryModel, measuredAvg: Int?, fuelFromHistory: Boolean): StrategyReport? {
         val learnedPace = model.lapTimeMs?.takeIf { it.confidence != Confidence.INSUFFICIENT }
         val laneMs = course?.pitLaneDeltaS?.let { it * 1000.0 }
+        // Dérive des chronos : mesurée dans le relais en cours si elle est nette, sinon apprise sur les courses comparables.
+        val stint = currentStintSlope()
         val pace = StrategyOptions.Pace(
             lapMs = measuredAvg?.toDouble() ?: learnedPace?.mean,
             lapSpreadMs = learnedPace?.spread ?: 0.0,
-            slopeMsPerLap = model.paceSlopeMsPerLap?.mean,
-            slopeSpread = model.paceSlopeMsPerLap?.spread ?: 0.0,
+            slopeMsPerLap = stint?.first ?: model.paceSlopeMsPerLap?.mean,
+            slopeSpread = stint?.second ?: model.paceSlopeMsPerLap?.spread ?: 0.0,
             pitLossMs = model.pitLossMs?.mean ?: laneMs,
             // Voie des stands seule : le temps du plein n'y est pas ; marge d'incertitude d'autant.
             pitLossSpread = model.pitLossMs?.spread ?: laneMs?.let { it * 0.5 } ?: 0.0,
@@ -902,7 +907,10 @@ class RaceController(
                 learnedPace != null -> add("rythme appris (${learnedPace.confidence.label} : ${learnedPace.basis()})")
                 else -> add("rythme inconnu")
             }
-            model.paceSlopeMsPerLap?.let { add("chronos qui évoluent de ${StrategyOptions.seconds(it.mean.toLong())} par tour de relais (mesuré, ${it.sessions} courses)") }
+            when {
+                stint != null -> add("chronos qui ${if (stint.first > 0) "se dégradent" else "s'améliorent"} de ${StrategyOptions.seconds(stint.first.toLong())} par tour dans ce relais (mesuré)")
+                model.paceSlopeMsPerLap != null -> add("chronos qui évoluent de ${StrategyOptions.seconds(model.paceSlopeMsPerLap.mean.toLong())} par tour de relais (mesuré, ${model.paceSlopeMsPerLap.sessions} courses)")
+            }
             when {
                 model.pitLossMs != null -> add("perte par arrêt apprise (${model.pitLossMs.basis("arrêts")})")
                 laneMs != null -> add("perte par arrêt : voie des stands seulement (base GT7), sans le temps du plein")
@@ -911,6 +919,235 @@ class RaceController(
             if (model.sessionsExcluded > 0) add("${model.sessionsExcluded} course(s) de cette épreuve écartée(s) car non comparables")
         }
         return StrategyOptions.compare(input, pace, basis, ruleGaps.map { it.label })
+    }
+
+    /**
+     * Dérive des chronos dans le relais en cours (ms par tour) et son incertitude, mesurée sur au moins 4 tours propres ;
+     * null si elle n'est pas nette (moins de deux fois son incertitude). Jamais déduite d'une déclaration.
+     */
+    private fun currentStintSlope(): Pair<Double, Double>? {
+        val lastStop = (ledger.stopList.map { it.lap } + ledger.changes.map { it.lap }).maxOrNull() ?: 0
+        val laps = snapshot.laps.filter { it.lapNumber > maxOf(1, lastStop + 1) && !it.refuelled && (it.timeMs ?: 0) > 0 }
+        if (laps.size < 4) return null
+        val xs = laps.map { it.lapNumber.toDouble() }
+        val ys = laps.map { it.timeMs!!.toDouble() }
+        val mx = xs.average()
+        val my = ys.average()
+        val sxx = xs.sumOf { (it - mx) * (it - mx) }
+        if (sxx <= 0) return null
+        val b = xs.indices.sumOf { (xs[it] - mx) * (ys[it] - my) } / sxx
+        val res = xs.indices.sumOf { val e = ys[it] - (my + b * (xs[it] - mx)); e * e } / (xs.size - 2)
+        val se = kotlin.math.sqrt(res / sxx)
+        return if (kotlin.math.abs(b) >= 2 * se && kotlin.math.abs(b) >= 100) b to se else null
+    }
+
+    // ------------------------------------------------------------------ Dialogue stratégique
+
+    /** Observation du pilote, gardée quelques tours : une déclaration, jamais une mesure. */
+    data class Observation(val lap: Int, val kind: StrategyDialogue.ObservationKind, val text: String)
+
+    private val observations = ArrayDeque<Observation>()
+    private var lastStrategyAnswerMs: Long? = null
+    private var lastStrategyAsk: StrategyDialogue.Ask? = null
+
+    /** Observations encore valables (les [OBSERVATION_LAPS] derniers tours). */
+    val activeObservations: List<Observation>
+        get() {
+            val lap = snapshot.packet?.currentLap ?: 0
+            return observations.filter { lap - it.lap <= OBSERVATION_LAPS }
+        }
+
+    /** Une réponse stratégique vient d'être donnée : une relance courte (« pourquoi ? ») s'y rapporte. */
+    fun afterStrategyAnswer(nowMs: Long = clock()): Boolean = lastStrategyAnswerMs?.let { nowMs - it < STRATEGY_FOLLOW_UP_MS } == true
+
+    /**
+     * Réponse de l'ingénieur à une question stratégique ou à une observation : lue dans le plan, la comparaison des
+     * stratégies et le carburant ; rien n'est modifié dans le registre (ni arrêt, ni pneus). Une observation est
+     * mémorisée comme déclaration ; la stratégie n'est réévaluée que sur des mesures.
+     */
+    fun strategyAnswer(ask: StrategyDialogue.Ask, question: String, nowMs: Long = clock(), intention: Boolean = false): List<EngineerMessage> {
+        // Comme toute autre phrase, une question abandonne une confirmation en attente : un « oui » plus tard ne l'applique pas.
+        pendingConfirmation = null
+        val echo = EngineerMessage("Toi : $question", Priority.INFO, MessageCategory.DRIVER)
+        val extra = mutableListOf<EngineerMessage>()
+        val text = if (!telemetryLive() && ask !is StrategyDialogue.Ask.Observe && ask !is StrategyDialogue.Ask.Unclear) {
+            generalAdvice(ask)
+        } else {
+            when (ask) {
+                StrategyDialogue.Ask.Best -> answerBest()
+                is StrategyDialogue.Ask.WhyStop -> answerWhyStop(ask.lap)
+                StrategyDialogue.Ask.Extend -> answerExtend()
+                StrategyDialogue.Ask.Early -> answerEarly()
+                StrategyDialogue.Ask.OthersPitting -> answerOthersPitting()
+                StrategyDialogue.Ask.FuelToFinish -> answerFuelToFinish()
+                StrategyDialogue.Ask.WhatChanged -> answerWhatChanged()
+                StrategyDialogue.Ask.FollowUp -> answerFollowUp()
+                is StrategyDialogue.Ask.Observe -> answerObservation(ask, question, extra)
+                StrategyDialogue.Ask.Unclear -> "Je n'ai pas bien compris. Tu me demandes la stratégie, le carburant ou l'arrêt ?"
+            }
+        }
+        val said = if (intention) "Noté comme intention, je n'enregistre rien tant que ce n'est pas fait. $text" else text
+        if (ask !is StrategyDialogue.Ask.Unclear) lastStrategyAnswerMs = nowMs
+        if (ask !is StrategyDialogue.Ask.FollowUp && ask !is StrategyDialogue.Ask.Unclear) lastStrategyAsk = ask
+        val answer = EngineerMessage(said, Priority.HIGH, MessageCategory.ANSWER, expectsReply = ask is StrategyDialogue.Ask.Unclear || awaitingAnswer)
+        return listOf(echo) + deliver(listOf(answer) + extra)
+    }
+
+    /** Sans télémétrie : conseils de principe, annoncés comme tels, sans aucun chiffre de course. */
+    private fun generalAdvice(ask: StrategyDialogue.Ask): String = "Conseil général, sans télémétrie : " + when (ask) {
+        StrategyDialogue.Ask.Best -> "je n'ai pas de données de course. Je bâtirai le plan sur le règlement et ta consommation mesurée dès le premier tour."
+        is StrategyDialogue.Ask.WhyStop -> "un arrêt se place quand l'autonomie ou le règlement l'imposent ; je n'ai pas de plan en cours."
+        StrategyDialogue.Ask.Extend -> "on ne prolonge un relais que si l'autonomie mesurée garde au moins un demi-tour de marge."
+        StrategyDialogue.Ask.Early -> "avancer un arrêt ne vaut que si le rythme chute nettement ou si le règlement l'impose."
+        StrategyDialogue.Ask.OthersPitting -> "on suit notre propre plan tant que notre autonomie le permet ; je n'ai de données ni sur eux ni sur nous."
+        StrategyDialogue.Ask.FuelToFinish -> "je ne connais pas ton carburant tant que GT7 ne m'envoie rien."
+        StrategyDialogue.Ask.WhatChanged -> "pas de course en cours, donc aucun plan à comparer."
+        else -> "je n'ai pas de données de course."
+    }
+
+    private val noPlan = "Je n'ai pas encore de plan : il me faut le nombre de tours et un tour mesuré."
+
+    private fun firstSentence(s: String): String = s.substringBefore(". ").trimEnd('.') + "."
+
+    private fun rulesWarning(): String = strategy?.unverifiedRules?.takeIf { it.isNotEmpty() }
+        ?.let { " Attention, règlement non vérifié : ${it.joinToString(", ")}." } ?: ""
+
+    private fun answerBest(): String {
+        val brief = strategyBrief ?: return noPlan
+        return "${brief.recommendation} ${firstSentence(brief.reason)}${rulesWarning()}"
+    }
+
+    private fun answerWhyStop(asked: Int?): String {
+        val p = plan ?: return noPlan
+        val lap = (snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)
+        val next = p.nextStop(lap) ?: return "Aucun arrêt n'est prévu : le carburant suffit jusqu'à l'arrivée."
+        val cap = snapshot.packet?.fuelCapacity
+        val why = buildList {
+            if (next.forFuel) {
+                add(
+                    "le carburant" + (fuel?.lapsOfFuel?.let { ", il te reste ${FrenchFormat.decimal(it)} tours d'autonomie" } ?: "") +
+                        (next.fuel?.let { ", il faudra ${FuelUnits.amount(it.toFloat(), cap)}" } ?: ""),
+                )
+            }
+            if (next.mandatory) add("l'arrêt obligatoire du règlement")
+            next.tyreToFit?.let { add("monter les ${it.spoken} imposés") }
+            if (next.changeTyres && next.tyreToFit == null) add("tes pneus atteignent la durée que tu m'as donnée")
+        }
+        return buildString {
+            append("On rentre fin du tour ${next.endOfLap} pour ")
+            append(if (why.isEmpty()) "suivre le plan" else why.joinToString(", et "))
+            append(".")
+            if (asked != null && asked != next.endOfLap) append(" Le plan prévoit le tour ${next.endOfLap}, pas le $asked.")
+        }
+    }
+
+    private fun answerExtend(): String {
+        val brief = strategyBrief ?: return noPlan
+        return if (plan?.nextStop((snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)) == null) "Rien à prolonger : aucun arrêt n'est prévu."
+        else "Prolonger d'un tour : ${brief.extendOneLap}"
+    }
+
+    private fun answerEarly(): String {
+        val report = strategy ?: return noPlan
+        val o = report.option(OptionKind.EARLY) ?: return "Aucun arrêt n'est prévu : rien à avancer."
+        if (!o.feasible) return "Avancer l'arrêt : non, ${o.issues.firstOrNull() ?: "plan irréalisable"}."
+        val delta = o.deltaMs
+        val u = report.uncertaintyMs
+        val effect = when {
+            delta == null || u == null -> "le gain n'est pas chiffrable avec nos données"
+            -delta > u -> "plus rapide d'environ ${StrategyOptions.seconds(-delta)}"
+            delta > u -> "plus lent d'environ ${StrategyOptions.seconds(delta)}"
+            else -> "sans gain démontré"
+        }
+        return "Avancer l'arrêt au tour ${o.stopLaps.first()} : possible, $effect."
+    }
+
+    private fun answerOthersPitting(): String {
+        note(DriverNote(snapshot.packet?.currentLap ?: 0, "voitures devant aux stands (déclaré)"))
+        val brief = strategyBrief ?: return "Je n'ai aucune information sur leurs écarts ni leurs pneus, et pas encore de plan pour nous."
+        return brief.othersPitting.replaceFirstChar { it.uppercase() }
+    }
+
+    private fun answerFuelToFinish(): String {
+        val brief = strategyBrief ?: return engineer.answer(com.gt7pitwall.core.radio.DriverQuery.FUEL, snapshot, fuel).text
+        val next = plan?.nextStop((snapshot.packet?.currentLap ?: 1).coerceAtLeast(1))
+        val stop = next?.takeIf { it.forFuel }?.fuel?.let { " Arrêt prévu fin du tour ${next.endOfLap}, environ ${FuelUnits.amount(it.toFloat(), snapshot.packet?.fuelCapacity)}." } ?: ""
+        return brief.fuelToFinish.replaceFirstChar { it.uppercase() } + stop
+    }
+
+    private fun answerWhatChanged(): String {
+        val initial = planLog.firstOrNull() ?: return noPlan
+        val now = plan?.stops?.map { it.endOfLap } ?: emptyList()
+        fun laps(l: List<Int>) = if (l.isEmpty()) "pas d'arrêt" else "arrêt${if (l.size > 1) "s" else ""} tour ${l.joinToString(" et ")}"
+        val lap = (snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)
+        val initialAhead = initial.stopLaps
+        return buildString {
+            if (initialAhead == now || (now.isEmpty() && ledger.stopCount >= initialAhead.size && initialAhead.all { it < lap })) {
+                append("Rien n'a changé depuis le plan initial : ${laps(initialAhead)}.")
+            } else {
+                append("Plan initial : ${laps(initialAhead)}. Maintenant : ${laps(now)}.")
+                lastPlanChange?.let { append(" Raison : ${it.reason}") }
+            }
+            activeObservations.takeIf { it.isNotEmpty() }?.let { obs ->
+                append(" Tu m'as signalé : ${obs.joinToString(", ") { it.kind.label }}.")
+            }
+        }.trim()
+    }
+
+    private fun answerFollowUp(): String {
+        val report = strategy ?: return noPlan
+        val basis = report.basis.take(3).joinToString(", ")
+        return when (lastStrategyAsk) {
+            StrategyDialogue.Ask.Best, StrategyDialogue.Ask.Extend, StrategyDialogue.Ask.Early ->
+                "${firstSentence(report.reason)} Je me base sur : $basis."
+            else -> "Je me base sur : $basis.${rulesWarning()}"
+        }
+    }
+
+    /**
+     * Observation du pilote : notée comme déclaration, confrontée aux chronos mesurés. La stratégie n'est réévaluée que
+     * si les chronos montrent quelque chose ; aucun pourcentage d'usure n'est inventé.
+     */
+    private fun answerObservation(ask: StrategyDialogue.Ask.Observe, question: String, extra: MutableList<EngineerMessage>): String {
+        if (ask.negated) return "D'accord, rien à signaler de ce côté."
+        val lap = snapshot.packet?.currentLap ?: 0
+        observations.addLast(Observation(lap, ask.kind, question.trim()))
+        while (observations.size > MAX_OBSERVATIONS) observations.removeFirst()
+        note(DriverNote(lap, "${ask.kind.label} (déclaré)"))
+        if (!telemetryLive()) return "Noté : ${ask.kind.label}. Sans télémétrie, je ne peux pas le confronter à tes chronos."
+        val trend = recentTrend()
+        val measured = when {
+            trend == null -> "Pas encore assez de tours pour le confirmer sur les chronos."
+            trend >= 300 -> "Tes chronos le confirment : plus ${StrategyOptions.seconds(trend.toLong())} sur les derniers tours par rapport à ton meilleur du relais."
+            else -> "Tes chronos ne le montrent pas pour l'instant."
+        }
+        val before = plan?.stops?.map { it.endOfLap }
+        // Réévaluation : sur les chronos mesurés uniquement (la déclaration seule ne change rien).
+        if (ask.kind != StrategyDialogue.ObservationKind.TRAFFIC) extra += replan()
+        val after = plan?.stops?.map { it.endOfLap }
+        val decision = when {
+            ask.kind == StrategyDialogue.ObservationKind.TRAFFIC ->
+                "GT7 ne me donne pas les écarts : je ne change pas le plan pour le trafic. Si ton rythme chute, je réévalue."
+            before != after -> "Je réévalue : ${lastPlanChange?.reason ?: "le plan change"}"
+            strategy?.recommended == OptionKind.EARLY -> "Avancer l'arrêt devient intéressant : ${firstSentence(strategy!!.reason)}"
+            else -> "Je garde le plan : aucun gain démontré à changer. Je surveille tes chronos."
+        }
+        return "Noté : ${ask.kind.label}, d'après toi. $measured $decision"
+    }
+
+    private fun note(n: DriverNote) {
+        driverNotes += n
+        while (driverNotes.size > MAX_NOTES) driverNotes.removeAt(0)
+        saveSession()
+    }
+
+    /** Écart (ms) entre la moyenne des deux derniers tours propres et le meilleur tour du relais ; null si trop tôt. */
+    private fun recentTrend(): Int? {
+        val lastStop = (ledger.stopList.map { it.lap } + ledger.changes.map { it.lap }).maxOrNull() ?: 0
+        val clean = snapshot.laps.filter { it.lapNumber > maxOf(1, lastStop + 1) && !it.refuelled && (it.timeMs ?: 0) > 0 }
+        if (clean.size < 3) return null
+        val best = clean.minOf { it.timeMs!! }
+        return clean.takeLast(2).map { it.timeMs!! }.average().toInt() - best
     }
 
     // ------------------------------------------------------------------ Arrêts et gommes
@@ -1008,6 +1245,9 @@ class RaceController(
         const val TELEMETRY_LIVE_MS = 3_000L
         const val MAX_INTENTIONS = 3
         const val MAX_NOTES = 30
+        const val MAX_OBSERVATIONS = 6
+        const val OBSERVATION_LAPS = 5
+        const val STRATEGY_FOLLOW_UP_MS = 45_000L
         const val MAX_PLANS = 40
 
         val AI_TOPICS = mapOf(
