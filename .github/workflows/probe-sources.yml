@@ -14,41 +14,32 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: robots.txt
+      - name: Page gtsh-rank des courses quotidiennes
         run: |
-          for u in https://www.gtplanet.net/robots.txt https://www.dg-edge.com/robots.txt https://gtsh-rank.com/robots.txt; do
-            echo "===== $u"; curl -sSL -m 20 -A "GT7Pitwall/0.8 (+https://github.com/limarejeremy-hub/GT7-Pitwall)" "$u" | head -60 || true
-          done
-      - name: Flux RSS GTPlanet (courses quotidiennes)
-        run: |
-          curl -sSL -m 30 -A "GT7Pitwall/0.8" -o feed.xml "https://www.gtplanet.net/tag/gran-turismo-7-daily-races/feed/" || true
-          ls -la feed.xml || true
-          head -c 1500 feed.xml || true
-          echo; echo "===== premier article (contenu)"
-          python3 - <<'PY' || true
-          import re, html, xml.etree.ElementTree as ET
-          t = ET.parse("feed.xml").getroot()
-          ns = {"content": "http://purl.org/rss/1.0/modules/content/"}
-          items = t.findall("./channel/item")
-          print("articles :", len(items))
-          for it in items[:3]:
-              print("TITRE", it.findtext("title"), "|", it.findtext("pubDate"), "|", it.findtext("link"))
-          it = items[0]
-          body = it.findtext("content:encoded", namespaces=ns) or it.findtext("description") or ""
-          print("LONGUEUR CONTENU", len(body))
-          print(body[:12000])
-          PY
-      - name: Page DG EDGE des courses quotidiennes
-        run: |
-          curl -sSL -m 30 -A "GT7Pitwall/0.8" -o dg.html "https://www.dg-edge.com/events/dailies" || true
-          ls -la dg.html || true
-          grep -o '<script[^>]*id="__NEXT_DATA__"[^>]*>' dg.html | head -3 || true
+          curl -sSL -m 30 -A "GT7Pitwall/0.8 (+https://github.com/limarejeremy-hub/GT7-Pitwall)" -o g.html "https://gtsh-rank.com/daily/" || true
+          ls -la g.html || true
+          head -c 600 g.html; echo
+          grep -o '<script[^>]*src="[^"]*"' g.html | head -20 || true
+          grep -oE '"[^"]*(api|json)[^"]*"' g.html | sort -u | head -30 || true
           python3 - <<'PY' || true
           import re, html
-          s = open("dg.html", encoding="utf-8", errors="replace").read()
+          s = open("g.html", encoding="utf-8", errors="replace").read()
           s = re.sub(r"(?s)<script.*?</script>|<style.*?</style>", " ", s)
           txt = html.unescape(re.sub(r"<[^>]+>", "\n", s))
           lines = [l.strip() for l in txt.splitlines() if l.strip()]
-          print("\n".join(lines[:250]))
+          print(len(lines), "lignes")
+          print("\n".join(lines[:220]))
           PY
-          grep -oi 'href="[^"]*\(terms\|tos\|legal\|privacy\)[^"]*"' dg.html | sort -u | head || true
+      - name: Conditions d'utilisation gtsh-rank et GTPlanet (liens)
+        run: |
+          grep -oiE 'href="[^"]*(terms|tos|legal|privacy|about)[^"]*"' g.html | sort -u | head || true
+          curl -sSL -m 20 -A "GT7Pitwall/0.8" https://www.gtplanet.net/terms-of-service/ -o tos.html || true
+          python3 - <<'PY' || true
+          import re, html
+          s = open("tos.html", encoding="utf-8", errors="replace").read()
+          s = re.sub(r"(?s)<script.*?</script>|<style.*?</style>", " ", s)
+          txt = html.unescape(re.sub(r"<[^>]+>", "\n", s))
+          lines = [l.strip() for l in txt.splitlines() if l.strip()]
+          keep = [l for l in lines if re.search(r"(?i)rss|feed|scrap|automat|robot|crawl|reproduc|copy", l)]
+          print("\n".join(keep[:40]))
+          PY
