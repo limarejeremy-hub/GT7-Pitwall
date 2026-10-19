@@ -96,7 +96,8 @@ dependencies {
         exclude(group = "com.google.crypto.tink", module = "tink") // remplacé par tink-android (protobuf lite)
         exclude(group = "com.squareup.okhttp3", module = "okhttp-jvm") // remplacé par la variante Android
     }
-    implementation("com.squareup.okhttp3:okhttp:5.5.0")
+    // 5.3.2 : dernière version sans exigence de compileSdk (5.4 demande 36, 5.5 demande 37).
+    implementation("com.squareup.okhttp3:okhttp") { version { strictly("5.3.2") } }
     implementation("com.google.crypto.tink:tink-android:1.18.0")
     implementation("moe.kyokobot.libdave:impl-jni:0.2.0")
     implementation("moe.kyokobot.libdave:adapter-jda:0.2.0")
