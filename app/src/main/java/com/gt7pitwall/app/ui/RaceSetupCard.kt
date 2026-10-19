@@ -487,12 +487,13 @@ private fun StrategySection(state: PitwallUiState) {
             com.gt7pitwall.core.strategy.OptionKind.EXTENDED -> "Prolongée"
         }
         val stops = if (o.stopLaps.isEmpty()) "sans arrêt" else "arrêt fin T" + o.stopLaps.joinToString(", T")
+        val delta = o.deltaMs
         val detail = when {
             !o.feasible -> "irréalisable : ${o.issues.firstOrNull() ?: "?"}"
-            o.deltaMs == null -> "temps non chiffrable"
+            delta == null -> "temps non chiffrable"
             o.kind == com.gt7pitwall.core.strategy.OptionKind.NORMAL -> "référence"
-            o.deltaMs == 0L -> "même temps estimé"
-            else -> (if (o.deltaMs < 0) "−" else "+") + com.gt7pitwall.core.strategy.StrategyOptions.seconds(o.deltaMs)
+            delta == 0L -> "même temps estimé"
+            else -> (if (delta < 0) "−" else "+") + com.gt7pitwall.core.strategy.StrategyOptions.seconds(delta)
         }
         Text(
             "${if (o.kind == report.recommended) "▶ " else "   "}$label : $stops • $detail",
