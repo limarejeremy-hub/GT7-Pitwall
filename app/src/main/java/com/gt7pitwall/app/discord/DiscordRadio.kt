@@ -10,6 +10,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -19,11 +20,14 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 import moe.kyokobot.libdave.NativeDaveFactory
 import moe.kyokobot.libdave.jda.LDJDADaveSessionFactory
 import net.dv8tion.jda.api.JDA
 import net.dv8tion.jda.api.JDABuilder
 import net.dv8tion.jda.api.audio.AudioModuleConfig
+import net.dv8tion.jda.api.audio.AudioReceiveHandler
+import net.dv8tion.jda.api.audio.OpusPacket
 import net.dv8tion.jda.api.audio.AudioSendHandler
 import net.dv8tion.jda.api.audio.hooks.ConnectionListener
 import net.dv8tion.jda.api.audio.hooks.ConnectionStatus
@@ -31,6 +35,9 @@ import net.dv8tion.jda.api.exceptions.InvalidTokenException
 import net.dv8tion.jda.api.requests.GatewayIntent
 import net.dv8tion.jda.api.utils.cache.CacheFlag
 import net.dv8tion.jda.internal.utils.JDALogger
+import org.json.JSONObject
+import org.vosk.Model
+import org.vosk.Recognizer
 import java.io.File
 import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -39,6 +46,17 @@ import java.util.concurrent.TimeUnit
 enum class DiscordState { NO_TOKEN, OFFLINE, CONNECTING, ONLINE, JOINING, IN_VOICE, ERROR }
 
 data class VoiceChannelInfo(val id: Long, val name: String, val guild: String)
+
+/** Test du micro PS5 : ce que le bot reçoit du salon et ce que la reconnaissance en comprend. */
+data class MicReport(
+    val packets: Int = 0,
+    val speaker: String? = null,
+    /** Niveau de la voix reçue, 0 à 100. */
+    val level: Int = 0,
+    val heard: List<String> = emptyList(),
+    val partial: String? = null,
+    val note: String? = null,
+)
 
 /**
  * Radio Discord : le Fold se connecte comme bot à un serveur Discord privé, rejoint un salon vocal (chiffrement de bout
@@ -77,6 +95,14 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
     private val _detail = MutableStateFlow<String?>(null)
     /** Précision lisible (erreur, état de la connexion vocale, statistiques Opus). Jamais le token. */
     val detail: StateFlow<String?> = _detail.asStateFlow()
+
+    private val _mic = MutableStateFlow<MicReport?>(null)
+    /** Test du micro PS5 en cours (null : arrêté). */
+    val mic: StateFlow<MicReport?> = _mic.asStateFlow()
+    private var micJob: Job? = null
+    @Volatile
+    private var micPackets: Channel<Pair<Long, ByteArray>>? = null
+    private val receiver by lazy { PsMicReceiver { user, opus -> micPackets?.trySend(user to opus) } }
 
     private val _channels = MutableStateFlow<List<VoiceChannelInfo>>(emptyList())
     val channels: StateFlow<List<VoiceChannelInfo>> = _channels.asStateFlow()
@@ -243,6 +269,102 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
         }
     }
 
+    /**
+     * Prototype « micro PS5 » : le bot écoute le salon (voix déchiffrée par JDA et DAVE), décode l'Opus avec Android et
+     * transcrit avec Vosk ([modelDir], le modèle de la radio vocale). Rien n'est encore transmis à l'ingénieur.
+     */
+    fun startMicTest(modelDir: File?) {
+        val client = jda ?: return
+        val channel = wantedChannel?.let { client.getVoiceChannelById(it) }
+        if (channel == null || !live) {
+            _mic.value = MicReport(note = "Rejoins d'abord le salon vocal.")
+            return
+        }
+        if (micJob?.isActive == true) return
+        val packets = Channel<Pair<Long, ByteArray>>(MIC_BUFFER, BufferOverflow.DROP_OLDEST)
+        micPackets = packets
+        _mic.value = MicReport(note = if (modelDir == null) MIC_NO_MODEL else "Chargement de la reconnaissance…")
+        micJob = scope.launch(Dispatchers.Default) {
+            try {
+                channel.guild.audioManager.receivingHandler = receiver
+                runMicTest(client, packets, modelDir)
+            } catch (e: Throwable) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                val why = generateSequence(e) { t -> t.cause?.takeIf { c -> c !== t } }.take(3)
+                    .joinToString(" ← ") { t -> t.javaClass.simpleName + (t.message?.let { m -> " ($m)" } ?: "") }
+                _mic.value = (_mic.value ?: MicReport()).copy(note = "Erreur : $why")
+            }
+        }
+    }
+
+    fun stopMicTest() {
+        micJob?.cancel()
+        micJob = null
+        micPackets = null
+        _mic.value = null
+        runCatching { jda?.guilds?.forEach { it.audioManager.receivingHandler = null } }
+    }
+
+    private suspend fun runMicTest(client: JDA, packets: Channel<Pair<Long, ByteArray>>, modelDir: File?) {
+        val decoder = OpusDecoderStream()
+        val model = modelDir?.let { Model(it.absolutePath) }
+        val recognizer = model?.let { Recognizer(it, OpusDecoderStream.OUTPUT_RATE.toFloat()) }
+        var report = MicReport(note = if (recognizer == null) MIC_NO_MODEL else "Parle dans le micro du casque…")
+        _mic.value = report
+        var silenceFedMs = SILENCE_TAIL_MS
+        var lastPublish = 0L
+        try {
+            while (true) {
+                val item = withTimeoutOrNull(SILENCE_STEP_MS) { packets.receive() }
+                if (item == null) {
+                    // Discord n'envoie rien quand tu te tais : du silence permet à Vosk de finir la phrase.
+                    if (recognizer != null && silenceFedMs < SILENCE_TAIL_MS) {
+                        val silence = ShortArray((OpusDecoderStream.OUTPUT_RATE * SILENCE_STEP_MS / 1000).toInt())
+                        report = recognize(recognizer, silence, report)
+                        silenceFedMs += SILENCE_STEP_MS
+                    }
+                    report = report.copy(level = 0)
+                    _mic.value = report
+                    continue
+                }
+                silenceFedMs = 0
+                val (user, opus) = item
+                val pcm = decoder.decode(opus)
+                report = report.copy(
+                    packets = report.packets + 1,
+                    speaker = report.speaker ?: (client.getUserById(user)?.name ?: "utilisateur $user"),
+                    level = level(pcm),
+                )
+                if (recognizer != null && pcm.isNotEmpty()) report = recognize(recognizer, pcm, report)
+                val now = System.currentTimeMillis()
+                if (now - lastPublish >= PUBLISH_MS) {
+                    lastPublish = now
+                    _mic.value = report
+                }
+            }
+        } finally {
+            decoder.release()
+            recognizer?.close()
+            model?.close()
+        }
+    }
+
+    private fun recognize(recognizer: Recognizer, pcm: ShortArray, report: MicReport): MicReport =
+        if (recognizer.acceptWaveForm(pcm, pcm.size)) {
+            val text = JSONObject(recognizer.result).optString("text").trim()
+            if (text.isEmpty()) report.copy(partial = null) else report.copy(heard = (listOf(text) + report.heard).take(5), partial = null)
+        } else {
+            report.copy(partial = JSONObject(recognizer.partialResult).optString("partial").trim().ifEmpty { null })
+        }
+
+    private fun level(pcm: ShortArray): Int {
+        if (pcm.isEmpty()) return 0
+        var sum = 0.0
+        for (v in pcm) sum += v.toDouble() * v
+        val rms = kotlin.math.sqrt(sum / pcm.size)
+        return (rms / 50).toInt().coerceIn(0, 100)
+    }
+
     /** Phrase de test : vérifie toute la chaîne voix → Opus → DAVE → Discord → PS5 → casque, sans GT7. */
     fun sayTest() {
         if (!live) {
@@ -331,6 +453,7 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
     }
 
     fun leave() {
+        stopMicTest()
         scope.launch {
             lock.withLock {
                 wantedChannel = null
@@ -345,6 +468,7 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
 
     /** Déconnexion propre : quitte le salon, ferme la session Discord. */
     fun disconnect() {
+        stopMicTest()
         wantedChannel = null
         watchdog?.cancel()
         val client = jda ?: return
@@ -394,7 +518,20 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
         const val REJOIN_AFTER_MS = 20_000L
         const val PHRASE_CACHE_SIZE = 40
         const val CACHEABLE_CHARS = 60
+        const val MIC_BUFFER = 500
+        const val SILENCE_STEP_MS = 200L
+        const val SILENCE_TAIL_MS = 1_600L
+        const val PUBLISH_MS = 150L
+        const val MIC_NO_MODEL = "Pas de modèle vocal : télécharge-le dans la carte « Radio vocale » pour la transcription. " +
+            "Les paquets et le niveau s'affichent quand même."
     }
+}
+
+/** Reçoit la voix du salon déjà déchiffrée (transport + DAVE), en Opus : décodée ensuite par Android. */
+class PsMicReceiver(private val onPacket: (userId: Long, opus: ByteArray) -> Unit) : AudioReceiveHandler {
+    override fun canReceiveEncoded(): Boolean = true
+
+    override fun handleEncodedAudio(packet: OpusPacket) = onPacket(packet.userId, packet.opusAudio)
 }
 
 /** Petit cache LRU de phrases encodées. */

@@ -167,6 +167,7 @@ fun PitwallScreen(
                 discordMirror = it
                 onDiscordMirror(it)
             },
+            micModelDir = voiceModels::installedDir,
         )
         AiCard(
             on = aiOn,
@@ -762,8 +763,10 @@ private fun DiscordCard(
     onAutoJoinChange: (Boolean) -> Unit,
     mirror: Boolean,
     onMirrorChange: (Boolean) -> Unit,
+    micModelDir: () -> java.io.File?,
 ) {
     val state by discord.state.collectAsStateWithLifecycle()
+    val mic by discord.mic.collectAsStateWithLifecycle()
     val detail by discord.detail.collectAsStateWithLifecycle()
     val channels by discord.channels.collectAsStateWithLifecycle()
     var token by remember { mutableStateOf("") }
@@ -837,6 +840,22 @@ private fun DiscordCard(
                 }
                 else -> Unit
             }
+        }
+        if (state == DiscordState.IN_VOICE || mic != null) {
+            OutlinedButton(
+                onClick = { if (mic == null) discord.startMicTest(micModelDir()) else discord.stopMicTest() },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text(if (mic == null) "Test micro PS5 (prototype)" else "Arrêter le test micro") }
+        }
+        mic?.let { m ->
+            Text(
+                "Micro PS5 : ${m.packets} paquets reçus" + (m.speaker?.let { " de $it" } ?: "") + " • niveau " +
+                    "▮".repeat((m.level + 9) / 10).ifEmpty { "—" },
+                style = MaterialTheme.typography.bodySmall,
+            )
+            m.partial?.let { Text("… $it", style = MaterialTheme.typography.bodySmall, color = PitColors.Muted) }
+            m.heard.forEach { Text("Entendu : « $it »", style = MaterialTheme.typography.bodySmall, color = PitColors.Green) }
+            m.note?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = PitColors.Muted) }
         }
         if (state != DiscordState.NO_TOKEN) {
             Row(verticalAlignment = Alignment.CenterVertically) {
