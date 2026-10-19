@@ -4,7 +4,12 @@ import android.media.AudioManager
 import android.media.ToneGenerator
 import android.os.SystemClock
 import com.gt7pitwall.core.radio.DriverCommandParser
+import com.gt7pitwall.core.radio.RequestArbiter
+import com.gt7pitwall.core.radio.RequestPick
 import com.gt7pitwall.core.radio.SpeechFallbackPolicy
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withTimeoutOrNull
 import com.gt7pitwall.core.radio.VoiceInput
@@ -92,8 +97,13 @@ class VoskVoiceInput(
     @Volatile
     private var phoneMicInUse = true
 
-    /** Repli sur Vosk quand Google échoue (testé dans le module core). */
-    private val fallback = SpeechFallbackPolicy()
+    /**
+     * Repli sur Vosk quand Google échoue (testé dans le module core), compté séparément pour chaque micro : des échecs
+     * sur le flux du casque ne suspendent pas Google sur le micro du Fold.
+     */
+    private val phoneFallback = SpeechFallbackPolicy()
+    private val streamFallback = SpeechFallbackPolicy()
+    private val fallback: SpeechFallbackPolicy get() = if (phoneMicInUse) phoneFallback else streamFallback
 
     private val _fallbackInfo = MutableStateFlow<String?>(null)
     /** État du repli affiché à l'écran (null : Google normal). */
@@ -103,9 +113,40 @@ class VoskVoiceInput(
     /** Dernier passage du micro du Fold à Google : libéré, et en combien de temps. */
     val handover: StateFlow<String?> = _handover.asStateFlow()
 
-    private val _lastSource = MutableStateFlow<String?>(null)
-    /** Qui a reconnu la dernière demande (Google, Vosk, ou Vosk à la place de Google sur la même phrase). */
-    val lastSource: StateFlow<String?> = _lastSource.asStateFlow()
+    /** Une demande reconnue (ou perdue) : par quel moteur, et pourquoi ce moteur. Texte seulement, à l'écran. */
+    data class Recognition(val time: String, val text: String?, val by: String, val why: String?)
+
+    private val _history = MutableStateFlow<List<Recognition>>(emptyList())
+    /** Dernières demandes, la plus récente en premier. */
+    val history: StateFlow<List<Recognition>> = _history.asStateFlow()
+
+    private val clock = SimpleDateFormat("HH:mm:ss", Locale.FRANCE)
+
+    private fun log(by: String, text: String?, why: String?) {
+        val entry = Recognition(clock.format(Date()), text?.take(80), by, why)
+        _history.value = (listOf(entry) + _history.value).take(HISTORY_SIZE)
+    }
+
+    /** Pourquoi une demande passe par Vosk plutôt que Google (null : rien de particulier). */
+    private fun voskReason(): String? {
+        val g = googleSpeech
+        return when {
+            !useGoogleSpeech -> "Google désactivé dans les réglages"
+            g == null || !g.available -> "Google indisponible sur ce téléphone"
+            !phoneMicInUse && !g.streamUsable -> "Google coupé pour le casque (${g.streamOffReason})"
+            fallback.suspended -> "Google suspendu après ${fallback.consecutiveFailures} échecs"
+            fallback.voskForNextRequest -> "Google vient d'échouer"
+            else -> null
+        }
+    }
+
+    /** « Réessayer Google sur le casque » : moteurs écartés et échecs oubliés. */
+    fun retryGoogleOnHeadset() {
+        googleSpeech?.resetStream()
+        streamFallback.reset()
+        refreshFallbackInfo()
+        log("réglage", null, "Google de nouveau essayé sur le casque PS5")
+    }
 
     /**
      * Casque PS5 : pendant que Google écoute le flux, Vosk écoute la même phrase en parallèle (aucun conflit de micro,
@@ -123,7 +164,10 @@ class VoskVoiceInput(
     private var shadow: Shadow? = null
 
     private fun refreshFallbackInfo() {
+        val g = googleSpeech
         _fallbackInfo.value = when {
+            !phoneMicInUse && useGoogleSpeech && g != null && !g.streamUsable ->
+                "Google coupé pour le casque PS5 : Vosk seul, sans attente. ${g.streamOffReason}. Le micro du Fold garde Google."
             fallback.suspended -> "Google suspendu après ${fallback.consecutiveFailures} échecs : Vosk pour toutes les demandes " +
                 "(change le réglage Google pour réessayer)."
             fallback.voskForNextRequest -> "Google a échoué : la prochaine demande passe par Vosk."
@@ -136,7 +180,7 @@ class VoskVoiceInput(
      * reconnaissance l'accepte (Android 13+).
      */
     private fun google(): GoogleSpeech? = googleSpeech?.takeIf {
-        useGoogleSpeech && fallback.useGoogle(it.available, phoneMicInUse, it.externalAudioSupported)
+        useGoogleSpeech && fallback.useGoogle(it.available, phoneMicInUse, if (it.streamUsable) null else false)
     }
 
     @Volatile
@@ -152,7 +196,8 @@ class VoskVoiceInput(
     var useGoogleSpeech: Boolean = true
         set(value) {
             field = value
-            fallback.reset()
+            phoneFallback.reset()
+            streamFallback.reset()
             refreshFallbackInfo()
         }
 
@@ -201,6 +246,7 @@ class VoskVoiceInput(
                 }
                 phoneMicInUse = record.isPhoneMic
                 _micLabel.value = record.label
+                refreshFallbackInfo()
                 paused = false
                 audioJob = scope.launch(Dispatchers.IO) { listen(record, rec, free) }
                 _state.value = ListenState.WAITING_WAKE_WORD
@@ -226,7 +272,8 @@ class VoskVoiceInput(
     fun stop() {
         tone?.release()
         tone = null
-        fallback.cancelActive()
+        phoneFallback.cancelActive()
+        streamFallback.cancelActive()
         googleSpeech?.cancel()
         micReleased = false
         shadow = null
@@ -364,7 +411,8 @@ class VoskVoiceInput(
             // L'ingénieur reprend la parole pendant une écoute Google : on la relancera après lui.
             if (googleSpeech?.listening == true) {
                 shadow = null
-                fallback.cancelActive()
+                phoneFallback.cancelActive()
+                streamFallback.cancelActive()
                 googleSpeech?.cancel()
                 micReleased = false
                 awakeUntil = 1
@@ -410,7 +458,8 @@ class VoskVoiceInput(
      * pilote est prévenu et Vosk écoute la demande suivante.
      */
     private fun listenWithGoogle(google: GoogleSpeech, startDelayMs: Long = 0, signal: Signal = Signal.NONE) {
-        val session = fallback.start()
+        val policy = fallback
+        val session = policy.start()
         awakeUntil = 1
         _state.value = ListenState.AWAKE
         expiryJob?.cancel()
@@ -440,63 +489,55 @@ class VoskVoiceInput(
                         _events.tryEmit(VoiceInputEvent.Listening)
                     }
                 },
-            ) { result -> onGoogleResult(session, result) }
+            ) { result -> onGoogleResult(policy, session, result) }
         }
     }
 
-    private fun onGoogleResult(session: Int, result: GoogleResult) {
-        val decision = fallback.finish(session, result.outcome, result.errorCode)
+    private fun onGoogleResult(policy: SpeechFallbackPolicy, session: Int, result: GoogleResult) {
+        val decision = policy.finish(session, result.outcome, result.errorCode)
         refreshFallbackInfo()
         // Écoute annulée ou remplacée entre-temps (redémarrage, l'ingénieur a repris la parole) : rien à faire ici.
         decision ?: return
         micReleased = false
         awakeUntil = 0
         if (_state.value == ListenState.AWAKE) _state.value = ListenState.WAITING_WAKE_WORD
-        val text = result.text
         val parallel = shadow?.takeIf { it.session == session }
         shadow = null
-        if (text != null) {
-            _lastSource.value = "Google (${googleSpeech?.diag?.value?.engine ?: "?"})"
-            _heard.value = text
-            val wakeRegex = Regex("^\\s*${Regex.escape(DriverCommandParser.normalize(wakeWord))}\\s*,?\\s*")
-            val norm = DriverCommandParser.normalize(text).replace(wakeRegex, "").trim()
-            if (norm.isNotEmpty()) _events.tryEmit(VoiceInputEvent.Utterance(norm, norm))
-            return
+        val source = if (parallel != null) "casque PS5" else "micro du Fold"
+        val googleBy = "${result.engine ?: "Google"} ($source)"
+        val proof = listOfNotNull(result.note, result.switch).joinToString(" — ").ifBlank { null }
+        scope.launch {
+            // La phrase de Vosk n'est attendue que si Google n'a rien donné d'utilisable.
+            val needVosk = parallel != null && RequestArbiter.stripWake(result.text ?: "", wakeWord).isEmpty()
+            val (command, free) = if (needVosk) {
+                withTimeoutOrNull(SHADOW_FLUSH_MS) { parallel!!.done.await() } ?: ("" to "")
+            } else {
+                "" to ""
+            }
+            if (audioJob == null) return@launch
+            when (val pick = RequestArbiter.pick(result.text, command, free, wakeWord)) {
+                is RequestPick.Google -> {
+                    _heard.value = result.text ?: pick.text
+                    log(googleBy, result.text, proof)
+                    _events.tryEmit(VoiceInputEvent.Utterance(pick.text, pick.text))
+                }
+                is RequestPick.Vosk -> {
+                    // Même phrase, entendue par Vosk en parallèle : le pilote n'a rien à répéter.
+                    policy.voskHandledRequest()
+                    refreshFallbackInfo()
+                    _heard.value = free.ifBlank { command }
+                    log("Vosk, même phrase ($source)", free.ifBlank { command }, "$googleBy : ${result.outcome.label}" + (proof?.let { " — $it" } ?: ""))
+                    _events.tryEmit(VoiceInputEvent.Utterance(pick.command, pick.free))
+                }
+                RequestPick.Repeat -> if (decision.fallbackToVosk) {
+                    log("aucun", null, "$googleBy : ${result.outcome.label}" + (if (parallel != null) ", Vosk : rien entendu" else "") +
+                        (proof?.let { " — $it" } ?: "") + ". Vosk écoute la demande répétée")
+                    // Jamais silencieux : le pilote est prévenu, et Vosk écoute tout de suite sa demande répétée.
+                    listenWithVosk()
+                    decision.notice?.let { _events.tryEmit(VoiceInputEvent.Notice(it)) }
+                }
+            }
         }
-        if (decision.fallbackToVosk && parallel != null) {
-            scope.launch { useParallelVosk(parallel, result, decision.notice) }
-            return
-        }
-        if (decision.fallbackToVosk) {
-            // Jamais silencieux : le pilote est prévenu, et Vosk écoute tout de suite sa demande répétée.
-            listenWithVosk()
-            decision.notice?.let { _events.tryEmit(VoiceInputEvent.Notice(it)) }
-        }
-    }
-
-    /**
-     * Google a échoué sur le flux du casque : la même phrase, reconnue par Vosk en parallèle, est utilisée. Sinon (Vosk
-     * n'a rien entendu non plus), le pilote est prévenu et Vosk écoute sa demande répétée.
-     */
-    private suspend fun useParallelVosk(parallel: Shadow, result: GoogleResult, notice: String?) {
-        val (command, freeText) = withTimeoutOrNull(SHADOW_FLUSH_MS) { parallel.done.await() } ?: ("" to "")
-        if (audioJob == null) return
-        val wake = DriverCommandParser.normalize(wakeWord)
-        val wakeRegex = Regex("^\\s*${Regex.escape(wake)}\\s*")
-        val norm = DriverCommandParser.normalize(command).replace(wakeRegex, "").trim()
-        val free = DriverCommandParser.normalize(freeText).replace(wakeRegex, "").trim().takeIf { it.length >= 2 }
-        // Du bruit seul (« [unk] ») ne compte pas comme une demande.
-        if (norm.replace("[unk]", " ").trim().length >= 2) {
-            fallback.voskHandledRequest()
-            refreshFallbackInfo()
-            _heard.value = freeText.ifBlank { command }
-            _lastSource.value = "Vosk, sur la même phrase (Google : ${result.outcome.label})"
-            _events.tryEmit(VoiceInputEvent.Utterance(norm, free))
-            return
-        }
-        _lastSource.value = "aucune (Google : ${result.outcome.label}, Vosk : rien entendu)"
-        listenWithVosk()
-        notice?.let { _events.tryEmit(VoiceInputEvent.Notice(it)) }
     }
 
     /** Fenêtre d'écoute Vosk sans mot de réveil (après un échec de Google, ou sans Google). */
@@ -528,7 +569,7 @@ class VoskVoiceInput(
             val rest = norm.substring(match.range.last + 1).trim()
             if (rest.length >= 2) {
                 awakeUntil = 0
-                _lastSource.value = "Vosk"
+                log("Vosk", freeText ?: text, "phrase dite d'un trait avec « $wakeWord » (Google n'est essayé qu'après « $wakeWord » seul)")
                 fallback.voskHandledRequest()
                 refreshFallbackInfo()
                 _events.tryEmit(VoiceInputEvent.Utterance(rest, free))
@@ -553,7 +594,7 @@ class VoskVoiceInput(
             awakeUntil = 0
             expiryJob?.cancel()
             _state.value = ListenState.WAITING_WAKE_WORD
-            _lastSource.value = "Vosk"
+            log("Vosk", freeText ?: text, voskReason() ?: "écoute Vosk après « $wakeWord »")
             fallback.voskHandledRequest()
             refreshFallbackInfo()
             _events.tryEmit(VoiceInputEvent.Utterance(norm, free))
@@ -577,6 +618,7 @@ class VoskVoiceInput(
         const val GOOGLE_START_DELAY_MS = 500L
         const val MIC_RELEASE_TIMEOUT_MS = 1_000L
         const val SHADOW_FLUSH_MS = 1_000L
+        const val HISTORY_SIZE = 8
         const val GOOGLE_AFTER_SPEECH_MS = 150L
         const val BEEP_MS = 150L
         const val BEEP_VOLUME = 70

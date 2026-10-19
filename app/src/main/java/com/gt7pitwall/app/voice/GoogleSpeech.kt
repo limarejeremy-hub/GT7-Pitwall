@@ -12,8 +12,13 @@ import android.os.SystemClock
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import com.gt7pitwall.core.radio.GoogleEngine
 import com.gt7pitwall.core.radio.GoogleOutcome
 import com.gt7pitwall.core.radio.SpeechEndpointer
+import com.gt7pitwall.core.radio.StreamAttempt
+import com.gt7pitwall.core.radio.StreamEnginePolicy
+import com.gt7pitwall.core.radio.StreamStats
+import java.io.FileInputStream
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -21,7 +26,17 @@ import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 
 /** Fin d'une écoute Google : le texte s'il y en a un, sinon pourquoi. */
-data class GoogleResult(val text: String?, val outcome: GoogleOutcome, val errorCode: Int? = null)
+data class GoogleResult(
+    val text: String?,
+    val outcome: GoogleOutcome,
+    val errorCode: Int? = null,
+    /** Moteur utilisé (« Google sur l'appareil », « service Google »). */
+    val engine: String? = null,
+    /** Flux du casque : ce que l'essai prouve (flux lu ou non, pourquoi rien n'est sorti). */
+    val note: String? = null,
+    /** Flux du casque : moteur écarté ou Google coupé pour le casque après cet essai. */
+    val switch: String? = null,
+)
 
 /**
  * Diagnostic de la dernière écoute Google, affiché dans l'application. Aucun son n'est enregistré ni journalisé :
@@ -43,8 +58,14 @@ data class GoogleDiag(
     val errorName: String? = null,
     val lastText: String? = null,
     val outcome: GoogleOutcome? = null,
-    /** Flux du casque : Pitwall y a détecté une voix (null : micro du Fold). Voix détectée + « rien compris » = flux ignoré. */
+    /** Flux du casque : Pitwall y a détecté une voix (null : micro du Fold). */
     val streamVoice: Boolean? = null,
+    /** Flux du casque : octets envoyés, lus par la reconnaissance, délais, fermeture. */
+    val stream: String? = null,
+    /** Flux du casque : conclusion de l'essai (flux lu ou non, rien compris...). */
+    val verdict: String? = null,
+    /** Dernière bascule de moteur pour le casque. */
+    val switch: String? = null,
 )
 
 /**
@@ -61,11 +82,43 @@ class GoogleSpeech(private val context: Context) {
     private var recognizer: SpeechRecognizer? = null
     private var preferOnDevice = true
 
+    private val prefs = context.getSharedPreferences("google_stream", Context.MODE_PRIVATE)
+
     /**
-     * Pour le flux du casque : d'abord la reconnaissance sur l'appareil, puis le service Google standard si elle a
-     * répondu « rien compris » alors que Pitwall avait détecté une voix dans le flux (elle ne l'a pas lu).
+     * Moteurs Google pour le flux du casque PS5, appris des essais et mémorisés : un moteur dont on a prouvé qu'il ne
+     * lit pas le flux n'est plus essayé. Le micro du Fold n'est pas concerné.
      */
-    private var externalPreferOnDevice = true
+    val streamPolicy = StreamEnginePolicy().also { policy ->
+        GoogleEngine.entries.forEach { e -> prefs.getString(e.name, null)?.let { policy.disable(e, it) } }
+    }
+
+    private val onDeviceAvailable: Boolean
+        get() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
+
+    /** Google peut être essayé sur le flux du casque : Android 13+ et au moins un moteur pas écarté. */
+    val streamUsable: Boolean
+        get() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && streamPolicy.next(onDeviceAvailable) != null
+
+    /** Pourquoi Google ne sert plus pour le casque (null : il est encore essayé). */
+    val streamOffReason: String?
+        get() = when {
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU -> "Android 13 requis pour donner le flux à Google"
+            streamUsable -> null
+            else -> streamPolicy.disabledReasons().entries.joinToString(" ; ") { (e, why) -> "${e.label} : $why" }
+        }
+
+    /** « Réessayer Google sur le casque » : les moteurs écartés sont de nouveau essayés. */
+    fun resetStream() {
+        streamPolicy.reset()
+        prefs.edit().clear().apply()
+        _diag.value = _diag.value.copy(switch = "moteurs du casque réinitialisés")
+    }
+
+    private fun saveStream() {
+        val e = prefs.edit().clear()
+        streamPolicy.disabledReasons().forEach { (engine, why) -> e.putString(engine.name, why) }
+        e.apply()
+    }
 
     private val _diag = MutableStateFlow(GoogleDiag())
     val diag: StateFlow<GoogleDiag> = _diag.asStateFlow()
@@ -75,27 +128,31 @@ class GoogleSpeech(private val context: Context) {
     val listening: Boolean get() = recognizer != null
 
     /**
-     * Flux audio de l'application (micro du casque PS5) accepté par la reconnaissance : inconnu tant qu'aucun essai
-     * n'a eu lieu, faux après un refus (on n'insiste plus, la radio garde Vosk).
-     */
-    @Volatile
-    var externalAudioSupported: Boolean? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) null else false
-        private set
-
-    /**
      * Écoute une phrase. [onReady] : la reconnaissance écoute vraiment (signal au pilote). [onResult] : le texte, ou
      * la raison de l'échec (code d'erreur Android). Avec [audio], la reconnaissance lit ce flux au lieu du micro.
      */
     fun listenOnce(audio: ExternalAudio? = null, onReady: () -> Unit = {}, onResult: (GoogleResult) -> Unit) {
         cancel()
-        val onDevice = (if (audio != null) externalPreferOnDevice else preferOnDevice) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
+        val engine = if (audio != null) {
+            streamPolicy.next(onDeviceAvailable)
+        } else if (preferOnDevice && onDeviceAvailable) {
+            GoogleEngine.ON_DEVICE
+        } else {
+            GoogleEngine.STANDARD
+        }
+        if (engine == null) {
+            audio?.close()
+            end(GoogleResult(null, GoogleOutcome.ERROR), "Google coupé pour le casque", onResult)
+            return
+        }
+        val onDevice = engine == GoogleEngine.ON_DEVICE
         val started = SystemClock.elapsedRealtime()
         _diag.value = GoogleDiag(
             phase = "démarrage",
-            engine = if (onDevice) "sur l'appareil" else "service Google",
+            engine = engine.label,
             source = if (audio != null) "flux du casque PS5" else "micro du Fold",
             lastText = _diag.value.lastText,
+            switch = _diag.value.switch,
         )
         val sr = try {
             if (onDevice) SpeechRecognizer.createOnDeviceSpeechRecognizer(context) else SpeechRecognizer.createSpeechRecognizer(context)
@@ -105,23 +162,41 @@ class GoogleSpeech(private val context: Context) {
         }
         recognizer = sr
         current = audio
-        audio?.onEnd = { label -> main.post { _diag.value = _diag.value.copy(phase = "flux du casque fermé : $label") } }
         var done = false
         var ready = false
-        fun deliver(result: GoogleResult, phase: String) {
+        fun deliver(raw: GoogleResult, phase: String) {
             if (done) return
             done = true
+            var result = raw.copy(engine = engine.label)
             if (audio != null) {
-                val voice = audio.heardSpeech
-                _diag.value = _diag.value.copy(streamVoice = voice)
-                // Voix bien présente dans le flux, mais rien reconnu : cette reconnaissance n'a pas lu le flux.
-                if (voice && (result.outcome == GoogleOutcome.NO_MATCH || result.outcome == GoogleOutcome.SPEECH_TIMEOUT)) {
-                    if (onDevice) externalPreferOnDevice = false else externalAudioSupported = false
-                }
+                // Mesuré avant de fermer le tube : ce qui y reste n'a pas été lu.
+                val stats = audio.stats()
+                val (verdict, why) = StreamAttempt.assess(result.outcome, result.errorCode, stats)
+                val switch = streamPolicy.record(engine, verdict, why, onDeviceAvailable)
+                if (switch != null) saveStream()
+                result = result.copy(note = why, switch = switch)
+                _diag.value = _diag.value.copy(
+                    streamVoice = stats.voiceHeard,
+                    stream = stats.summary(),
+                    verdict = why,
+                    switch = switch ?: _diag.value.switch,
+                )
             }
             main.removeCallbacksAndMessages(sr)
             finish(sr)
             end(result, phase, onResult)
+        }
+        // Flux fermé par Pitwall (fin de phrase) : Google doit répondre peu après, sinon on n'attend pas son délai.
+        audio?.onEnd = { label ->
+            main.post {
+                if (!done) {
+                    _diag.value = _diag.value.copy(phase = "flux du casque fermé : $label")
+                    main.postAtTime(
+                        { deliver(GoogleResult(null, GoogleOutcome.TIMEOUT), "pas de réponse après la fin du flux") },
+                        sr, SystemClock.uptimeMillis() + STREAM_GRACE_MS,
+                    )
+                }
+            }
         }
         // Jamais prête : on abandonne vite, la radio repasse sur Vosk.
         main.postAtTime({ if (!ready) deliver(GoogleResult(null, GoogleOutcome.NOT_READY), "jamais prête") }, sr, SystemClock.uptimeMillis() + READY_TIMEOUT_MS)
@@ -148,7 +223,6 @@ class GoogleSpeech(private val context: Context) {
             }
 
             override fun onResults(results: Bundle?) {
-                if (audio != null) externalAudioSupported = true
                 val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.takeIf { it.isNotBlank() }
                 if (text == null) {
                     deliver(GoogleResult(null, GoogleOutcome.NO_MATCH), "résultat vide")
@@ -161,18 +235,17 @@ class GoogleSpeech(private val context: Context) {
             override fun onError(error: Int) {
                 // Français non installé pour la reconnaissance sur l'appareil : on passe au service standard.
                 if (onDevice && (error == ERROR_LANGUAGE_NOT_SUPPORTED || error == ERROR_LANGUAGE_UNAVAILABLE) && !done) {
-                    preferOnDevice = false
+                    if (audio != null) {
+                        streamPolicy.disable(GoogleEngine.ON_DEVICE, "français non installé sur l'appareil")
+                        saveStream()
+                    } else {
+                        preferOnDevice = false
+                    }
                     done = true
                     main.removeCallbacksAndMessages(sr)
                     finish(sr)
                     listenOnce(audio?.reopen(), onReady, onResult)
                     return
-                }
-                // Flux audio refusé (reconnaissance qui ne sait lire que le micro) : on ne le proposera plus.
-                if (audio != null && externalAudioSupported == null &&
-                    error != SpeechRecognizer.ERROR_NO_MATCH && error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT
-                ) {
-                    externalAudioSupported = false
                 }
                 _diag.value = _diag.value.copy(errorCode = error, errorName = errorName(error))
                 val outcome = when (error) {
@@ -246,6 +319,9 @@ class GoogleSpeech(private val context: Context) {
         const val TIMEOUT_MS = 12_000L
         const val READY_TIMEOUT_MS = 3_000L
         const val END_SILENCE_MS = 1_200L
+
+        /** Après la fermeture du flux par Pitwall, délai laissé à Google pour rendre sa phrase. */
+        const val STREAM_GRACE_MS = 2_500L
         private const val ERROR_LANGUAGE_NOT_SUPPORTED = 12
         private const val ERROR_LANGUAGE_UNAVAILABLE = 13
 
@@ -279,6 +355,25 @@ class ExternalAudio private constructor(private val pipe: Array<ParcelFileDescri
     val readSide: ParcelFileDescriptor get() = pipe[0]
     private val queue = LinkedBlockingQueue<ByteArray>(MAX_CHUNKS)
 
+    /**
+     * Côté lecture gardé par Pitwall, seulement pour compter ce qui reste dans le tube (jamais lu : available() sur
+     * un tube donne les octets en attente). Pas propriétaire : ne ferme rien.
+     */
+    private val pending = FileInputStream(pipe[0].fileDescriptor)
+    private val openedAt = SystemClock.elapsedRealtime()
+
+    @Volatile
+    private var offeredBytes = 0L
+
+    @Volatile
+    private var writtenBytes = 0L
+
+    @Volatile
+    private var firstByteAt = 0L
+
+    @Volatile
+    private var endLabel: String? = null
+
     @Volatile
     private var open = true
 
@@ -300,6 +395,8 @@ class ExternalAudio private constructor(private val pipe: Array<ParcelFileDescri
                 while (open) {
                     val chunk = queue.poll(POLL_MS, TimeUnit.MILLISECONDS) ?: if (ending) break else continue
                     out.write(chunk)
+                    if (firstByteAt == 0L) firstByteAt = SystemClock.elapsedRealtime()
+                    writtenBytes += chunk.size
                 }
             } catch (e: Exception) {
                 // Lecteur fermé (fin de la reconnaissance) : on s'arrête.
@@ -318,12 +415,27 @@ class ExternalAudio private constructor(private val pipe: Array<ParcelFileDescri
             bytes[2 * i] = samples[i].toInt().toByte()
             bytes[2 * i + 1] = (samples[i].toInt() shr 8).toByte()
         }
-        queue.offer(bytes)
+        if (queue.offer(bytes)) offeredBytes += bytes.size
         // Google lit un flux jusqu'à sa fin : sans fin de flux, il attend jusqu'au délai et ne rend rien.
         endpointer.accept(samples, n)?.let { end ->
             ending = true
+            endLabel = end.label
             onEnd?.invoke(end.label)
         }
+    }
+
+    /** Compteurs de ce flux (à prendre avant [close]). */
+    fun stats(): StreamStats {
+        val unread = if (open && measurable) runCatching { pending.available().toLong() }.getOrNull() else null
+        return StreamStats(
+            offeredBytes = offeredBytes,
+            writtenBytes = writtenBytes,
+            unreadBytes = unread,
+            firstByteMs = firstByteAt.takeIf { it > 0 }?.let { it - openedAt },
+            audioMs = offeredBytes * 1000 / (SAMPLE_RATE * 2),
+            endLabel = endLabel,
+            voiceHeard = endpointer.heardSpeech,
+        )
     }
 
     /** Nouveau flux (nouvel essai de reconnaissance) ; celui-ci est fermé. */
@@ -345,5 +457,21 @@ class ExternalAudio private constructor(private val pipe: Array<ParcelFileDescri
         private const val POLL_MS = 100L
 
         fun create(): ExternalAudio = ExternalAudio(ParcelFileDescriptor.createPipe())
+
+        /**
+         * Le compte des octets en attente dans un tube fonctionne sur ce téléphone (vérifié une fois sur un tube d'essai
+         * de 1 000 octets) : sinon, aucune conclusion « flux lu » ou « non lu » n'est tirée.
+         */
+        private val measurable: Boolean by lazy {
+            runCatching {
+                val (r, w) = ParcelFileDescriptor.createPipe()
+                try {
+                    ParcelFileDescriptor.AutoCloseOutputStream(w).use { it.write(ByteArray(1_000)) }
+                    FileInputStream(r.fileDescriptor).available() == 1_000
+                } finally {
+                    r.close()
+                }
+            }.getOrDefault(false)
+        }
     }
 }

@@ -777,7 +777,7 @@ private fun RadioDiagnosticsCard(voiceInput: VoskVoiceInput, googleOn: Boolean) 
     val handover by voiceInput.handover.collectAsStateWithLifecycle()
     val fallback by voiceInput.fallbackInfo.collectAsStateWithLifecycle()
     val heard by voiceInput.heard.collectAsStateWithLifecycle()
-    val source by voiceInput.lastSource.collectAsStateWithLifecycle()
+    val history by voiceInput.history.collectAsStateWithLifecycle()
     val google = voiceInput.googleSpeech
     val diag by (google?.diag ?: remember { kotlinx.coroutines.flow.MutableStateFlow(com.gt7pitwall.app.voice.GoogleDiag()) })
         .collectAsStateWithLifecycle()
@@ -794,12 +794,29 @@ private fun RadioDiagnosticsCard(voiceInput: VoskVoiceInput, googleOn: Boolean) 
                 diag.maxRmsDb?.let { "niveau max ${"%.1f".format(it)} dB" },
                 diag.streamVoice?.let { if (it) "voix présente dans le flux" else "aucune voix dans le flux" },
             ).joinToString(" • "))
+            diag.stream?.let { DiagLine("Flux transmis", it) }
+            diag.verdict?.let { DiagLine("Conclusion", it, if ("NON lu" in it) PitColors.Red else PitColors.Muted) }
             diag.errorName?.let { DiagLine("Erreur Google", it, PitColors.Red) }
+            diag.switch?.let { DiagLine("Bascule casque", it, PitColors.Yellow) }
             handover?.let { DiagLine("Passage du micro", it, if ("NON" in it) PitColors.Red else PitColors.Muted) }
         }
         fallback?.let { DiagLine("Repli", it, PitColors.Yellow) }
         DiagLine("Dernière phrase", heard.ifBlank { "—" })
-        source?.let { DiagLine("Reconnue par", it) }
+        if (history.isNotEmpty()) {
+            Text("Phrases reconnues (la plus récente en haut)", style = MaterialTheme.typography.labelMedium, color = PitColors.Muted)
+            history.forEach { r ->
+                DiagLine(
+                    "${r.time} • ${r.by}",
+                    listOfNotNull(r.text?.let { "« $it »" }, r.why).joinToString(" — ").ifBlank { "—" },
+                    if (r.text == null) PitColors.Yellow else PitColors.Muted,
+                )
+            }
+        }
+        if (googleOn && google != null && google.streamPolicy.disabledReasons().isNotEmpty()) {
+            OutlinedButton(onClick = { voiceInput.retryGoogleOnHeadset() }, modifier = Modifier.fillMaxWidth()) {
+                Text("Réessayer Google sur le casque PS5")
+            }
+        }
     }
 }
 
