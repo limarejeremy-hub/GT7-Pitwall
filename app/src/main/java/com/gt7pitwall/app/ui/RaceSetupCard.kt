@@ -39,6 +39,10 @@ import com.gt7pitwall.app.ui.theme.PitColors
 import com.gt7pitwall.core.engineer.FrenchFormat
 import com.gt7pitwall.core.knowledge.Course
 import com.gt7pitwall.core.knowledge.Gt7Database
+import com.gt7pitwall.core.race.EventProfile
+import com.gt7pitwall.core.race.ProfileId
+import com.gt7pitwall.core.race.Series
+import com.gt7pitwall.core.race.SessionKind
 import com.gt7pitwall.core.radio.DriverCommand
 import com.gt7pitwall.core.strategy.DataSource
 import com.gt7pitwall.core.strategy.PlanWarning
@@ -56,6 +60,9 @@ fun RaceSetupCard(
     database: Gt7Database,
     onRules: (RaceRules) -> Unit,
     onCommand: (DriverCommand) -> Unit,
+    onProfile: (ProfileId) -> Unit,
+    onProfileInfo: (EventProfile) -> Unit,
+    onConfirmRules: () -> Unit,
 ) {
     var picking by rememberSaveable { mutableStateOf(false) }
     var editingTyres by rememberSaveable { mutableStateOf(false) }
@@ -66,6 +73,8 @@ fun RaceSetupCard(
     ) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("COURSE & STRATÉGIE", style = MaterialTheme.typography.labelMedium, color = PitColors.Muted, letterSpacing = 1.5.sp)
+            EventProfileSection(state, onProfile, onProfileInfo, onConfirmRules)
+            HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
 
             val p = state.snapshot.packet
             Text(
@@ -237,6 +246,98 @@ fun RaceSetupCard(
             onRules(rules.copy(trackId = course?.id))
         }
     }
+}
+
+/**
+ * Épreuve active : chaque épreuve (Sport A, B, C, autre × qualification, course) a son règlement et son historique,
+ * jamais mélangés. Version de GT7 et contexte BoP sont déclarés par le pilote ; le règlement se confirme ici.
+ */
+@Composable
+private fun EventProfileSection(
+    state: PitwallUiState,
+    onProfile: (ProfileId) -> Unit,
+    onProfileInfo: (EventProfile) -> Unit,
+    onConfirmRules: () -> Unit,
+) {
+    val profile = state.profile
+    val id = profile.id
+    Text("Épreuve", style = MaterialTheme.typography.labelSmall, color = PitColors.Muted)
+    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+        Series.entries.forEach { s ->
+            val label = when (s) {
+                Series.DAILY_A -> "A"
+                Series.DAILY_B -> "B"
+                Series.DAILY_C -> "C"
+                Series.OTHER -> "Autre"
+            }
+            if (s == id.series) {
+                Button(onClick = {}, modifier = Modifier.weight(1f)) { Text(label, maxLines = 1) }
+            } else {
+                OutlinedButton(onClick = { onProfile(ProfileId(s, id.kind)) }, modifier = Modifier.weight(1f)) { Text(label, maxLines = 1) }
+            }
+        }
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        SessionKind.entries.forEach { k ->
+            if (k == id.kind) {
+                Button(onClick = {}, modifier = Modifier.weight(1f)) { Text(k.label) }
+            } else {
+                OutlinedButton(onClick = { onProfile(ProfileId(id.series, k)) }, modifier = Modifier.weight(1f)) { Text(k.label) }
+            }
+        }
+    }
+    // Chaque frappe met à jour le profil ; changer la version ou les réglages retire la confirmation du règlement.
+    var version by remember(id) { mutableStateOf(profile.gameVersion ?: "") }
+    var setup by remember(id) { mutableStateOf(profile.setupNote ?: "") }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedTextField(
+            value = version,
+            onValueChange = {
+                version = it.take(12)
+                onProfileInfo(profile.copy(gameVersion = version.trim().ifEmpty { null }))
+            },
+            label = { Text("Version GT7", maxLines = 1) },
+            singleLine = true,
+            modifier = Modifier.weight(1f),
+        )
+        OutlinedTextField(
+            value = setup,
+            onValueChange = {
+                setup = it.take(60)
+                onProfileInfo(profile.copy(setupNote = setup.trim().ifEmpty { null }))
+            },
+            label = { Text("Réglages / BoP", maxLines = 1) },
+            singleLine = true,
+            modifier = Modifier.weight(2f),
+        )
+    }
+    if (profile.confirmed) {
+        Text(
+            "Règlement confirmé" + (profile.eventDate?.let { " le $it" } ?: "") + ".",
+            color = PitColors.Green,
+            style = MaterialTheme.typography.bodySmall,
+        )
+    } else {
+        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+            Text(
+                "Règlement non confirmé : vérifie-le ci-dessous.",
+                Modifier.weight(1f),
+                color = PitColors.Yellow,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            TextButton(onClick = onConfirmRules) { Text("Confirmer") }
+        }
+    }
+    val h = state.history
+    Text(
+        when {
+            h.sameProfile == 0 -> "Historique : aucune session archivée pour cette épreuve (${state.archivedSessions} au total)."
+            else -> "Historique : ${h.comparable} session(s) comparable(s) sur ${h.sameProfile} de cette épreuve " +
+                "(${h.comparableLaps} tours mesurés), dont ${h.sameEvent} avec le même règlement."
+        },
+        color = PitColors.Muted,
+        style = MaterialTheme.typography.bodySmall,
+    )
 }
 
 @Composable

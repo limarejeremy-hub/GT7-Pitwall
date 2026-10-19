@@ -1,51 +1,38 @@
 package com.gt7pitwall.app.settings
 
 import android.content.Context
-import com.gt7pitwall.core.race.RaceStorage
 import com.gt7pitwall.core.knowledge.CarTrackRecord
+import com.gt7pitwall.core.race.ProfileBook
+import com.gt7pitwall.core.race.RaceJson
+import com.gt7pitwall.core.race.RaceStorage
+import com.gt7pitwall.core.race.SessionRecord
 import com.gt7pitwall.core.strategy.RaceRules
-import com.gt7pitwall.core.strategy.TyreCompound
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 
-/** Règlement de la course et mémoire voiture × circuit, conservés sur le téléphone. */
+/**
+ * Règlements par épreuve, mémoire voiture × circuit et sessions archivées, conservés sur le téléphone. Une session
+ * par fichier, écrit de façon atomique : un fichier abîmé ne fait pas perdre les autres.
+ */
 class RaceStore(context: Context) : RaceStorage {
     private val prefs = context.getSharedPreferences("race", Context.MODE_PRIVATE)
+    private val sessionDir = File(context.filesDir, "sessions").apply { mkdirs() }
 
     override fun loadRules(): RaceRules = try {
-        prefs.getString(KEY_RULES, null)?.let { j ->
-            val o = JSONObject(j)
-            RaceRules(
-                totalLaps = o.optInt("totalLaps", 0).takeIf { it > 0 },
-                durationMin = o.optInt("durationMin", 0).takeIf { it > 0 },
-                fuelMultiplier = o.optInt("fuelMultiplier", 1).coerceAtLeast(1),
-                tyreMultiplier = o.optInt("tyreMultiplier", 1).coerceAtLeast(1),
-                mandatoryStops = o.optInt("mandatoryStops", 0).coerceAtLeast(0),
-                allowedTyres = TyreCompound.parseCodes(o.optString("allowedTyres", "")),
-                // Ancien format : texte libre ; seuls les codes reconnus (RH, RM…) sont repris.
-                requiredTyres = TyreCompound.parseCodes(o.optString("requiredTyres", "")),
-                startTyre = TyreCompound.parseCodes(o.optString("startTyre", "")).firstOrNull(),
-                tyreStintLaps = o.optInt("tyreStintLaps", 0).takeIf { it > 0 },
-                trackId = o.optInt("trackId", 0).takeIf { it > 0 },
-            )
-        } ?: RaceRules()
+        prefs.getString(KEY_RULES, null)?.let { RaceJson.rules(JSONObject(it)) } ?: RaceRules()
     } catch (e: Exception) {
         RaceRules()
     }
 
     override fun saveRules(r: RaceRules) {
-        val o = JSONObject()
-            .put("totalLaps", r.totalLaps ?: 0)
-            .put("durationMin", r.durationMin ?: 0)
-            .put("fuelMultiplier", r.fuelMultiplier)
-            .put("tyreMultiplier", r.tyreMultiplier)
-            .put("mandatoryStops", r.mandatoryStops)
-            .put("allowedTyres", TyreCompound.codes(r.allowedTyres))
-            .put("requiredTyres", TyreCompound.codes(r.requiredTyres))
-            .put("startTyre", r.startTyre?.name ?: "")
-            .put("tyreStintLaps", r.tyreStintLaps ?: 0)
-            .put("trackId", r.trackId ?: 0)
-        prefs.edit().putString(KEY_RULES, o.toString()).apply()
+        prefs.edit().putString(KEY_RULES, RaceJson.rules(r).toString()).apply()
+    }
+
+    override fun loadProfiles(): ProfileBook? = prefs.getString(KEY_PROFILES, null)?.let(RaceJson::book)
+
+    override fun saveProfiles(book: ProfileBook) {
+        prefs.edit().putString(KEY_PROFILES, RaceJson.book(book)).apply()
     }
 
     override fun loadMemory(): Map<String, CarTrackRecord> = try {
@@ -59,6 +46,9 @@ class RaceStore(context: Context) : RaceStorage {
                 typicalLapMs = o.optInt("typical", 0).takeIf { it > 0 },
                 fuelPerLapX1 = o.optDouble("fuel", 0.0).toFloat().takeIf { it > 0f },
                 fuelSamples = o.optInt("samples", 0),
+                // Ancienne mémoire, sans épreuve : rangée dans « Autre, course ».
+                scope = o.optString("scope", "").ifBlank { CarTrackRecord.LEGACY_SCOPE },
+                gameVersion = o.optString("gameVersion", "").ifBlank { null },
             )
             rec.key to rec
         }
@@ -76,14 +66,31 @@ class RaceStore(context: Context) : RaceStorage {
                     .put("best", r.bestLapMs ?: 0)
                     .put("typical", r.typicalLapMs ?: 0)
                     .put("fuel", (r.fuelPerLapX1 ?: 0f).toDouble())
-                    .put("samples", r.fuelSamples),
+                    .put("samples", r.fuelSamples)
+                    .put("scope", r.scope)
+                    .put("gameVersion", r.gameVersion ?: ""),
             )
         }
         prefs.edit().putString(KEY_MEMORY, arr.toString()).apply()
     }
 
+    override fun loadSessions(): List<SessionRecord> =
+        sessionDir.listFiles { f -> f.name.endsWith(".json") }.orEmpty().mapNotNull { f ->
+            runCatching { RaceJson.session(f.readText()) }.getOrNull()
+        }
+
+    override fun saveSession(record: SessionRecord) {
+        val name = record.id.filter { it.isLetterOrDigit() || it == '-' } + ".json"
+        val tmp = File(sessionDir, "$name.tmp")
+        runCatching {
+            tmp.writeText(RaceJson.session(record))
+            if (!tmp.renameTo(File(sessionDir, name))) tmp.delete()
+        }
+    }
+
     private companion object {
         const val KEY_RULES = "rules"
+        const val KEY_PROFILES = "profiles"
         const val KEY_MEMORY = "memory"
     }
 }

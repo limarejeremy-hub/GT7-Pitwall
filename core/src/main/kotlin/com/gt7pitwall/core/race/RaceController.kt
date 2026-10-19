@@ -48,6 +48,14 @@ interface RaceStorage {
     fun saveRules(r: RaceRules)
     fun loadMemory(): Map<String, CarTrackRecord>
     fun saveMemory(records: Collection<CarTrackRecord>)
+
+    /** Règlements par épreuve ; null au premier lancement après la mise à jour (migration de l'ancien règlement). */
+    fun loadProfiles(): ProfileBook? = null
+    fun saveProfiles(book: ProfileBook) {}
+
+    /** Sessions archivées, entre les lancements de l'application. */
+    fun loadSessions(): List<SessionRecord> = emptyList()
+    fun saveSession(record: SessionRecord) {}
 }
 
 /**
@@ -68,9 +76,34 @@ class RaceController(
     val ledger = PitLedger()
     private val gMeter = GForceMeter()
 
-    var rules: RaceRules = storage?.loadRules() ?: RaceRules()
+    /** Règlement par épreuve (Sport A, B, C, autre × qualification, course). */
+    private val profiles: ProfileBook = storage?.loadProfiles()
+        ?: ProfileBook.migrate(storage?.loadRules() ?: RaceRules()).also { storage?.saveProfiles(it) }
+
+    /** Règlement de l'épreuve active. */
+    var rules: RaceRules = profiles.current.rules
         private set
     private val memory = (storage?.loadMemory() ?: emptyMap()).toMutableMap()
+
+    /** Épreuve active et ce que le pilote en a déclaré. */
+    val profile: EventProfile get() = profiles.current.profile
+    val profileEntries: Map<ProfileId, ProfileEntry> get() = profiles.entries
+
+    /** Sessions archivées (une session laissée « en cours » par une fermeture brutale est close comme interrompue). */
+    private val sessions = LinkedHashMap<String, SessionRecord>().also { map ->
+        storage?.loadSessions().orEmpty().sortedBy { it.startedAtMs }.forEach { r ->
+            val fixed = if (r.outcome == SessionOutcome.IN_PROGRESS) r.copy(outcome = SessionOutcome.INTERRUPTED).also { storage?.saveSession(it) } else r
+            map[fixed.id] = fixed
+        }
+    }
+    val archivedSessions: List<SessionRecord> get() = sessions.values.toList()
+    val archivedCount: Int get() = sessions.size
+    private var sessionId: String? = null
+    private var sessionStartMs = 0L
+    private var sessionFinished = false
+    private val planLog = mutableListOf<PlanEntry>()
+    private val driverNotes = mutableListOf<DriverNote>()
+    private var rulesReminded = false
 
     var plan: RacePlan? = null
         private set
@@ -116,8 +149,17 @@ class RaceController(
     val snapshot: SessionSnapshot get() = tracker.snapshot
     val course: Course? get() = rules.trackId?.let(database::course)
     val carName: String? get() = snapshot.packet?.let { database.car(it.carCode)?.fullName }
+    /** Mémoire voiture × circuit de l'épreuve active ; écartée si elle a été prise sous une autre version de GT7. */
     val memoryRecord: CarTrackRecord?
-        get() = snapshot.packet?.let { p -> rules.trackId?.let { memory[CarTrackRecord.key(p.carCode, it)] } }
+        get() = snapshot.packet?.let { p -> rules.trackId?.let { memory[CarTrackRecord.key(p.carCode, it, profile.id.code)] } }
+            ?.takeIf { versionsMatch(it.gameVersion, profile.gameVersion) }
+
+    /** Contexte de la session en cours, pour l'archive et les comparaisons. */
+    val sessionContext: SessionContext
+        get() = SessionContext(profile, rules, snapshot.packet?.carCode, snapshot.packet?.fuelCapacity?.takeIf { it > 0f })
+
+    /** Sessions archivées comparables à celle-ci. */
+    val history: HistorySummary get() = HistorySummary.of(sessionContext, sessions.values, excludeId = sessionId)
     val tyresUsed: Set<TyreCompound> get() = ledger.tyresUsed(rules.startTyre)
     val missingTyres: Set<TyreCompound> get() = ledger.missingRequired(rules)
 
@@ -130,6 +172,9 @@ class RaceController(
         lastPacketOnTrack = !p.isLoading && (p.isOnTrack || p.speedKmh > 1f || p.currentLap > 0)
         val events = tracker.update(p)
         gMeter.update(p)?.let { gForce = it }
+        // Nouvelle session : la précédente est archivée avant que le registre des arrêts soit vidé.
+        if (events.any { it is SessionEvent.SessionReset }) closeSession(SessionOutcome.INTERRUPTED)
+        if (events.any { it is SessionEvent.SessionReset || it is SessionEvent.FirstData }) startSession()
         val out = mutableListOf<EngineerMessage>()
         val windowWasOpen = pitWindowPackets > 0
         if (pitWindowPackets > 0) pitWindowPackets--
@@ -142,11 +187,14 @@ class RaceController(
                 pitWindowPackets = 0
                 aiExchanges.clear()
                 intentions.clear()
+                rulesReminded = false
                 pendingConfirmation = null
                 lastAiAnswerMs = null
                 tyreLifeAsked = false
             }
             out += learn(events)
+            if (events.any { it is SessionEvent.RaceFinished }) sessionFinished = true
+            if (events.any { it is SessionEvent.LapCompleted }) out += rulesReminder()
             for (e in events) {
                 if (e is SessionEvent.LapCompleted && plan?.stops?.any { it.endOfLap == e.lap.lapNumber } == true) {
                     pitWindowPackets = PIT_WINDOW_PACKETS
@@ -177,6 +225,7 @@ class RaceController(
         if (!frozen && (events.isNotEmpty() || windowWasOpen)) out += replan()
         fuel = FuelStrategy.compute(tracker.snapshot, plan?.totalLaps)
         out.addAll(0, engineer.onUpdate(events, tracker.snapshot, fuel))
+        if (events.any { it is SessionEvent.LapCompleted || it is SessionEvent.RaceFinished || it is SessionEvent.PitVisitEnded }) saveSession()
         return deliver(out)
     }
 
@@ -259,6 +308,7 @@ class RaceController(
             }
             else -> out += engineer.handle(command, snapshot, fuel)
         }
+        saveSession()
         return deliver(out)
     }
 
@@ -315,6 +365,9 @@ class RaceController(
     fun noteIntention(text: String) {
         intentions.addLast(text)
         while (intentions.size > MAX_INTENTIONS) intentions.removeFirst()
+        driverNotes += DriverNote(snapshot.packet?.currentLap ?: 0, text)
+        while (driverNotes.size > MAX_NOTES) driverNotes.removeAt(0)
+        saveSession()
     }
 
     /**
@@ -388,6 +441,8 @@ class RaceController(
         val snap = snapshot
         val lines = mutableListOf<String>()
         lines += "GT7 ne transmet pas : les positions en course, les adversaires, les écarts, les dégâts, les gommes montées, la météo."
+        lines += "Épreuve : ${profile.id.label}" + if (profile.confirmed) ", règlement confirmé par le pilote." else ", règlement non confirmé."
+        history.let { h -> lines += "Historique : ${h.comparable} session(s) comparable(s) archivée(s), dont ${h.sameEvent} avec le même règlement." }
         carName?.let { lines += "Voiture : $it." }
         course?.let { lines += "Circuit : ${it.label}." }
         for (q in DriverQuery.entries) {
@@ -428,6 +483,40 @@ class RaceController(
         return deliver(replan())
     }
 
+    /** Épreuve choisie à l'écran : son propre règlement est repris, celui de l'épreuve quittée est rangé. */
+    fun selectProfile(id: ProfileId): List<EngineerMessage> {
+        if (id == profiles.active) return emptyList()
+        val entry = profiles.select(id)
+        if (entry.rules.trackId != rules.trackId) trackCandidates = emptyList()
+        rules = entry.rules
+        storage?.saveRules(rules)
+        storage?.saveProfiles(profiles)
+        plan = null
+        val out = replan()
+        saveSession()
+        return deliver(out)
+    }
+
+    /** Version de GT7, contexte de réglages / BoP. */
+    fun updateProfile(p: EventProfile) {
+        profiles.updateProfile(p)
+        storage?.saveProfiles(profiles)
+        saveSession()
+    }
+
+    /** Le pilote confirme le règlement de l'épreuve active ([today] : aaaa-mm-jj). */
+    fun confirmRules(today: String) {
+        profiles.confirm(today)
+        storage?.saveProfiles(profiles)
+        saveSession()
+    }
+
+    /** Télémétrie arrêtée : la session en cours est archivée comme interrompue (sauf si la course est finie). */
+    fun endSession() {
+        closeSession(SessionOutcome.INTERRUPTED)
+        sessionId = null
+    }
+
     // ------------------------------------------------------------------ Règlement et plan
 
     private fun ruleChange(c: DriverCommand.Rule): RaceRules = when (c) {
@@ -441,8 +530,87 @@ class RaceController(
 
     private fun applyRules(newRules: RaceRules) {
         if (newRules.trackId != rules.trackId) trackCandidates = emptyList()
-        rules = newRules
+        rules = profiles.updateRules(newRules).rules
         storage?.saveRules(newRules)
+        storage?.saveProfiles(profiles)
+    }
+
+    // ------------------------------------------------------------------ Archive des sessions
+
+    private fun startSession() {
+        sessionStartMs = clock()
+        sessionId = "$sessionStartMs-${snapshot.packet?.carCode ?: 0}"
+        sessionFinished = false
+        planLog.clear()
+        driverNotes.clear()
+    }
+
+    /** Session en cours, telle qu'elle serait archivée maintenant ; null tant qu'aucun tour n'est bouclé. */
+    fun currentRecord(outcome: SessionOutcome = if (sessionFinished) SessionOutcome.FINISHED else SessionOutcome.IN_PROGRESS): SessionRecord? {
+        val id = sessionId ?: return null
+        // Les tours bouclés après l'arrivée (retour au stand) ne sont pas des tours de course.
+        val total = snapshot.packet?.totalLaps?.takeIf { it > 0 } ?: rules.totalLaps
+        val laps = snapshot.laps.filter { total == null || it.lapNumber <= total }
+        if (laps.isEmpty()) return null
+        return SessionRecord(
+            id = id,
+            context = sessionContext,
+            startedAtMs = sessionStartMs,
+            updatedAtMs = clock(),
+            outcome = outcome,
+            laps = laps.map { LapEntry(it.lapNumber, it.timeMs, it.fuelUsed, it.refuelled) },
+            stops = ledger.stopList.map { StopEntry(it.lap, it.evidence, it.litersAdded) },
+            startTyre = rules.startTyre,
+            tyres = ledger.changes.map { TyreEntry(it.lap, it.compound) },
+            plans = planLog.toList(),
+            notes = driverNotes.toList(),
+        )
+    }
+
+    /** Enregistre la session au fil de l'eau : une fermeture brutale ne perd au plus que le tour en cours. */
+    private fun saveSession() {
+        val r = currentRecord() ?: return
+        sessions[r.id] = r
+        storage?.saveSession(r)
+    }
+
+    /**
+     * Clôt la session en cours. Au changement de session, les tours sont déjà effacés du suivi : on reprend la dernière
+     * version enregistrée (au dernier tour), complétée par le registre des arrêts, encore intact à ce moment.
+     */
+    private fun closeSession(outcome: SessionOutcome) {
+        val final = if (sessionFinished) SessionOutcome.FINISHED else outcome
+        val r = currentRecord(final) ?: sessions[sessionId]?.copy(
+            outcome = final,
+            updatedAtMs = clock(),
+            stops = ledger.stopList.map { StopEntry(it.lap, it.evidence, it.litersAdded) },
+            tyres = ledger.changes.map { TyreEntry(it.lap, it.compound) },
+            plans = planLog.toList(),
+            notes = driverNotes.toList(),
+        ) ?: return
+        sessions[r.id] = r
+        storage?.saveSession(r)
+    }
+
+    /** Une fois par session, au premier tour : règlement non confirmé pour l'épreuve choisie. */
+    private fun rulesReminder(): List<EngineerMessage> {
+        if (rulesReminded || profile.confirmed) return emptyList()
+        rulesReminded = true
+        return listOf(
+            EngineerMessage(
+                "Règlement de l'épreuve ${profile.id.label} non confirmé. Vérifie-le dans la carte Course : je ne m'appuie " +
+                    "sur l'historique que pour des courses comparables.",
+                Priority.INFO,
+                MessageCategory.RADIO,
+                dedupKey = "rules-unconfirmed",
+            ),
+        )
+    }
+
+    private fun versionsMatch(a: String?, b: String?): Boolean {
+        val x = a?.trim()?.takeIf { it.isNotEmpty() }
+        val y = b?.trim()?.takeIf { it.isNotEmpty() }
+        return x == null || y == null || x == y
     }
 
     /**
@@ -502,6 +670,11 @@ class RaceController(
             )
         } else {
             null
+        }
+        val stopLaps = plan?.stops?.map { it.endOfLap } ?: emptyList()
+        if (plan != null && planLog.lastOrNull()?.stopLaps != stopLaps) {
+            planLog += PlanEntry(p.currentLap, stopLaps)
+            while (planLog.size > MAX_PLANS) planLog.removeAt(0)
         }
         return engineer.onPlan(plan, p.currentLap)
     }
@@ -600,6 +773,8 @@ class RaceController(
         const val AI_CONVERSATION_MS = 45_000L
         const val TELEMETRY_LIVE_MS = 3_000L
         const val MAX_INTENTIONS = 3
+        const val MAX_NOTES = 30
+        const val MAX_PLANS = 40
 
         val AI_TOPICS = mapOf(
             DriverQuery.FUEL to "Carburant",
@@ -724,8 +899,11 @@ class RaceController(
             if (e !is SessionEvent.LapCompleted) continue
             val trackId = rules.trackId
             if (trackId != null) {
-                val key = CarTrackRecord.key(p.carCode, trackId)
-                memory[key] = CarTrackMemory.update(memory[key], p.carCode, trackId, listOf(e.lap), rules.fuelMultiplier)
+                val scope = profile.id.code
+                val key = CarTrackRecord.key(p.carCode, trackId, scope)
+                // Mesures prises sous une autre version de GT7 : on repart de zéro plutôt que de les mélanger.
+                val old = memory[key]?.takeIf { versionsMatch(it.gameVersion, profile.gameVersion) }
+                memory[key] = CarTrackMemory.update(old, p.carCode, trackId, listOf(e.lap), rules.fuelMultiplier, scope, profile.gameVersion)
                 storage?.saveMemory(memory.values.toList())
                 continue
             }

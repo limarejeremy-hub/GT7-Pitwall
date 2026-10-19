@@ -59,7 +59,10 @@ class PitwallApp : Application() {
         voiceInput = VoskVoiceInput(voiceModels, voice).also {
             it.wakeWord = settings.wakeWord
             it.limitedVocabulary = settings.limitedVocabulary
-            it.freeTranscription = settings.aiEnabled
+            // Transcription libre toujours active : la forme complète de la phrase (négation, question, futur) protège
+            // les commandes, et les questions complexes en ont besoin, avec ou sans Gemini.
+            it.freeTranscription = true
+            it.googleOnHeadset = settings.googleOnHeadset
             it.googleSpeech = GoogleSpeech(this)
             it.useGoogleSpeech = settings.googleSpeech
             it.remoteMic = { if (settings.discordMicInput) discord.openMicSource() else null }
@@ -80,12 +83,22 @@ class PitwallApp : Application() {
         if (settings.aiEnabled) gemini.enable()
     }
 
-    /** Active ou coupe l'ingénieur IA ; l'écoute redémarre pour ajouter ou retirer la transcription libre. */
+    /** Active ou coupe l'ingénieur IA (la transcription libre de Vosk reste active dans les deux cas). */
     fun setAi(enabled: Boolean) {
         settings.aiEnabled = enabled
-        voiceInput.freeTranscription = enabled
         if (enabled) gemini.enable() else gemini.disable()
-        voiceInput.restart()
+    }
+
+    /** Expérimental : Google sur le flux du casque PS5. */
+    fun setGoogleOnHeadset(enabled: Boolean) {
+        settings.googleOnHeadset = enabled
+        voiceInput.googleOnHeadset = enabled
+    }
+
+    /** Outils de développement : masqués, le banc d'essai est arrêté (ni calcul ni mémoire). */
+    fun setDevTools(enabled: Boolean) {
+        settings.devTools = enabled
+        if (!enabled) bench.stop()
     }
 
     /** Base voitures / circuits de la communauté GT7 (gt7info, MIT-0), embarquée dans l'APK. */

@@ -14,6 +14,9 @@ import com.gt7pitwall.core.engineer.RadioLevel
 import com.gt7pitwall.core.knowledge.CarTrackRecord
 import com.gt7pitwall.core.knowledge.Course
 import com.gt7pitwall.core.knowledge.Gt7Database
+import com.gt7pitwall.core.race.EventProfile
+import com.gt7pitwall.core.race.HistorySummary
+import com.gt7pitwall.core.race.ProfileId
 import com.gt7pitwall.core.race.RaceController
 import com.gt7pitwall.core.race.RaceStorage
 import com.gt7pitwall.core.radio.DriverCommand
@@ -74,6 +77,12 @@ data class PitwallUiState(
     val tyreAgeLaps: Int = 0,
     /** L'ingénieur attend « oui / non » à « As-tu changé les pneus ? ». */
     val askTyreChange: Boolean = false,
+    /** Épreuve active (Sport A/B/C, qualification ou course) et ce que le pilote en a déclaré. */
+    val profile: EventProfile = EventProfile(),
+    /** Sessions archivées comparables à celle-ci. */
+    val history: HistorySummary = HistorySummary.EMPTY,
+    /** Sessions archivées, toutes épreuves confondues. */
+    val archivedSessions: Int = 0,
 )
 
 /**
@@ -125,6 +134,7 @@ class PitwallEngine(
     private var collectJob: Job? = null
     private var replanJob: Job? = null
     private var lastPublishMs = 0L
+    private var lastHistoryMs = 0L
 
     init {
         voiceInput?.let { input -> scope.launch { input.events.collect { onVoice(it) } } }
@@ -146,6 +156,8 @@ class PitwallEngine(
         collectJob?.cancel()
         collectJob = null
         _running.value = false
+        // La session en cours est archivée (interrompue, sauf si la course est finie).
+        scope.launch { mutex.withLock { race.endSession() } }
     }
 
     /** Question du pilote via les boutons de l'écran. */
@@ -159,13 +171,51 @@ class PitwallEngine(
         }
     }
 
+    /** Règlement en cours de saisie, pas encore appliqué. */
+    @Volatile
+    private var pendingRules: RaceRules? = null
+
     /** Règlement saisi à l'écran : affiché tout de suite, appliqué (enregistré + replanifié) quand la saisie s'arrête. */
     fun setRules(rules: RaceRules) {
         _rules.value = rules
+        pendingRules = rules
         replanJob?.cancel()
         replanJob = scope.launch {
             delay(RULES_DEBOUNCE_MS)
-            val messages = mutex.withLock { race.setRules(rules).also { publish(force = true) } }
+            val messages = mutex.withLock {
+                pendingRules = null
+                race.setRules(rules).also { publish(force = true) }
+            }
+            messages.forEach(::deliver)
+        }
+    }
+
+    /** Une saisie en cours est appliquée à l'épreuve où elle a été faite, avant tout changement d'épreuve. */
+    private fun flushRules(): List<EngineerMessage> {
+        replanJob?.cancel()
+        val r = pendingRules ?: return emptyList()
+        pendingRules = null
+        return race.setRules(r)
+    }
+
+    /** Épreuve choisie à l'écran (Sport A/B/C, qualification ou course) : son propre règlement est repris. */
+    fun selectProfile(id: ProfileId) {
+        scope.launch {
+            val messages = mutex.withLock { (flushRules() + race.selectProfile(id)).also { publish(force = true) } }
+            messages.forEach(::deliver)
+        }
+    }
+
+    /** Version de GT7 et contexte de réglages / BoP de l'épreuve active. */
+    fun updateProfile(profile: EventProfile) {
+        scope.launch { mutex.withLock { race.updateProfile(profile).also { publish(force = true) } } }
+    }
+
+    /** Le pilote confirme le règlement de l'épreuve active. */
+    fun confirmRules() {
+        val today = java.time.LocalDate.now().toString()
+        scope.launch {
+            val messages = mutex.withLock { flushRules().also { race.confirmRules(today); publish(force = true) } }
             messages.forEach(::deliver)
         }
     }
@@ -257,6 +307,9 @@ class PitwallEngine(
             missingTyres = race.missingTyres,
             tyreAgeLaps = race.ledger.tyreAge((race.snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)),
             askTyreChange = race.ledger.awaitingTyreChangeAnswer,
+            profile = race.profile,
+            history = if (force || now - lastHistoryMs > HISTORY_REFRESH_MS) race.history.also { lastHistoryMs = now } else _state.value.history,
+            archivedSessions = race.archivedCount,
         )
     }
 
@@ -271,5 +324,6 @@ class PitwallEngine(
         const val UI_REFRESH_MS = 50L
         const val MAX_RADIO_LOG = 50
         const val RULES_DEBOUNCE_MS = 1_500L
+        const val HISTORY_REFRESH_MS = 2_000L
     }
 }

@@ -58,6 +58,8 @@ class MainActivity : ComponentActivity() {
                     onDiscordMirror = app::setDiscordMirror,
                     onDiscordMic = app::setDiscordMic,
                     onAiToggle = app::setAi,
+                    onGoogleOnHeadset = app::setGoogleOnHeadset,
+                    onDevTools = app::setDevTools,
                     onStart = { address ->
                         app.settings.ps5Address = address
                         TelemetryService.start(this, address)

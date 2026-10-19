@@ -101,6 +101,8 @@ fun PitwallScreen(
     onDiscordMirror: (Boolean) -> Unit,
     onDiscordMic: (Boolean) -> Unit,
     onAiToggle: (Boolean) -> Unit,
+    onGoogleOnHeadset: (Boolean) -> Unit,
+    onDevTools: (Boolean) -> Unit,
     onStart: (String) -> Unit,
     onStop: () -> Unit,
     onVoiceInputToggle: (Boolean) -> Unit,
@@ -123,6 +125,8 @@ fun PitwallScreen(
     var discordAutoJoin by rememberSaveable { mutableStateOf(settings.discordAutoJoin) }
     var discordMirror by rememberSaveable { mutableStateOf(settings.discordMirrorPhone) }
     var discordMic by rememberSaveable { mutableStateOf(settings.discordMicInput) }
+    var googleHeadset by rememberSaveable { mutableStateOf(settings.googleOnHeadset) }
+    var devTools by rememberSaveable { mutableStateOf(settings.devTools) }
     val micLabel by voiceInput.micLabel.collectAsStateWithLifecycle()
     val aiState by gemini.state.collectAsStateWithLifecycle()
     val aiDetail by gemini.detail.collectAsStateWithLifecycle()
@@ -161,8 +165,21 @@ fun PitwallScreen(
                 voiceInput.useGoogleSpeech = it
             },
         )
-        RadioDiagnosticsCard(voiceInput, googleSpeech)
-        BenchCard(bench)
+        RadioDiagnosticsCard(
+            voiceInput,
+            googleSpeech,
+            googleHeadset = googleHeadset,
+            onGoogleHeadset = {
+                googleHeadset = it
+                onGoogleOnHeadset(it)
+            },
+            devTools = devTools,
+            onDevTools = {
+                devTools = it
+                onDevTools(it)
+            },
+        )
+        if (devTools) BenchCard(bench)
         DiscordCard(
             discord = discord,
             autoJoin = discordAutoJoin,
@@ -247,7 +264,7 @@ fun PitwallScreen(
                         connectionCard()
                     }
                     ScrollColumn(Modifier.weight(1f)) {
-                        RaceSetupCard(state, rules, engine.database, engine::setRules, engine::command)
+                        RaceSetupCard(state, rules, engine.database, engine::setRules, engine::command, engine::selectProfile, engine::updateProfile, engine::confirmRules)
                         TrackMapCard(state.snapshot.trackOutline, state.snapshot.packet)
                         FuelCard(state.fuel, state.snapshot.packet)
                         RadioCard(radio, engine::command)
@@ -261,7 +278,7 @@ fun PitwallScreen(
                     DriveCard(state.snapshot.packet)
                     LapCard(state)
                     FuelCard(state.fuel, state.snapshot.packet)
-                    RaceSetupCard(state, rules, engine.database, engine::setRules, engine::command)
+                    RaceSetupCard(state, rules, engine.database, engine::setRules, engine::command, engine::selectProfile, engine::updateProfile, engine::confirmRules)
                     CarCard(state.snapshot.packet, state.gForce)
                     TrackMapCard(state.snapshot.trackOutline, state.snapshot.packet)
                     RadioCard(radio, engine::command)
@@ -775,7 +792,14 @@ private fun LapHistoryCard(laps: List<LapRecord>) {
  * délai avant qu'elle soit prête, niveau sonore reçu, code d'erreur, passage du micro et repli sur Vosk. Aucun son.
  */
 @Composable
-private fun RadioDiagnosticsCard(voiceInput: VoskVoiceInput, googleOn: Boolean) {
+private fun RadioDiagnosticsCard(
+    voiceInput: VoskVoiceInput,
+    googleOn: Boolean,
+    googleHeadset: Boolean,
+    onGoogleHeadset: (Boolean) -> Unit,
+    devTools: Boolean,
+    onDevTools: (Boolean) -> Unit,
+) {
     val listen by voiceInput.state.collectAsStateWithLifecycle()
     val mic by voiceInput.micLabel.collectAsStateWithLifecycle()
     val handover by voiceInput.handover.collectAsStateWithLifecycle()
@@ -816,7 +840,20 @@ private fun RadioDiagnosticsCard(voiceInput: VoskVoiceInput, googleOn: Boolean) 
                 )
             }
         }
-        if (googleOn && google != null && google.streamPolicy.disabledReasons().isNotEmpty()) {
+        SwitchLine(
+            "Essayer Google sur le casque PS5 (expérimental)",
+            "Désactivé : le casque passe par Vosk seul (Google ne lit pas ce flux sur ton Fold). Google reste utilisé " +
+                "sur le micro du Fold.",
+            googleHeadset,
+            onGoogleHeadset,
+        )
+        SwitchLine(
+            "Outils de développement",
+            "Affiche le banc d'essai de reconnaissance (sherpa-onnx). Masqué, il est arrêté : ni calcul ni mémoire.",
+            devTools,
+            onDevTools,
+        )
+        if (googleHeadset && googleOn && google != null && google.streamPolicy.disabledReasons().isNotEmpty()) {
             OutlinedButton(onClick = { voiceInput.retryGoogleOnHeadset() }, modifier = Modifier.fillMaxWidth()) {
                 Text("Réessayer Google sur le casque PS5")
             }
@@ -925,6 +962,17 @@ private fun BenchCard(bench: SherpaBench) {
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun SwitchLine(title: String, detail: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyMedium)
+            Text(detail, style = MaterialTheme.typography.bodySmall, color = PitColors.Muted)
+        }
+        Switch(checked = checked, onCheckedChange = onChange)
     }
 }
 

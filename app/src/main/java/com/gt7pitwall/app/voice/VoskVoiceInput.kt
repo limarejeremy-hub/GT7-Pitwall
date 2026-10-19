@@ -133,6 +133,7 @@ class VoskVoiceInput(
         return when {
             !useGoogleSpeech -> "Google désactivé dans les réglages"
             g == null || !g.available -> "Google indisponible sur ce téléphone"
+            !phoneMicInUse && !googleOnHeadset -> "casque PS5 : Vosk (Google n'y est pas utilisé)"
             !phoneMicInUse && !g.streamUsable -> "Google coupé pour le casque (${g.streamOffReason})"
             fallback.suspended -> "Google suspendu après ${fallback.consecutiveFailures} échecs"
             fallback.voskForNextRequest -> "Google vient d'échouer"
@@ -166,6 +167,7 @@ class VoskVoiceInput(
     private fun refreshFallbackInfo() {
         val g = googleSpeech
         _fallbackInfo.value = when {
+            !phoneMicInUse && !googleOnHeadset -> null
             !phoneMicInUse && useGoogleSpeech && g != null && !g.streamUsable ->
                 "Google coupé pour le casque PS5 : Vosk seul, sans attente. ${g.streamOffReason}. Le micro du Fold garde Google."
             fallback.suspended -> "Google suspendu après ${fallback.consecutiveFailures} échecs : Vosk pour toutes les demandes " +
@@ -180,8 +182,21 @@ class VoskVoiceInput(
      * reconnaissance l'accepte (Android 13+).
      */
     private fun google(): GoogleSpeech? = googleSpeech?.takeIf {
-        useGoogleSpeech && fallback.useGoogle(it.available, phoneMicInUse, if (it.streamUsable) null else false)
+        useGoogleSpeech && (phoneMicInUse || googleOnHeadset) &&
+            fallback.useGoogle(it.available, phoneMicInUse, if (it.streamUsable) null else false)
     }
+
+    /**
+     * Expérimental : essayer Google sur le flux du casque PS5. Désactivé par défaut : sur le Fold, Google ne lit pas ce
+     * flux (mesuré) ; le casque passe par Vosk seul, sans attente ni échec.
+     */
+    @Volatile
+    var googleOnHeadset: Boolean = false
+        set(value) {
+            field = value
+            streamFallback.reset()
+            refreshFallbackInfo()
+        }
 
     @Volatile
     private var paused = false

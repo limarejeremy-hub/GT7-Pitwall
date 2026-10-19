@@ -2,8 +2,11 @@ package com.gt7pitwall.core
 
 import com.gt7pitwall.core.engineer.EngineerMessage
 import com.gt7pitwall.core.knowledge.CarTrackRecord
+import com.gt7pitwall.core.race.ProfileBook
 import com.gt7pitwall.core.race.RaceController
+import com.gt7pitwall.core.race.RaceJson
 import com.gt7pitwall.core.race.RaceStorage
+import com.gt7pitwall.core.race.SessionRecord
 import com.gt7pitwall.core.strategy.RaceRules
 import com.gt7pitwall.core.telemetry.TelemetryPacket
 import com.gt7pitwall.core.telemetry.TelemetryParser
@@ -11,8 +14,28 @@ import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
 
-/** Stockage en mémoire pour vérifier que le règlement est bien enregistré. */
-class FakeStorage(var rules: RaceRules = RaceRules(), val memory: MutableMap<String, CarTrackRecord> = mutableMapOf()) : RaceStorage {
+/**
+ * Stockage en mémoire pour vérifier que le règlement, les profils et les sessions sont bien enregistrés. Profils et
+ * sessions passent par leur JSON, comme sur le téléphone.
+ */
+class FakeStorage(
+    var rules: RaceRules = RaceRules(),
+    val memory: MutableMap<String, CarTrackRecord> = mutableMapOf(),
+    var profilesJson: String? = null,
+    val sessionsJson: MutableMap<String, String> = linkedMapOf(),
+) : RaceStorage {
+    var sessionSaves = 0
+    override fun loadProfiles(): ProfileBook? = profilesJson?.let(RaceJson::book)
+    override fun saveProfiles(book: ProfileBook) {
+        profilesJson = RaceJson.book(book)
+    }
+    override fun loadSessions(): List<SessionRecord> = sessionsJson.values.mapNotNull(RaceJson::session)
+    override fun saveSession(record: SessionRecord) {
+        sessionsJson[record.id] = RaceJson.session(record)
+        sessionSaves++
+    }
+    val sessions: List<SessionRecord> get() = loadSessions()
+
     var saves = 0
     override fun loadRules() = rules
     override fun saveRules(r: RaceRules) {

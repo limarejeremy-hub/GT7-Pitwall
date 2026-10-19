@@ -61,8 +61,20 @@ class SettingsStore(context: Context) {
         get() = prefs.getBoolean(KEY_DISCORD_MIC, true)
         set(value) = prefs.edit().putBoolean(KEY_DISCORD_MIC, value).apply()
 
+    /** Expérimental : essayer Google sur le flux du casque PS5 (désactivé : Vosk seul sur le casque, fiable). */
+    var googleOnHeadset: Boolean
+        get() = prefs.getBoolean(KEY_GOOGLE_HEADSET, false)
+        set(value) = prefs.edit().putBoolean(KEY_GOOGLE_HEADSET, value).apply()
+
+    /** Outils de développement (banc d'essai de reconnaissance) affichés. */
+    var devTools: Boolean
+        get() = prefs.getBoolean(KEY_DEV_TOOLS, false)
+        set(value) = prefs.edit().putBoolean(KEY_DEV_TOOLS, value).apply()
+
     companion object {
         private const val KEY_DISCORD_MIC = "discord_mic_input"
+        private const val KEY_GOOGLE_HEADSET = "google_on_headset"
+        private const val KEY_DEV_TOOLS = "dev_tools"
         private const val KEY_DISCORD_AUTO_JOIN = "discord_auto_join"
         private const val KEY_DISCORD_MIRROR = "discord_mirror_phone"
         private const val KEY_GOOGLE_SPEECH = "google_speech"
