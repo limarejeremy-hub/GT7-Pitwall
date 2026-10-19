@@ -1,3 +1,4 @@
+import java.net.URI
 import java.security.MessageDigest
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
@@ -150,7 +151,7 @@ val downloadSherpaAar by tasks.registering {
         fun sha(f: File) = MessageDigest.getInstance("SHA-256").digest(f.readBytes()).joinToString("") { "%02x".format(it) }
         if (out.isFile && sha(out) == SHERPA_SHA256) return@doLast
         val url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/v$SHERPA_VERSION/sherpa-onnx-$SHERPA_VERSION.aar"
-        java.net.URI(url).toURL().openStream().use { input -> out.outputStream().use { input.copyTo(it) } }
+        URI(url).toURL().openStream().use { input -> out.outputStream().use { input.copyTo(it) } }
         val got = sha(out)
         check(got == SHERPA_SHA256) { "sherpa-onnx $SHERPA_VERSION : empreinte $got au lieu de $SHERPA_SHA256" }
     }
