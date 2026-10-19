@@ -43,6 +43,7 @@ class RadioConversation(
                 race.localReply(route.question, LocalReplies.text(route.intent, race.telemetryLive()))
             }
             route is RadioAi.Route.NoRaceData -> mutex.withLock { race.localReply(route.question, LocalReplies.NO_RACE_DATA) }
+            route is RadioAi.Route.Help -> mutex.withLock { help(route.question, route.topic) }
             route is RadioAi.Route.Ai && model != null && model.ready -> ask(model, route.question, onThinking)
             route is RadioAi.Route.Ai && model != null && DriverCommandParser.parse(text) == null -> listOf(
                 EngineerMessage("Toi : ${route.question}", Priority.INFO, MessageCategory.DRIVER),
@@ -52,8 +53,18 @@ class RadioConversation(
         }
     }
 
+    /** Ce que l'ingénieur fera sur ce sujet ; en course, suivi de la valeur calculée du moment. */
+    private fun help(question: String, topic: HelpTopic): List<EngineerMessage> {
+        val live = race.telemetryLive()
+        val out = race.localReply(question, LocalReplies.help(topic, live))
+        val query = topic.query ?: return out
+        if (!live) return out
+        return out + race.command(com.gt7pitwall.core.radio.DriverCommand.Ask(query))
+    }
+
     /** Question posée à l'IA (radio ou écran). Un message simple reçoit d'abord la réponse de l'ingénieur. */
     suspend fun ask(model: LanguageModel, question: String, onThinking: (EngineerMessage) -> Unit = {}): List<EngineerMessage> {
+        IntentClassifier.helpTopic(question)?.let { topic -> return mutex.withLock { help(question, topic) } }
         val asked = IntentClassifier.classify(question)
         if (asked in IntentClassifier.LOCAL) {
             return mutex.withLock { race.localReply(question, LocalReplies.text(asked, race.telemetryLive())) }

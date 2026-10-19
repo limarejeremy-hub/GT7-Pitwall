@@ -277,6 +277,47 @@ class ConversationIntentTest {
         for ((s, intent) in expected) assertEquals(intent, IntentClassifier.classify(s), s)
     }
 
+    // ------------------------------------------------------------------ Questions sur l'aide de l'ingénieur
+
+    @Test
+    fun askingHowTheEngineerWillHelpIsNotAnAskForTheCurrentValue() {
+        // Essai réel : « si je suis en galère d'essence tu vas m'aider » recevait « Je n'ai pas encore de télémétrie. »
+        val model = ScriptedModel()
+        val conv = RadioConversation(RaceController())
+        val fuel = answers(say(conv, model, "si je suis en galère d'essence tu vas m'aider"))
+        assertTrue(fuel.single().text.startsWith("Oui, compte sur moi") && "consommation" in fuel.single().text, fuel.toString())
+        assertTrue(fuel.single().text.endsWith(LocalReplies.NO_TELEMETRY))
+        assertFalse(Regex("\\d").containsMatchIn(fuel.single().text), "aucune donnée inventée")
+
+        val race = answers(say(conv, model, "pendant les courses tu vas m'aider comment"))
+        assertTrue(race.single().text.startsWith("Pendant la course"), race.toString())
+        val tyres = answers(say(conv, model, "tu pourras me prévenir pour les pneus ?"))
+        assertTrue("pneus" in tyres.single().text && "changer" in tyres.single().text, tyres.toString())
+        assertTrue(model.prompts.isEmpty())
+    }
+
+    @Test
+    fun inARaceTheHelpAnswerIsFollowedByTheRealCalculation() {
+        val c = RaceController()
+        RaceSim(c, totalLaps = 10, perLap = 2f).apply { start(); driveLaps(3) }
+        val out = answers(say(RadioConversation(c), null, "si je suis en galère d'essence tu vas m'aider"))
+        assertEquals(2, out.size, out.toString())
+        assertFalse(LocalReplies.NO_TELEMETRY in out[0].text)
+        assertEquals(c.engineer.answer(DriverQuery.FUEL, c.snapshot, c.fuel).text, out[1].text)
+    }
+
+    @Test
+    fun helpQuestionsDoNotHijackRealRequests() {
+        // Demande immédiate : le calcul.
+        assertIs<RadioAi.Route.Parser>(RadioAi.route("combien d'essence", "tu peux me dire combien d'essence il reste"))
+        // Demande de conseil : du coaching, pour Gemini.
+        assertEquals(null, IntentClassifier.helpTopic("tu peux m'aider à mieux freiner ?"))
+        assertIs<RadioAi.Route.Ai>(RadioAi.route("tu peux m'aider à mieux freiner", "tu peux m'aider à mieux freiner"))
+        // Déclaration : une commande, même avec une demande d'aide.
+        assertIs<RadioAi.Route.Parser>(RadioAi.route("je suis cinquième", "je suis cinquième"))
+        assertEquals(com.gt7pitwall.core.ai.HelpTopic.STOPS, IntentClassifier.helpTopic("tu vas m'aider pour les arrêts au stand ?"))
+    }
+
     // ------------------------------------------------------------------ Non-régression : commandes et radio Discord
 
     @Test

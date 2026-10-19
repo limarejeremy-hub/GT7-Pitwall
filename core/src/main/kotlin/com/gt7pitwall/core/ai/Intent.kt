@@ -33,6 +33,21 @@ enum class Intent {
 }
 
 /**
+ * « Si je suis en galère d'essence, tu vas m'aider ? », « pendant les courses tu vas m'aider comment ? » : le pilote
+ * demande ce que l'ingénieur fera pour lui, sur un sujet, pas la valeur du moment. Répondre « je n'ai pas de
+ * télémétrie » serait à côté de la question.
+ */
+enum class HelpTopic(val query: com.gt7pitwall.core.radio.DriverQuery?) {
+    FUEL(com.gt7pitwall.core.radio.DriverQuery.FUEL),
+    TYRES(com.gt7pitwall.core.radio.DriverQuery.TYRE_CHANGE),
+    STOPS(com.gt7pitwall.core.radio.DriverQuery.PLAN),
+    RULES(null),
+    POSITION(null),
+    DRIVING(null),
+    RACE(null),
+}
+
+/**
  * Comprendre l'intention avant de répondre. Les sujets précis (pilotage, stratégie) passent avant les formules de
  * conversation : « tu comprends mon problème de sous-virage ? » est une question de pilotage, pas un test radio.
  * Les formules de conversation doivent couvrir toute la phrase (aux mots de remplissage près), jamais un morceau.
@@ -106,6 +121,36 @@ object IntentClassifier {
         whole("(c'est quoi|qu'est ce que c'est) pitwall"),
     )
 
+    /** Demande d'aide future ou hypothétique (« tu vas m'aider ? », « si je… tu… ? »), pas une demande immédiate. */
+    private val HELP = Regex(
+        "\\btu (vas|va|pourras|pourrais|sauras|saurais|peux|pourrait) (m'aider|m'aide|me venir en aide|me prevenir|m'avertir|me sauver|faire quoi|faire comment)" +
+            "|\\btu m'aideras|\\btu me previendras|\\btu m'avertiras|\\btu me diras quoi|\\btu es capable|\\bt'es capable" +
+            "|\\bcomment (tu vas|tu peux|est ce que tu vas|est ce que tu peux) m'aider|\\btu (vas|peux) m'aider comment" +
+            "|\\ben quoi tu (vas|peux) m'aider|\\btu sers a quoi|\\btu fais quoi (pendant|en|quand)",
+    )
+
+    /** Demande d'un conseil maintenant (« tu peux m'aider à mieux freiner ? ») : c'est du coaching, pas une présentation. */
+    private val ASK_ADVICE = Regex("m'aider a (mieux |etre |aller |gagner |ameliorer |progresser |freiner |passer |prendre |sortir |gerer )")
+
+    /** Sujet d'une question sur l'aide de l'ingénieur, ou null si ce n'en est pas une. */
+    fun helpTopic(text: String): HelpTopic? {
+        val t = clean(text)
+        val hypothetical = Regex("^(et )?si (je|j'|on|il|y a)").containsMatchIn(t) && Regex("\\btu\\b").containsMatchIn(t)
+        if (!HELP.containsMatchIn(t) && !hypothetical) return null
+        if (ASK_ADVICE.containsMatchIn(t)) return null
+        val split = " " + t.replace('\'', ' ') + " "
+        fun has(vararg w: String) = w.any { " $it" in split }
+        return when {
+            has("essence", "carburant", "conso", "consommation", "litre", "litres", "panne") -> HelpTopic.FUEL
+            has("pneu", "pneus", "gomme", "gommes", "usure") -> HelpTopic.TYRES
+            has("arret", "arrets", "stand", "stands", "box", "plein", "ravitaill") -> HelpTopic.STOPS
+            has("reglement", "obligatoire", "obligation", "penalite") -> HelpTopic.RULES
+            has("position", "classement", "place", "depasse", "double") -> HelpTopic.POSITION
+            COACHING_WORDS.any { " $it" in split } -> HelpTopic.DRIVING
+            else -> HelpTopic.RACE
+        }
+    }
+
     fun classify(text: String): Intent {
         val t = clean(text)
         if (t.isEmpty()) return Intent.OTHER
@@ -161,6 +206,34 @@ object LocalReplies {
                 "le règlement, et je réponds à tes questions de pilotage ou de stratégie. Dis « radio » puis ta question." +
                 if (telemetryLive) "" else " $NO_TELEMETRY"
         else -> error("Pas de réponse locale pour $intent")
+    }
+
+    /** Ce que l'ingénieur fera pour le pilote sur ce sujet : vrai, sans aucune donnée de course. */
+    fun help(topic: HelpTopic, telemetryLive: Boolean): String {
+        val text = when (topic) {
+            HelpTopic.FUEL ->
+                "Oui, compte sur moi. Je mesure ta consommation à chaque tour : je te dis pour combien de tours il te reste " +
+                    "de l'essence, et je te préviens s'il faut économiser ou rentrer au stand."
+            HelpTopic.TYRES ->
+                "Oui. Je suis la température de tes pneus et les tours faits avec le train actuel ; avec la durée de vie que " +
+                    "tu m'indiques, je te dis quand les changer."
+            HelpTopic.STOPS ->
+                "Oui. Avec le règlement et ta consommation, je calcule quand t'arrêter et combien d'essence remettre, et je " +
+                    "recalcule après chaque arrêt."
+            HelpTopic.RULES ->
+                "Oui : donne-moi le règlement, par exemple « course de 12 tours » ou « arrêt obligatoire », et je l'applique " +
+                    "à toute la stratégie."
+            HelpTopic.POSITION ->
+                "GT7 ne me transmet pas les positions en course : annonce-moi la tienne, « je suis cinquième », et je la " +
+                    "suivrai tour après tour."
+            HelpTopic.DRIVING ->
+                "Oui. Avec la télémétrie, je repère les blocages de roue, les patinages, ta régularité et le secteur où tu " +
+                    "perds du temps, et je te donne un geste précis à travailler."
+            HelpTopic.RACE ->
+                "Pendant la course, je te donne à chaque tour ton chrono, l'essence qui reste et le plan d'arrêt ; je te " +
+                    "préviens si l'essence ou les pneus deviennent critiques, et tu peux me poser tes questions à la radio."
+        }
+        return if (telemetryLive) text else "$text $NO_TELEMETRY"
     }
 
     /** Question de stratégie libre sans télémétrie : rien à calculer, on le dit sans inventer. */

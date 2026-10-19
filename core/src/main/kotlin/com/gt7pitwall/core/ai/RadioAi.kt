@@ -58,6 +58,9 @@ object RadioAi {
         /** Message simple (test radio, salut, merci…) : l'ingénieur répond lui-même, tout de suite, sans Gemini. */
         data class Local(val question: String, val intent: Intent) : Route
 
+        /** Question sur l'aide de l'ingénieur (« tu vas m'aider pour l'essence ? ») : réponse sur ce qu'il fera. */
+        data class Help(val question: String, val topic: HelpTopic) : Route
+
         /** Question de stratégie libre sans télémétrie : rien à calculer, réponse honnête sans Gemini. */
         data class NoRaceData(val question: String) : Route
     }
@@ -99,6 +102,9 @@ object RadioAi {
         if (statefulCommand) return Route.Parser(clean)
         // Comprendre d'abord : test radio, présence, salut, merci, « que sais-tu faire ? » ont leur réponse à eux,
         // jamais un conseil de pilotage. Les sujets précis (pilotage, stratégie) ne sont jamais pris pour ces formules.
+        // « Si je suis en galère d'essence, tu vas m'aider ? » : une question sur l'aide de l'ingénieur, à ne pas
+        // confondre avec « combien d'essence ? » malgré le mot « essence ».
+        IntentClassifier.helpTopic(question)?.let { return Route.Help(question, it) }
         val intent = IntentClassifier.classify(question)
         if (intent in IntentClassifier.LOCAL) return Route.Local(question, intent)
         // « Répète » : toujours compris, même en pleine conversation (un mot seul n'y est pas un fragment).
