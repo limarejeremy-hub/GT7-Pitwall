@@ -10,13 +10,11 @@ import com.gt7pitwall.app.settings.RaceStore
 import com.gt7pitwall.app.settings.SettingsStore
 import com.gt7pitwall.core.knowledge.Gt7Database
 import com.gt7pitwall.core.radio.RoutedVoiceOutput
-import com.gt7pitwall.app.discord.DiscordState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import com.gt7pitwall.app.voice.TtsVoiceOutput
 import com.gt7pitwall.app.voice.GoogleSpeech
@@ -62,7 +60,8 @@ class PitwallApp : Application() {
         }
         // Le bot entre dans le salon ou en sort : l'écoute bascule entre le micro du casque PS5 et celui du Fold.
         CoroutineScope(SupervisorJob() + Dispatchers.Main).launch {
-            discord.state.map { it == DiscordState.IN_VOICE }.distinctUntilChanged().drop(1).collect {
+            // Bot dans le salon ET pilote présent : seul dans un salon vide, le bot ne prend pas le micro.
+            discord.liveFlow.distinctUntilChanged().drop(1).collect {
                 if (settings.discordMicInput) voiceInput.restart()
             }
         }

@@ -16,6 +16,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -31,7 +32,10 @@ import net.dv8tion.jda.api.audio.OpusPacket
 import net.dv8tion.jda.api.audio.AudioSendHandler
 import net.dv8tion.jda.api.audio.hooks.ConnectionListener
 import net.dv8tion.jda.api.audio.hooks.ConnectionStatus
+import net.dv8tion.jda.api.events.guild.voice.GuildVoiceUpdateEvent
 import net.dv8tion.jda.api.exceptions.InvalidTokenException
+import net.dv8tion.jda.api.hooks.ListenerAdapter
+import net.dv8tion.jda.api.utils.MemberCachePolicy
 import net.dv8tion.jda.api.requests.GatewayIntent
 import net.dv8tion.jda.api.utils.cache.CacheFlag
 import net.dv8tion.jda.internal.utils.JDALogger
@@ -180,10 +184,41 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
     /** Salon mémorisé : rejoint automatiquement à la connexion du bot. */
     val savedChannel: Long? get() = tokens.channelId
 
-    override val live: Boolean get() = _state.value == DiscordState.IN_VOICE
+    private val _audience = MutableStateFlow(false)
+    /** Quelqu'un (pas un bot) est dans le salon avec le bot : le pilote sur sa PS5. */
+    val audience: StateFlow<Boolean> = _audience.asStateFlow()
+
+    private val _live = MutableStateFlow(false)
+    /**
+     * L'ingénieur parle et écoute sur Discord : bot dans le salon ET pilote présent. Seul dans un salon vide (PS5
+     * éteinte), le bot ne prend ni la voix ni le micro : tout reste sur le Fold.
+     */
+    val liveFlow: StateFlow<Boolean> = _live.asStateFlow()
+
+    override val live: Boolean get() = _live.value
+
+    private val inVoice: Boolean get() = _state.value == DiscordState.IN_VOICE
+
+    /** Présence d'un humain dans le salon (cache des membres en vocal de JDA). En cas de doute, on le suppose présent. */
+    private fun refreshAudience() {
+        val client = jda
+        val id = wantedChannel
+        _audience.value = if (client == null || id == null) {
+            false
+        } else {
+            runCatching { client.getVoiceChannelById(id)?.members?.any { !it.user.isBot } ?: false }.getOrDefault(true)
+        }
+    }
 
     init {
         scope.launch { speakLoop() }
+        scope.launch {
+            combine(_state, _audience) { st, a -> st == DiscordState.IN_VOICE && a }.collect { now ->
+                // Le pilote quitte le salon : ce qui attendait d'être dit repasse sur le Fold.
+                if (_live.value && !now) failPending()
+                _live.value = now
+            }
+        }
     }
 
     fun saveToken(token: String) {
@@ -233,6 +268,11 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
             JDALogger.setFallbackLoggerEnabled(false)
             val client = JDABuilder.createLight(token, listOf(GatewayIntent.GUILD_VOICE_STATES))
                 .enableCache(CacheFlag.VOICE_STATE)
+                // Membres présents en vocal : savoir si le pilote est dans le salon.
+                .setMemberCachePolicy(MemberCachePolicy.VOICE)
+                .addEventListeners(object : ListenerAdapter() {
+                    override fun onGuildVoiceUpdate(event: GuildVoiceUpdateEvent) = refreshAudience()
+                })
                 .setAudioModuleConfig(AudioModuleConfig().withDaveSessionFactory(LDJDADaveSessionFactory(NativeDaveFactory())))
                 .build()
             client.awaitReady()
@@ -286,6 +326,7 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
     private fun onVoiceStatus(channelName: String, status: ConnectionStatus) {
         when {
             status == ConnectionStatus.CONNECTED -> {
+                refreshAudience()
                 _state.value = DiscordState.IN_VOICE
                 _detail.value = "Dans le salon « $channelName », chiffrement DAVE actif : l'ingénieur parle sur Discord."
             }
@@ -317,6 +358,7 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
                 val channel = client.getVoiceChannelById(wanted) ?: continue
                 val audio = channel.guild.audioManager
                 val status = audio.connectionStatus
+                refreshAudience()
                 if (status == ConnectionStatus.CONNECTED) {
                     downSince = 0L
                     if (_state.value != DiscordState.IN_VOICE) onVoiceStatus(channel.name, status)
@@ -339,7 +381,7 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
     fun startMicTest(modelDir: File?) {
         val client = jda ?: return
         val channel = wantedChannel?.let { client.getVoiceChannelById(it) }
-        if (channel == null || !live) {
+        if (channel == null || !inVoice) {
             _mic.value = MicReport(note = "Rejoins d'abord le salon vocal.")
             return
         }
@@ -439,11 +481,12 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
 
     /** Phrase de test : vérifie toute la chaîne voix → Opus → DAVE → Discord → PS5 → casque, sans GT7. */
     fun sayTest() {
-        if (!live) {
+        if (!inVoice) {
             _detail.value = "Rejoins d'abord un salon vocal."
             return
         }
-        speak(
+        // Le test se dit même si personne n'est encore dans le salon (le pilote peut arriver pendant la phrase).
+        enqueue(
             EngineerMessage(
                 "Radio check. Ici ton ingénieur Pitwall. Si tu m'entends dans le casque de la manette, la radio Discord fonctionne.",
                 Priority.HIGH,
@@ -457,6 +500,10 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
             onFailed(message)
             return
         }
+        enqueue(message, onFailed)
+    }
+
+    private fun enqueue(message: EngineerMessage, onFailed: (EngineerMessage) -> Unit) {
         val dropped = queue.offer(Queued(message, onFailed))
         // Alerte critique : la phrase en cours est coupée, les messages en attente sont abandonnés (comme sur le Fold).
         if (dropped != null) sender.clear()
@@ -475,7 +522,7 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
             while (true) {
                 val generation = queue.generation
                 val item = queue.poll() ?: break
-                if (!live) {
+                if (!inVoice) {
                     item.onFailed(item.message)
                     continue
                 }
@@ -490,14 +537,14 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
                 }
                 // Une alerte critique est arrivée pendant la synthèse : cette phrase est abandonnée.
                 if (queue.generation != generation && item.message.priority != Priority.CRITICAL) continue
-                if (!live) {
+                if (!inVoice) {
                     item.onFailed(item.message)
                     continue
                 }
                 sender.enqueue(frames)
                 val started = System.currentTimeMillis()
                 val maxMs = frames.size * FRAME_MS + PLAYBACK_MARGIN_MS
-                while (sender.canProvide() && queue.generation == generation && live &&
+                while (sender.canProvide() && queue.generation == generation && inVoice &&
                     System.currentTimeMillis() - started < maxMs
                 ) {
                     delay(FRAME_MS)

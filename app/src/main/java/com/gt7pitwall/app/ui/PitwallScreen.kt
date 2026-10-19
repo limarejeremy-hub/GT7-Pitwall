@@ -778,6 +778,7 @@ private fun DiscordCard(
     listeningOn: String?,
 ) {
     val state by discord.state.collectAsStateWithLifecycle()
+    val audience by discord.audience.collectAsStateWithLifecycle()
     val mic by discord.mic.collectAsStateWithLifecycle()
     val detail by discord.detail.collectAsStateWithLifecycle()
     val channels by discord.channels.collectAsStateWithLifecycle()
@@ -822,6 +823,7 @@ private fun DiscordCard(
         Text(label, color = color, fontWeight = FontWeight.Bold)
         val route = when {
             state != DiscordState.IN_VOICE -> "haut-parleur du Fold"
+            !audience -> "haut-parleur du Fold (personne d'autre dans le salon : rejoins-le sur la PS5)"
             mirror -> "Discord (casque PS5) et haut-parleur du Fold"
             else -> "Discord (casque PS5)"
         }
