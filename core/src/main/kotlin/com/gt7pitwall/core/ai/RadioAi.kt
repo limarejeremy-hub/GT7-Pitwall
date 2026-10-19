@@ -117,7 +117,9 @@ object RadioAi {
         }
         // Stratégie sans télémétrie : une demande connue va à l'analyseur (qui dit qu'il n'a pas de données), une
         // question libre reçoit la même réponse honnête ; Gemini n'a rien à calculer.
-        if (intent == Intent.STRATEGY && !telemetryLive && !inConversation) {
+        // Une question de principe (« si ceux devant moi rentrent aux stands, on fait quoi ? ») n'a pas besoin des
+        // données de la course : Gemini peut y répondre en général, sans chiffre.
+        if (intent == Intent.STRATEGY && !telemetryLive && !inConversation && !HYPOTHETICAL.containsMatchIn(question)) {
             return if (cmd != null) Route.Parser(clean) else Route.NoRaceData(question)
         }
         // Bout de phrase (« et », « euh », « je fais comment dans les ») : jamais envoyé à l'IA.
@@ -131,6 +133,9 @@ object RadioAi {
     }
 
     private const val LONG_SENTENCE_WORDS = 7
+
+    /** Hypothèse (« si… », « et si… », « qu'est-ce qu'on fait si… ») : une question de principe. */
+    private val HYPOTHETICAL = Regex("(^|\\s)(et )?si (je|j'|on|il|ils|elle|elles|le|la|les|un|une|devant|derriere|ca|y a)|qu'est ce qu'on fait si|on fait quoi si")
 
     /** Réponses ou relances d'un seul mot qui ont un sens. */
     private val SHORT_FOLLOW_UPS = setOf(

@@ -226,6 +226,13 @@ object DriverCommandParser {
         val aboutPit = Regex("(^|\\s)(arret|arrets|stand|stands|box|ravitaille|ravitaillement|plein)($|\\s)").containsMatchIn(t)
         if (!aboutPit) return null
         if (has(t, "quand", "combien", "dois", "faut", "est-ce", "prochain", "prevu")) return DriverCommand.Ask(DriverQuery.PLAN)
+        // « Si devant moi ils vont aux stands, nous on fait quoi ? » : une question sur les autres, pas un arrêt
+        // déclaré. Une hypothèse, une question ou les autres pilotes n'enregistrent jamais d'arrêt.
+        val hypothetical = Regex("^(et |mais |alors )?si\\s").containsMatchIn(t) || has(t, " et si ", "imaginons", "suppose")
+        val others = Regex("(^|\\s)(ils|elles|il|les autres|devant moi|derriere moi|adversaires?|concurrents?|leader|l'autre)($|\\s)")
+            .containsMatchIn(t)
+        val question = t.trimEnd().endsWith("?") || has(t, "quoi", "qu'est", "comment", "pourquoi", "on fait", "on doit", "on devrait")
+        if (hypothetical || others || question) return null
         val done = Regex("(^|\\s)(fait|faite|effectue|passe|sorti|sors|sortie|termine|fini|ravitaille|arrete|fais)($|\\s)").containsMatchIn(t) ||
             has(t, "plein fait", "fait le plein", "j'ai ravitaille")
         return if (done) DriverCommand.DeclareStop else null

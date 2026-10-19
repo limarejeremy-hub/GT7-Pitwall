@@ -318,6 +318,36 @@ class ConversationIntentTest {
         assertEquals(com.gt7pitwall.core.ai.HelpTopic.STOPS, IntentClassifier.helpTopic("tu vas m'aider pour les arrêts au stand ?"))
     }
 
+    // ------------------------------------------------------------------ Questions sur les autres : jamais un arrêt déclaré
+
+    @Test
+    fun aQuestionAboutOthersPittingNeverRecordsAStop() {
+        // Essai réel : « si devant moi ils vont au stands nous on fait quoi » → « Arrêt 1 enregistré : déclaré par toi. »
+        val p = com.gt7pitwall.core.radio.DriverCommandParser::parse
+        for (s in listOf(
+            "si devant moi ils vont au stands nous on fait quoi",
+            "si ceux devant passent aux stands on fait quoi",
+            "et si le leader fait son arrêt",
+            "ils ont fait leur arrêt",
+            "qu'est-ce qu'on fait si les autres vont au stand",
+        )) {
+            val cmd = p(s)
+            assertFalse(cmd == DriverCommand.DeclareStop || cmd is DriverCommand.StopAndTyres, "$s → $cmd")
+        }
+        // Les vraies déclarations restent comprises.
+        for (s in listOf("arrêt fait", "j'ai fait un arrêt aux stands", "je suis passé aux stands", "j'ai fait le plein", "je me suis arrêté")) {
+            assertEquals(DriverCommand.DeclareStop, p(s), s)
+        }
+        val c = RaceController()
+        val model = ScriptedModel(
+            "Si ceux devant toi rentrent, reste dehors si ton essence le permet : piste libre, tu peux pousser. Sinon, rentre au même tour pour ne pas perdre de place.",
+        )
+        val out = answers(say(RadioConversation(c), model, "si devant moi ils vont au stands nous on fait quoi"))
+        assertEquals(0, c.ledger.stopCount, "aucun arrêt enregistré")
+        assertTrue(out.single().fromAi, "question de principe : Gemini répond, sans données inventées")
+        assertTrue("aucune télémétrie GT7" in model.prompts.single())
+    }
+
     // ------------------------------------------------------------------ Non-régression : commandes et radio Discord
 
     @Test
