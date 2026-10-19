@@ -6,6 +6,7 @@ import com.gt7pitwall.app.discord.DiscordRadio
 import com.gt7pitwall.app.discord.DiscordTokenStore
 import com.gt7pitwall.app.engine.PitwallEngine
 import com.gt7pitwall.app.service.TelemetryService
+import com.gt7pitwall.app.sport.SportScheduleRepository
 import com.gt7pitwall.app.settings.RaceStore
 import com.gt7pitwall.app.settings.SettingsStore
 import com.gt7pitwall.core.knowledge.Gt7Database
@@ -42,6 +43,10 @@ class PitwallApp : Application() {
 
     /** Radio Discord : le bot tourne sur le téléphone et parle dans le salon vocal de la PS5. */
     lateinit var discord: DiscordRadio
+        private set
+
+    /** Programme hebdomadaire des courses Sport A/B/C (flux public GTPlanet, en cache). */
+    lateinit var sport: SportScheduleRepository
         private set
 
     /** Voix de l'ingénieur : Discord quand le bot est dans le salon, sinon le haut-parleur du Fold. */
@@ -81,6 +86,11 @@ class PitwallApp : Application() {
             it.languageModel = gemini
         }
         if (settings.aiEnabled) gemini.enable()
+        sport = SportScheduleRepository(this, engine.database)
+        CoroutineScope(SupervisorJob() + Dispatchers.Main).launch {
+            sport.state.collect { s -> if (s != null) engine.applySchedule(s) }
+        }
+        sport.start()
     }
 
     /** Active ou coupe l'ingénieur IA (la transcription libre de Vosk reste active dans les deux cas). */

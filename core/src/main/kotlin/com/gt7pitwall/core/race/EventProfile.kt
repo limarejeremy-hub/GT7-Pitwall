@@ -1,5 +1,8 @@
 package com.gt7pitwall.core.race
 
+import com.gt7pitwall.core.sport.Edition
+import com.gt7pitwall.core.sport.FieldStatus
+import com.gt7pitwall.core.sport.RuleField
 import com.gt7pitwall.core.strategy.RaceRules
 
 /** Épreuve Sport de GT7 : courses quotidiennes A, B, C, ou autre (hors Sport, essais). */
@@ -45,10 +48,38 @@ data class EventProfile(
     val gameVersion: String? = null,
     /** Contexte réglages / BoP déclaré (« BoP activée, réglages interdits »). */
     val setupNote: String? = null,
-    /** Date de l'épreuve (aaaa-mm-jj), fixée à la confirmation du règlement. */
+    /** Date de l'épreuve (aaaa-mm-jj) : début de l'édition hebdomadaire, ou date de confirmation du règlement. */
     val eventDate: String? = null,
     val confirmed: Boolean = false,
-)
+    /** Édition hebdomadaire appliquée (« DAILY_B@2026-10-19 »), null : règlement saisi à la main. */
+    val editionId: String? = null,
+    /** Empreinte de l'édition appliquée : une correction de la source en cours de semaine est détectée. */
+    val editionFingerprint: String? = null,
+    /**
+     * Fiabilité de chaque champ du règlement. Vide : règlement saisi entièrement par le pilote (ancien
+     * fonctionnement). Un champ inconnu n'est jamais présenté comme vérifié.
+     */
+    val ruleStatus: Map<RuleField, FieldStatus> = emptyMap(),
+) {
+    /** Champs du règlement qui comptent pour la stratégie et restent inconnus ou contradictoires. */
+    fun gaps(rules: RaceRules): List<RuleField> {
+        if (ruleStatus.isEmpty()) return emptyList()
+        val important = buildList {
+            if (id.kind == SessionKind.RACE) {
+                add(RuleField.LAPS)
+                add(RuleField.MANDATORY_STOPS)
+                add(RuleField.FUEL_MULTIPLIER)
+                // Une seule gomme autorisée : l'obligation de gomme est sans objet.
+                if (rules.allowedTyres.size != 1) add(RuleField.REQUIRED_TYRES)
+            }
+            add(RuleField.TRACK)
+        }
+        return important.filter { f ->
+            val st = ruleStatus[f]
+            st == null || st == FieldStatus.UNKNOWN || st == FieldStatus.CONFLICT
+        }
+    }
+}
 
 /** Un profil et son règlement : chaque épreuve garde le sien. */
 data class ProfileEntry(val profile: EventProfile, val rules: RaceRules)
@@ -84,11 +115,51 @@ class ProfileBook(entries: Map<ProfileId, ProfileEntry>, active: ProfileId) {
         }
     }
 
-    /** Nouveau règlement de l'épreuve active : la confirmation tombe s'il a changé. */
+    /**
+     * Nouveau règlement de l'épreuve active : la confirmation tombe s'il a changé, et les champs modifiés deviennent
+     * « saisis par toi ».
+     */
     fun updateRules(rules: RaceRules): ProfileEntry {
         val old = current
-        val profile = if (rules != old.rules) old.profile.copy(confirmed = false) else old.profile
-        return ProfileEntry(profile, rules).also { book[active] = it }
+        if (rules == old.rules) return old
+        var status = old.profile.ruleStatus
+        if (status.isNotEmpty()) {
+            val changed = changedFields(old.rules, rules)
+            status = status + changed.associateWith { FieldStatus.PILOT }
+        }
+        return ProfileEntry(old.profile.copy(confirmed = false, ruleStatus = status), rules).also { book[active] = it }
+    }
+
+    /** Le pilote donne lui-même ces champs (même si la valeur ne change pas : « aucun arrêt obligatoire »). */
+    fun declare(rules: RaceRules, fields: Set<RuleField>): ProfileEntry {
+        val old = current
+        val status = old.profile.ruleStatus + fields.associateWith { FieldStatus.PILOT }
+        return ProfileEntry(old.profile.copy(confirmed = false, ruleStatus = status), rules).also { book[active] = it }
+    }
+
+    /**
+     * Édition hebdomadaire publiée pour la série de l'épreuve [id] : appliquée si c'est une nouvelle semaine, ou si la
+     * source a corrigé l'édition et que le pilote n'a pas encore confirmé. Rien de la semaine précédente n'est gardé.
+     * Renvoie true si le règlement a changé.
+     */
+    fun applyEdition(id: ProfileId, edition: Edition, rules: (ProfileId) -> Pair<RaceRules, Map<RuleField, FieldStatus>>): Boolean {
+        val old = book[id]
+        val sameWeek = old?.profile?.editionId == edition.id
+        if (sameWeek && (old!!.profile.confirmed || old.profile.editionFingerprint == edition.fingerprint)) return false
+        val (r, status) = rules(id)
+        val base = old?.profile ?: EventProfile(id = id)
+        book[id] = ProfileEntry(
+            base.copy(
+                id = id,
+                confirmed = false,
+                eventDate = edition.validFrom.toString(),
+                editionId = edition.id,
+                editionFingerprint = edition.fingerprint,
+                ruleStatus = status,
+            ),
+            r,
+        )
+        return true
     }
 
     fun updateProfile(profile: EventProfile): ProfileEntry {
@@ -99,13 +170,29 @@ class ProfileBook(entries: Map<ProfileId, ProfileEntry>, active: ProfileId) {
         return ProfileEntry(p, old.rules).also { book[active] = it }
     }
 
-    /** Le pilote confirme le règlement de l'épreuve active, à la date [today] (aaaa-mm-jj). */
+    /**
+     * Le pilote confirme le règlement de l'épreuve active, à la date [today] (aaaa-mm-jj) : les champs probables
+     * deviennent confirmés ; les champs inconnus le restent (il faut les saisir).
+     */
     fun confirm(today: String): ProfileEntry {
         val old = current
-        return old.copy(profile = old.profile.copy(confirmed = true, eventDate = today)).also { book[active] = it }
+        val status = old.profile.ruleStatus.mapValues { (_, s) -> if (s == FieldStatus.PROBABLE) FieldStatus.CONFIRMED else s }
+        val date = old.profile.eventDate?.takeIf { old.profile.editionId != null } ?: today
+        return old.copy(profile = old.profile.copy(confirmed = true, eventDate = date, ruleStatus = status)).also { book[active] = it }
     }
 
     companion object {
+        /** Champs du règlement qui diffèrent entre deux versions. */
+        fun changedFields(a: RaceRules, b: RaceRules): Set<RuleField> = buildSet {
+            if (a.trackId != b.trackId) add(RuleField.TRACK)
+            if (a.totalLaps != b.totalLaps || a.durationMin != b.durationMin) add(RuleField.LAPS)
+            if (a.fuelMultiplier != b.fuelMultiplier) add(RuleField.FUEL_MULTIPLIER)
+            if (a.tyreMultiplier != b.tyreMultiplier) add(RuleField.TYRE_MULTIPLIER)
+            if (a.mandatoryStops != b.mandatoryStops) add(RuleField.MANDATORY_STOPS)
+            if (a.allowedTyres != b.allowedTyres) add(RuleField.ALLOWED_TYRES)
+            if (a.requiredTyres != b.requiredTyres) add(RuleField.REQUIRED_TYRES)
+        }
+
         /** Premier lancement après la mise à jour : l'ancien règlement unique devient celui du profil « Autre, course ». */
         fun migrate(legacyRules: RaceRules): ProfileBook =
             ProfileBook(mapOf(ProfileId.LEGACY to ProfileEntry(EventProfile(id = ProfileId.LEGACY), legacyRules)), ProfileId.LEGACY)

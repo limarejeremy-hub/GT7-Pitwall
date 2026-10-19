@@ -44,6 +44,9 @@ import com.gt7pitwall.core.race.ProfileId
 import com.gt7pitwall.core.race.Series
 import com.gt7pitwall.core.race.SessionKind
 import com.gt7pitwall.core.radio.DriverCommand
+import com.gt7pitwall.core.sport.FieldStatus
+import com.gt7pitwall.core.sport.RefreshPolicy
+import com.gt7pitwall.core.sport.RuleField
 import com.gt7pitwall.core.strategy.DataSource
 import com.gt7pitwall.core.strategy.PlanWarning
 import com.gt7pitwall.core.strategy.RaceRules
@@ -63,6 +66,8 @@ fun RaceSetupCard(
     onProfile: (ProfileId) -> Unit,
     onProfileInfo: (EventProfile) -> Unit,
     onConfirmRules: () -> Unit,
+    onRefreshSchedule: () -> Unit,
+    onDeclareRules: (RaceRules, Set<RuleField>) -> Unit,
 ) {
     var picking by rememberSaveable { mutableStateOf(false) }
     var editingTyres by rememberSaveable { mutableStateOf(false) }
@@ -74,6 +79,7 @@ fun RaceSetupCard(
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("COURSE & STRATÉGIE", style = MaterialTheme.typography.labelMedium, color = PitColors.Muted, letterSpacing = 1.5.sp)
             EventProfileSection(state, onProfile, onProfileInfo, onConfirmRules)
+            WeeklyEditionSection(state, rules, database, onRules, onRefreshSchedule, onDeclareRules)
             HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
 
             val p = state.snapshot.packet
@@ -339,6 +345,120 @@ private fun EventProfileSection(
         style = MaterialTheme.typography.bodySmall,
     )
 }
+
+/**
+ * Programme de la semaine pour l'épreuve choisie (Sport A, B, C) : chaque champ avec son statut et sa source ; ce qui
+ * reste inconnu est montré, avec une saisie rapide. Rien n'est présenté comme vérifié sans source.
+ */
+@Composable
+private fun WeeklyEditionSection(
+    state: PitwallUiState,
+    rules: RaceRules,
+    database: Gt7Database,
+    onRules: (RaceRules) -> Unit,
+    onRefresh: () -> Unit,
+    onDeclare: (RaceRules, Set<RuleField>) -> Unit,
+) {
+    val id = state.profile.id
+    if (id.series == Series.OTHER) return
+    val ed = state.edition
+    val status = state.profile.ruleStatus
+    val sched = state.schedule
+    Text(
+        "${id.series.label.uppercase()} — " + (ed?.let { "SEMAINE DU ${FrenchFormat.dayMonth(it.validFrom).uppercase()}" } ?: "PROGRAMME INCONNU"),
+        fontWeight = FontWeight.Bold,
+    )
+    fun st(f: RuleField): String = status[f]?.label ?: "saisi par toi"
+    fun color(f: RuleField) = when (status[f]) {
+        FieldStatus.CONFIRMED, FieldStatus.PILOT, null -> PitColors.Muted
+        FieldStatus.PROBABLE -> PitColors.Cyan
+        FieldStatus.UNKNOWN, FieldStatus.CONFLICT -> PitColors.Yellow
+    }
+    @Composable
+    fun line(label: String, value: String?, f: RuleField?) {
+        val v = value ?: "inconnu"
+        Text(
+            "$label : $v" + (f?.let { " (${st(it)})" } ?: ""),
+            style = MaterialTheme.typography.bodySmall,
+            color = f?.let { color(it) } ?: PitColors.Muted,
+        )
+    }
+    if (ed != null) {
+        line("Circuit", database.course(rules.trackId ?: -1)?.label ?: ed.trackName.value, RuleField.TRACK)
+        if (rules.trackId == null && ed.trackCandidates.isNotEmpty()) {
+            ed.trackCandidates.mapNotNull(database::course).take(3).forEach { c ->
+                OutlinedButton(onClick = { onRules(rules.copy(trackId = c.id)) }, modifier = Modifier.fillMaxWidth()) { Text(c.label) }
+            }
+        }
+        line("Voitures", ed.cars.value, RuleField.CARS)
+        if (id.kind == SessionKind.RACE) {
+            line("Tours", rules.totalLaps?.toString(), RuleField.LAPS)
+            line("Carburant", "×${rules.fuelMultiplier}".takeIf { status[RuleField.FUEL_MULTIPLIER].known() }, RuleField.FUEL_MULTIPLIER)
+            line("Usure des pneus", "×${rules.tyreMultiplier}".takeIf { status[RuleField.TYRE_MULTIPLIER].known() }, RuleField.TYRE_MULTIPLIER)
+            line("Arrêts obligatoires", rules.mandatoryStops.toString().takeIf { status[RuleField.MANDATORY_STOPS].known() }, RuleField.MANDATORY_STOPS)
+        }
+        line("Pneus autorisés", rules.allowedTyres.joinToString(", ") { it.name }.ifEmpty { null }, RuleField.ALLOWED_TYRES)
+        if (id.kind == SessionKind.RACE) {
+            line(
+                "Pneus imposés",
+                (if (rules.requiredTyres.isEmpty()) "aucun" else rules.requiredTyres.joinToString(", ") { it.name })
+                    .takeIf { status[RuleField.REQUIRED_TYRES].known() || rules.allowedTyres.size == 1 },
+                RuleField.REQUIRED_TYRES,
+            )
+        }
+        line("BoP / réglages", listOfNotNull(ed.bop.value, ed.settings.value).joinToString(" • ").ifEmpty { null }, null)
+        listOf(ed.laps, ed.mandatoryStops, ed.fuelMultiplier, ed.tyreMultiplier, ed.trackName).mapNotNull { it.note }.forEach {
+            Text("Sources en désaccord : $it", color = PitColors.Red, style = MaterialTheme.typography.bodySmall)
+        }
+    } else {
+        Text(
+            if (sched?.stale == true || sched == null) "Aucune fiche publique lue pour cette semaine : saisis le règlement ci-dessous." else "",
+            color = PitColors.Yellow,
+            style = MaterialTheme.typography.bodySmall,
+        )
+    }
+    val gaps = state.ruleGaps
+    if (gaps.isNotEmpty()) {
+        Text("À confirmer ou saisir : ${gaps.joinToString(", ") { it.label }}.", color = PitColors.Yellow, style = MaterialTheme.typography.bodySmall)
+        if (RuleField.MANDATORY_STOPS in gaps) {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                Text("Arrêts obligatoires :", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                (0..2).forEach { n ->
+                    OutlinedButton(onClick = { onDeclare(rules.copy(mandatoryStops = n), setOf(RuleField.MANDATORY_STOPS)) }) { Text("$n") }
+                }
+            }
+        }
+        if (RuleField.REQUIRED_TYRES in gaps) {
+            OutlinedButton(
+                onClick = { onDeclare(rules.copy(requiredTyres = emptySet()), setOf(RuleField.REQUIRED_TYRES)) },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Aucune gomme imposée") }
+        }
+        if (RuleField.FUEL_MULTIPLIER in gaps) {
+            OutlinedButton(
+                onClick = { onDeclare(rules.copy(fuelMultiplier = rules.fuelMultiplier), setOf(RuleField.FUEL_MULTIPLIER)) },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Carburant ×${rules.fuelMultiplier} confirmé") }
+        }
+    }
+    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+        val now = System.currentTimeMillis()
+        Text(
+            buildString {
+                append("Source : ")
+                append(ed?.sources?.joinToString { it.name } ?: "GTPlanet (flux public)")
+                append(", lu ${RefreshPolicy.age(now, sched?.lastFetchMs)}")
+                sched?.lastError?.let { append(" • dernière lecture en échec : $it") }
+            },
+            Modifier.weight(1f),
+            color = PitColors.Muted,
+            style = MaterialTheme.typography.bodySmall,
+        )
+        TextButton(onClick = onRefresh) { Text("Actualiser") }
+    }
+}
+
+private fun FieldStatus?.known(): Boolean = this == null || (this != FieldStatus.UNKNOWN && this != FieldStatus.CONFLICT)
 
 @Composable
 private fun NumberField(label: String, value: Int?, modifier: Modifier, onChange: (Int?) -> Unit) {

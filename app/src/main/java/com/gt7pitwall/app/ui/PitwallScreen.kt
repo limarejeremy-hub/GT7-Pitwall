@@ -103,6 +103,7 @@ fun PitwallScreen(
     onAiToggle: (Boolean) -> Unit,
     onGoogleOnHeadset: (Boolean) -> Unit,
     onDevTools: (Boolean) -> Unit,
+    onRefreshSchedule: () -> Unit,
     onStart: (String) -> Unit,
     onStop: () -> Unit,
     onVoiceInputToggle: (Boolean) -> Unit,
@@ -264,7 +265,7 @@ fun PitwallScreen(
                         connectionCard()
                     }
                     ScrollColumn(Modifier.weight(1f)) {
-                        RaceSetupCard(state, rules, engine.database, engine::setRules, engine::command, engine::selectProfile, engine::updateProfile, engine::confirmRules)
+                        RaceSetupCard(state, rules, engine.database, engine::setRules, engine::command, engine::selectProfile, engine::updateProfile, engine::confirmRules, onRefreshSchedule, engine::declareRules)
                         TrackMapCard(state.snapshot.trackOutline, state.snapshot.packet)
                         FuelCard(state.fuel, state.snapshot.packet)
                         RadioCard(radio, engine::command)
@@ -278,7 +279,7 @@ fun PitwallScreen(
                     DriveCard(state.snapshot.packet)
                     LapCard(state)
                     FuelCard(state.fuel, state.snapshot.packet)
-                    RaceSetupCard(state, rules, engine.database, engine::setRules, engine::command, engine::selectProfile, engine::updateProfile, engine::confirmRules)
+                    RaceSetupCard(state, rules, engine.database, engine::setRules, engine::command, engine::selectProfile, engine::updateProfile, engine::confirmRules, onRefreshSchedule, engine::declareRules)
                     CarCard(state.snapshot.packet, state.gForce)
                     TrackMapCard(state.snapshot.trackOutline, state.snapshot.packet)
                     RadioCard(radio, engine::command)

@@ -60,6 +60,7 @@ class MainActivity : ComponentActivity() {
                     onAiToggle = app::setAi,
                     onGoogleOnHeadset = app::setGoogleOnHeadset,
                     onDevTools = app::setDevTools,
+                    onRefreshSchedule = { app.sport.refreshNow() },
                     onStart = { address ->
                         app.settings.ps5Address = address
                         TelemetryService.start(this, address)

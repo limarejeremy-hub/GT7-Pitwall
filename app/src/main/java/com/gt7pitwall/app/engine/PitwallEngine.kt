@@ -18,6 +18,9 @@ import com.gt7pitwall.core.race.EventProfile
 import com.gt7pitwall.core.race.HistorySummary
 import com.gt7pitwall.core.race.ProfileId
 import com.gt7pitwall.core.race.RaceController
+import com.gt7pitwall.core.sport.Edition
+import com.gt7pitwall.core.sport.RuleField
+import com.gt7pitwall.core.sport.ScheduleState
 import com.gt7pitwall.core.race.RaceStorage
 import com.gt7pitwall.core.radio.DriverCommand
 import com.gt7pitwall.core.radio.DriverCommandParser
@@ -83,6 +86,12 @@ data class PitwallUiState(
     val history: HistorySummary = HistorySummary.EMPTY,
     /** Sessions archivées, toutes épreuves confondues. */
     val archivedSessions: Int = 0,
+    /** Édition de la semaine pour l'épreuve active (programme Sport public). */
+    val edition: Edition? = null,
+    /** Informations du règlement utiles à la stratégie qui restent inconnues. */
+    val ruleGaps: List<RuleField> = emptyList(),
+    /** Programme Sport connu : fraîcheur, erreur de lecture, péremption. */
+    val schedule: ScheduleState? = null,
 )
 
 /**
@@ -211,6 +220,22 @@ class PitwallEngine(
         scope.launch { mutex.withLock { race.updateProfile(profile).also { publish(force = true) } } }
     }
 
+    /** Programme Sport lu (cache ou réseau) : appliqué aux épreuves A, B, C (pas en pleine course). */
+    fun applySchedule(state: ScheduleState) {
+        scope.launch {
+            val messages = mutex.withLock { race.applySchedule(state).also { publish(force = true) } }
+            messages.forEach(::deliver)
+        }
+    }
+
+    /** Le pilote donne lui-même des champs du règlement (même inchangés). */
+    fun declareRules(rules: RaceRules, fields: Set<RuleField>) {
+        scope.launch {
+            val messages = mutex.withLock { (flushRules() + race.declareRules(rules, fields)).also { publish(force = true) } }
+            messages.forEach(::deliver)
+        }
+    }
+
     /** Le pilote confirme le règlement de l'épreuve active. */
     fun confirmRules() {
         val today = java.time.LocalDate.now().toString()
@@ -310,6 +335,9 @@ class PitwallEngine(
             profile = race.profile,
             history = if (force || now - lastHistoryMs > HISTORY_REFRESH_MS) race.history.also { lastHistoryMs = now } else _state.value.history,
             archivedSessions = race.archivedCount,
+            edition = race.edition,
+            ruleGaps = race.ruleGaps,
+            schedule = race.schedule,
         )
     }
 

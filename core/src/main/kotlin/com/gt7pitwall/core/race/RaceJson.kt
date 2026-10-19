@@ -1,5 +1,7 @@
 package com.gt7pitwall.core.race
 
+import com.gt7pitwall.core.sport.FieldStatus
+import com.gt7pitwall.core.sport.RuleField
 import com.gt7pitwall.core.strategy.RaceRules
 import com.gt7pitwall.core.strategy.StopEvidence
 import com.gt7pitwall.core.strategy.TyreCompound
@@ -48,6 +50,9 @@ object RaceJson {
         .put("setupNote", p.setupNote ?: "")
         .put("eventDate", p.eventDate ?: "")
         .put("confirmed", p.confirmed)
+        .put("editionId", p.editionId ?: "")
+        .put("editionFingerprint", p.editionFingerprint ?: "")
+        .put("ruleStatus", JSONObject().also { o -> p.ruleStatus.forEach { (f, st) -> o.put(f.name, st.name) } })
 
     fun profile(o: JSONObject): EventProfile = EventProfile(
         id = ProfileId.parse(o.optString("id", "")) ?: ProfileId.LEGACY,
@@ -55,6 +60,13 @@ object RaceJson {
         setupNote = o.optString("setupNote", "").ifBlank { null },
         eventDate = o.optString("eventDate", "").ifBlank { null },
         confirmed = o.optBoolean("confirmed", false),
+        editionId = o.optString("editionId", "").ifBlank { null },
+        editionFingerprint = o.optString("editionFingerprint", "").ifBlank { null },
+        ruleStatus = o.optJSONObject("ruleStatus")?.let { j ->
+            RuleField.entries.mapNotNull { f ->
+                FieldStatus.entries.firstOrNull { it.name == j.optString(f.name, "") }?.let { f to it }
+            }.toMap()
+        } ?: emptyMap(),
     )
 
     fun book(b: ProfileBook): String {

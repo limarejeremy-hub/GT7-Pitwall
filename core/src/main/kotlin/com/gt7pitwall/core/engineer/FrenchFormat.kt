@@ -5,6 +5,13 @@ import kotlin.math.roundToInt
 
 /** Mise en forme des nombres et des temps, pour l'écran et pour la synthèse vocale française. */
 object FrenchFormat {
+    private val MONTHS = listOf(
+        "janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre",
+    )
+
+    /** « 19 octobre » (le 1er : « 1er octobre »). */
+    fun dayMonth(d: java.time.LocalDate): String =
+        (if (d.dayOfMonth == 1) "1er" else d.dayOfMonth.toString()) + " " + MONTHS[d.monthValue - 1]
 
     /** "1:32.456" pour l'affichage. */
     fun lapTime(ms: Int?): String {

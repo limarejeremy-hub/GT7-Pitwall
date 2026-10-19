@@ -29,6 +29,10 @@ import com.gt7pitwall.core.session.PitAssessment
 import com.gt7pitwall.core.session.SessionEvent
 import com.gt7pitwall.core.session.SessionSnapshot
 import com.gt7pitwall.core.session.SessionTracker
+import com.gt7pitwall.core.sport.Edition
+import com.gt7pitwall.core.sport.RuleField
+import com.gt7pitwall.core.sport.ScheduleState
+import com.gt7pitwall.core.sport.SportAutofill
 import com.gt7pitwall.core.strategy.DataSource
 import com.gt7pitwall.core.strategy.FuelReport
 import com.gt7pitwall.core.strategy.FuelStrategy
@@ -160,6 +164,20 @@ class RaceController(
 
     /** Sessions archivées comparables à celle-ci. */
     val history: HistorySummary get() = HistorySummary.of(sessionContext, sessions.values, excludeId = sessionId)
+
+    /** Programme Sport de la semaine (sources publiques), null tant qu'il n'a pas été lu. */
+    var schedule: ScheduleState? = null
+        private set
+
+    /** Édition de la semaine pour l'épreuve active (Sport A, B ou C). */
+    val edition: Edition? get() = schedule?.editions?.get(profile.id.series)
+
+    /** Informations du règlement utiles à la stratégie qui restent inconnues ou contradictoires. */
+    val ruleGaps: List<RuleField> get() = profile.gaps(rules)
+
+    /** Une course est en cours : le règlement de l'épreuve active ne change pas sous les roues du pilote. */
+    private val raceInProgress: Boolean
+        get() = sessionId != null && telemetryLive() && snapshot.laps.isNotEmpty() && !sessionFinished
     val tyresUsed: Set<TyreCompound> get() = ledger.tyresUsed(rules.startTyre)
     val missingTyres: Set<TyreCompound> get() = ledger.missingRequired(rules)
 
@@ -173,7 +191,11 @@ class RaceController(
         val events = tracker.update(p)
         gMeter.update(p)?.let { gForce = it }
         // Nouvelle session : la précédente est archivée avant que le registre des arrêts soit vidé.
-        if (events.any { it is SessionEvent.SessionReset }) closeSession(SessionOutcome.INTERRUPTED)
+        if (events.any { it is SessionEvent.SessionReset }) {
+            closeSession(SessionOutcome.INTERRUPTED)
+            // Une nouvelle semaine différée pendant la course précédente s'applique maintenant.
+            schedule?.let { pendingSchedule = it }
+        }
         if (events.any { it is SessionEvent.SessionReset || it is SessionEvent.FirstData }) startSession()
         val out = mutableListOf<EngineerMessage>()
         val windowWasOpen = pitWindowPackets > 0
@@ -220,6 +242,10 @@ class RaceController(
                 MessageCategory.FUEL,
                 expectsReply = true,
             )
+        }
+        pendingSchedule?.let {
+            pendingSchedule = null
+            out += applySchedule(it)
         }
         val frozen = tracker.pitVisitOpen || pitWindowPackets > 0
         if (!frozen && (events.isNotEmpty() || windowWasOpen)) out += replan()
@@ -442,6 +468,11 @@ class RaceController(
         val lines = mutableListOf<String>()
         lines += "GT7 ne transmet pas : les positions en course, les adversaires, les écarts, les dégâts, les gommes montées, la météo."
         lines += "Épreuve : ${profile.id.label}" + if (profile.confirmed) ", règlement confirmé par le pilote." else ", règlement non confirmé."
+        edition?.let { ed ->
+            lines += "Programme de la semaine (${ed.sources.joinToString { it.name }}) : " +
+                listOfNotNull(ed.trackName.value, ed.cars.value?.let { "voitures $it" }, ed.bop.value?.let { "BoP $it" }).joinToString(", ") + "."
+        }
+        ruleGaps.takeIf { it.isNotEmpty() }?.let { g -> lines += "Règlement inconnu sur : ${g.joinToString(", ") { it.label }}." }
         history.let { h -> lines += "Historique : ${h.comparable} session(s) comparable(s) archivée(s), dont ${h.sameEvent} avec le même règlement." }
         carName?.let { lines += "Voiture : $it." }
         course?.let { lines += "Circuit : ${it.label}." }
@@ -483,16 +514,73 @@ class RaceController(
         return deliver(replan())
     }
 
+    /**
+     * Programme Sport lu (au lancement, au changement de semaine, ou à la demande) : chaque épreuve A, B, C reçoit
+     * l'édition de la semaine. L'épreuve active n'est pas modifiée en pleine course : elle le sera à la fin de la session.
+     */
+    fun applySchedule(state: ScheduleState): List<EngineerMessage> {
+        schedule = state
+        var activeChanged = false
+        for ((series, ed) in state.editions) {
+            for (kind in SessionKind.entries) {
+                val id = ProfileId(series, kind)
+                if (id == profiles.active && raceInProgress) continue
+                if (profiles.applyEdition(id, ed) { SportAutofill.rules(ed, it.kind) } && id == profiles.active) activeChanged = true
+            }
+        }
+        storage?.saveProfiles(profiles)
+        if (!activeChanged) return emptyList()
+        rules = profiles.current.rules
+        storage?.saveRules(rules)
+        plan = null
+        return deliver(listOf(editionAnnouncement()) + replan())
+    }
+
+    /** Ce que l'ingénieur dit d'une nouvelle édition : l'essentiel, la source, et ce qui reste à confirmer. */
+    fun editionAnnouncement(): EngineerMessage {
+        val ed = edition
+        val text = if (ed == null) {
+            "Programme ${profile.id.series.label} inconnu pour cette semaine. Saisis le règlement dans la carte Course."
+        } else {
+            buildString {
+                append("${profile.id.label}, semaine du ${FrenchFormat.dayMonth(ed.validFrom)} : ")
+                append(listOfNotNull(
+                    course?.label ?: ed.trackName.value,
+                    rules.totalLaps?.takeIf { profile.id.kind == SessionKind.RACE }?.let { "$it tours" },
+                    ed.cars.value,
+                ).joinToString(", "))
+                append(". Source : ${ed.sources.joinToString(" et ") { it.name }}, à confirmer.")
+                val gaps = ruleGaps
+                if (gaps.isNotEmpty()) append(" Inconnu : ${gaps.joinToString(", ") { it.label }}.")
+            }
+        }
+        return EngineerMessage(text, Priority.INFO, MessageCategory.RADIO, dedupKey = "edition:${ed?.id}:${profile.id.code}")
+    }
+
+    /** Le pilote donne lui-même des champs du règlement (même inchangés : « aucun arrêt obligatoire »). */
+    fun declareRules(newRules: RaceRules, fields: Set<RuleField>): List<EngineerMessage> {
+        if (newRules.trackId != rules.trackId) trackCandidates = emptyList()
+        rules = profiles.declare(newRules, fields).rules
+        storage?.saveRules(rules)
+        storage?.saveProfiles(profiles)
+        return deliver(replan())
+    }
+
     /** Épreuve choisie à l'écran : son propre règlement est repris, celui de l'épreuve quittée est rangé. */
     fun selectProfile(id: ProfileId): List<EngineerMessage> {
         if (id == profiles.active) return emptyList()
-        val entry = profiles.select(id)
+        profiles.select(id)
+        // L'édition de la semaine passe avant toute ancienne fiche enregistrée.
+        val ed = schedule?.editions?.get(id.series)
+        if (ed != null) profiles.applyEdition(id, ed) { SportAutofill.rules(ed, it.kind) }
+        val entry = profiles.current
         if (entry.rules.trackId != rules.trackId) trackCandidates = emptyList()
         rules = entry.rules
         storage?.saveRules(rules)
         storage?.saveProfiles(profiles)
         plan = null
-        val out = replan()
+        // L'épreuve choisie est annoncée avec son édition de la semaine (ou l'absence de programme).
+        val out = (if (id.series != Series.OTHER) listOf(editionAnnouncement()) else emptyList()) + replan()
         saveSession()
         return deliver(out)
     }
@@ -515,7 +603,10 @@ class RaceController(
     fun endSession() {
         closeSession(SessionOutcome.INTERRUPTED)
         sessionId = null
+        schedule?.let { applySchedule(it) }
     }
+
+    private var pendingSchedule: ScheduleState? = null
 
     // ------------------------------------------------------------------ Règlement et plan
 
