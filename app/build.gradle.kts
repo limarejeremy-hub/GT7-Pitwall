@@ -1,3 +1,6 @@
+import java.util.zip.ZipEntry
+import java.util.zip.ZipFile
+import java.util.zip.ZipOutputStream
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -98,8 +101,8 @@ val patchJdaForAndroid by tasks.registering {
         // sipush 256 ; invokestatic #366 (Pattern.compile(String, int))
         val before = byteArrayOf(0x11, 0x01, 0x00, 0xB8.toByte(), 0x01, 0x6E)
         val out = target.get().asFile.apply { parentFile.mkdirs() }
-        java.util.zip.ZipFile(source.singleFile).use { zip ->
-            java.util.zip.ZipOutputStream(out.outputStream()).use { dest ->
+        ZipFile(source.singleFile).use { zip ->
+            ZipOutputStream(out.outputStream()).use { dest ->
                 for (entry in zip.entries()) {
                     var bytes = zip.getInputStream(entry).use { it.readBytes() }
                     if (entry.name == checks) {
@@ -114,7 +117,7 @@ val patchJdaForAndroid by tasks.registering {
                         }
                         check(found == 2) { "JDA $JDA_VERSION : motif UNICODE_CHARACTER_CLASS trouvé $found fois au lieu de 2" }
                     }
-                    dest.putNextEntry(java.util.zip.ZipEntry(entry.name))
+                    dest.putNextEntry(ZipEntry(entry.name))
                     dest.write(bytes)
                     dest.closeEntry()
                 }
