@@ -1,3 +1,4 @@
+import java.security.MessageDigest
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
@@ -72,6 +73,14 @@ android {
             "META-INF/NOTICE*",
             "META-INF/FastDoubleParser-*",
         )
+        // Banc d'essai sherpa-onnx : seulement pour le Fold (arm64), pas de copie armeabi-v7a (~25 Mo de moins). Le code
+        // Kotlin ne charge que libsherpa-onnx-jni (qui ne dépend que de libonnxruntime) : les API C et C++ sont retirées.
+        jniLibs.excludes += setOf(
+            "lib/armeabi-v7a/libonnxruntime.so",
+            "lib/armeabi-v7a/libsherpa-onnx-jni.so",
+            "**/libsherpa-onnx-c-api.so",
+            "**/libsherpa-onnx-cxx-api.so",
+        )
     }
 }
 
@@ -126,8 +135,34 @@ val patchJdaForAndroid by tasks.registering {
     }
 }
 
+val SHERPA_VERSION = "1.13.8"
+val SHERPA_SHA256 = "633c24321e06b1fe79feafa03ea16cbc0f8a286641e2da3559bac91bdb13bd96"
+val sherpaAar = layout.buildDirectory.file("sherpa/sherpa-onnx-$SHERPA_VERSION.aar")
+
+/**
+ * sherpa-onnx (Apache 2.0) pour le banc d'essai de reconnaissance : l'AAR officiel des versions GitHub du projet, dont
+ * l'empreinte SHA-256 est vérifiée (la compilation échoue si le fichier change).
+ */
+val downloadSherpaAar by tasks.registering {
+    outputs.file(sherpaAar)
+    doLast {
+        val out = sherpaAar.get().asFile.apply { parentFile.mkdirs() }
+        fun sha(f: File) = MessageDigest.getInstance("SHA-256").digest(f.readBytes()).joinToString("") { "%02x".format(it) }
+        if (out.isFile && sha(out) == SHERPA_SHA256) return@doLast
+        val url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/v$SHERPA_VERSION/sherpa-onnx-$SHERPA_VERSION.aar"
+        java.net.URI(url).toURL().openStream().use { input -> out.outputStream().use { input.copyTo(it) } }
+        val got = sha(out)
+        check(got == SHERPA_SHA256) { "sherpa-onnx $SHERPA_VERSION : empreinte $got au lieu de $SHERPA_SHA256" }
+    }
+}
+
 dependencies {
     implementation(project(":core"))
+
+    // Banc d'essai de reconnaissance locale (sherpa-onnx) : modèles téléchargés à la demande depuis les archives
+    // .tar.bz2 du projet, extraites au fil du téléchargement (commons-compress, Apache 2.0).
+    implementation(files(sherpaAar).builtBy(downloadSherpaAar))
+    implementation("org.apache.commons:commons-compress:1.27.1")
 
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.activity:activity-compose:1.9.3")

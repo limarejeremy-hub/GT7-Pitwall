@@ -54,6 +54,7 @@ class MainActivity : ComponentActivity() {
                     voiceInput = app.voiceInput,
                     gemini = app.gemini,
                     discord = app.discord,
+                    bench = app.bench,
                     onDiscordMirror = app::setDiscordMirror,
                     onDiscordMic = app::setDiscordMic,
                     onAiToggle = app::setAi,

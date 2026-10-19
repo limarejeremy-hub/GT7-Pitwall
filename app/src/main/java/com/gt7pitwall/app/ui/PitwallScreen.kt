@@ -62,7 +62,9 @@ import com.gt7pitwall.app.engine.PitwallEngine
 import com.gt7pitwall.app.engine.PitwallUiState
 import com.gt7pitwall.app.settings.SettingsStore
 import com.gt7pitwall.app.ui.theme.PitColors
+import com.gt7pitwall.app.voice.BenchModel
 import com.gt7pitwall.app.voice.ListenState
+import com.gt7pitwall.app.voice.SherpaBench
 import com.gt7pitwall.app.voice.ModelState
 import com.gt7pitwall.app.voice.TtsVoiceOutput
 import com.gt7pitwall.app.voice.VoiceModelManager
@@ -95,6 +97,7 @@ fun PitwallScreen(
     voiceInput: VoskVoiceInput,
     gemini: GeminiNano,
     discord: DiscordRadio,
+    bench: SherpaBench,
     onDiscordMirror: (Boolean) -> Unit,
     onDiscordMic: (Boolean) -> Unit,
     onAiToggle: (Boolean) -> Unit,
@@ -159,6 +162,7 @@ fun PitwallScreen(
             },
         )
         RadioDiagnosticsCard(voiceInput, googleSpeech)
+        BenchCard(bench)
         DiscordCard(
             discord = discord,
             autoJoin = discordAutoJoin,
@@ -815,6 +819,110 @@ private fun RadioDiagnosticsCard(voiceInput: VoskVoiceInput, googleOn: Boolean) 
         if (googleOn && google != null && google.streamPolicy.disabledReasons().isNotEmpty()) {
             OutlinedButton(onClick = { voiceInput.retryGoogleOnHeadset() }, modifier = Modifier.fillMaxWidth()) {
                 Text("Réessayer Google sur le casque PS5")
+            }
+        }
+    }
+}
+
+/**
+ * Banc d'essai sherpa-onnx : télécharger un modèle, l'écouter en parallèle de Vosk, et lire une série de phrases radio
+ * pour mesurer précision, délai, calcul, mémoire, écran éteint et batterie. N'agit jamais sur la radio.
+ */
+@Composable
+private fun BenchCard(bench: SherpaBench) {
+    val states by bench.models.states.collectAsStateWithLifecycle()
+    val status by bench.status.collectAsStateWithLifecycle()
+    val attempts by bench.attempts.collectAsStateWithLifecycle()
+    val summary by bench.summary.collectAsStateWithLifecycle()
+    val phrase by bench.phrase.collectAsStateWithLifecycle()
+    val progress by bench.progress.collectAsStateWithLifecycle()
+    var chosen by rememberSaveable { mutableStateOf(BenchModel.ZIPFORMER_FR) }
+    PitCard("Banc d'essai sherpa-onnx (prototype)") {
+        Text(
+            "Écoute le même micro que Vosk (casque PS5 ou Fold) et compare. N'envoie jamais de commande ; aucun son " +
+                "n'est enregistré. Vosk reste la reconnaissance de la radio.",
+            style = MaterialTheme.typography.bodySmall,
+            color = PitColors.Muted,
+        )
+        BenchModel.entries.forEach { m ->
+            val st = states[m] ?: ModelState.NotInstalled
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                RadioButton(selected = chosen == m, onClick = { if (!status.running) chosen = m })
+                Column(Modifier.weight(1f)) {
+                    Text(m.label)
+                    Text(
+                        when (st) {
+                            ModelState.Installed -> "${m.detail} — installé (${bench.models.sizeMb(m)} Mo)"
+                            ModelState.NotInstalled -> "${m.detail} — à télécharger (~${m.downloadMb} Mo, Wi-Fi conseillé)"
+                            is ModelState.Downloading -> "téléchargement… ${st.progress?.let { "${(it * 100).roundToInt()} % de l'archive" } ?: ""}"
+                            is ModelState.Failed -> "échec : ${st.message}"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (st is ModelState.Failed) PitColors.Red else PitColors.Muted,
+                    )
+                }
+                when (st) {
+                    ModelState.NotInstalled, is ModelState.Failed ->
+                        TextButton(onClick = { bench.models.download(m) }) { Text("Télécharger") }
+                    ModelState.Installed -> if (!(status.running && status.model == m)) {
+                        TextButton(onClick = { bench.models.delete(m) }) { Text("Supprimer") }
+                    }
+                    is ModelState.Downloading -> Unit
+                }
+            }
+        }
+        val installed = states[chosen] == ModelState.Installed
+        if (status.running) {
+            OutlinedButton(onClick = bench::stop, modifier = Modifier.fillMaxWidth()) { Text("Arrêter le banc d'essai") }
+        } else {
+            Button(onClick = { bench.start(chosen) }, enabled = installed, modifier = Modifier.fillMaxWidth()) {
+                Text("Lancer le banc d'essai")
+            }
+        }
+        DiagLine("État", status.message, if (status.message.startsWith("erreur")) PitColors.Red else PitColors.Muted)
+        status.load?.let { DiagLine("Modèle", it) }
+        status.nativeHeapMb?.let { DiagLine("Mémoire native de l'appli", "$it Mo") }
+        status.battery?.let { DiagLine("Batterie", it) }
+        if (status.dropped > 0) DiagLine("Blocs perdus (calcul trop lent)", status.dropped.toString(), PitColors.Yellow)
+        if (status.running && status.partial.isNotBlank()) DiagLine("En cours", status.partial)
+        if (status.running) {
+            val p = phrase
+            if (p != null) {
+                Text("Dis : « $p »  ($progress)", style = MaterialTheme.typography.titleMedium, color = PitColors.Green)
+                Text(
+                    "Sans « radio » : la radio ne réagit pas pendant la série.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = PitColors.Muted,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = bench::skipPhrase) { Text("Passer") }
+                    OutlinedButton(onClick = bench::stopSeries) { Text("Arrêter la série") }
+                }
+            } else {
+                Button(onClick = bench::startSeries, modifier = Modifier.fillMaxWidth()) {
+                    Text("Série d'essai (20 phrases radio)")
+                }
+            }
+        }
+        if (summary.phrases > 0) {
+            fun pct(v: Double?) = v?.let { "${(it * 100).roundToInt()} %" } ?: "—"
+            DiagLine("Moteur testé", "${summary.engineExact}/${summary.phrases} phrases exactes, erreurs de mots ${pct(summary.engineWer)}")
+            DiagLine("Vosk, mêmes phrases", "${summary.voskExact}/${summary.voskPhrases} exactes, erreurs de mots ${pct(summary.voskWer)}")
+        }
+        if (attempts.isNotEmpty()) {
+            summary.meanLatencyMs?.let { DiagLine("Délai moyen après la fin de la voix", "$it ms") }
+            summary.realTimeFactor?.let {
+                DiagLine("Calcul", "${(it * 100).roundToInt()} % de la durée parlée" + if (it < 1) " (plus rapide que le temps réel)" else " (plus lent que le temps réel)")
+            }
+            if (summary.screenOff > 0) DiagLine("Phrases écran éteint", summary.screenOff.toString())
+            Text("Dernières phrases (la plus récente en haut)", style = MaterialTheme.typography.labelMedium, color = PitColors.Muted)
+            attempts.takeLast(8).asReversed().forEach { a ->
+                fun w(v: Double?) = v?.let { " (${(it * 100).roundToInt()} % d'erreurs)" } ?: ""
+                Column(Modifier.padding(vertical = 2.dp)) {
+                    a.expected?.let { DiagLine("Attendu", "« $it »", PitColors.Green) }
+                    DiagLine("sherpa", "« ${a.text} »${w(a.wer)} — ${a.latencyMs} ms" + if (a.screenOff) " — écran éteint" else "")
+                    DiagLine(if (a.voskFree) "Vosk (libre)" else "Vosk (radio)", a.vosk?.let { "« $it »${w(a.voskWer)}" } ?: "rien au même moment")
+                }
             }
         }
     }

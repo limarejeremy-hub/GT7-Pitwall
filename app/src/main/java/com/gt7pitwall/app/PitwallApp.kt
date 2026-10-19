@@ -16,7 +16,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import com.gt7pitwall.app.voice.TtsVoiceOutput
+import com.gt7pitwall.app.voice.BenchModelManager
 import com.gt7pitwall.app.voice.GoogleSpeech
+import com.gt7pitwall.app.voice.SherpaBench
 import com.gt7pitwall.app.voice.VoiceModelManager
 import com.gt7pitwall.app.voice.VoskVoiceInput
 
@@ -34,6 +36,10 @@ class PitwallApp : Application() {
         private set
     val gemini = GeminiNano()
 
+    /** Banc d'essai de reconnaissance locale (sherpa-onnx) : compare avec Vosk, n'agit jamais sur la radio. */
+    lateinit var bench: SherpaBench
+        private set
+
     /** Radio Discord : le bot tourne sur le téléphone et parle dans le salon vocal de la PS5. */
     lateinit var discord: DiscordRadio
         private set
@@ -49,6 +55,7 @@ class PitwallApp : Application() {
         discord = DiscordRadio(this, DiscordTokenStore(this)).also { it.speechRate = settings.speechRate }
         radioOut = RoutedVoiceOutput(voice, discord).also { it.mirrorOnPhone = settings.discordMirrorPhone }
         voiceModels = VoiceModelManager(this)
+        bench = SherpaBench(this, BenchModelManager(this))
         voiceInput = VoskVoiceInput(voiceModels, voice).also {
             it.wakeWord = settings.wakeWord
             it.limitedVocabulary = settings.limitedVocabulary
@@ -56,6 +63,7 @@ class PitwallApp : Application() {
             it.googleSpeech = GoogleSpeech(this)
             it.useGoogleSpeech = settings.googleSpeech
             it.remoteMic = { if (settings.discordMicInput) discord.openMicSource() else null }
+            it.bench = bench
         }
         // Le bot entre dans le salon ou en sort : l'écoute bascule entre le micro du casque PS5 et celui du Fold.
         CoroutineScope(SupervisorJob() + Dispatchers.Main).launch {

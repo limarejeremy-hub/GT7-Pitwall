@@ -192,6 +192,12 @@ class VoskVoiceInput(
      */
     var googleSpeech: GoogleSpeech? = null
 
+    /**
+     * Banc d'essai de reconnaissance locale : reçoit les mêmes blocs audio que Vosk et ce que Vosk a reconnu, pour
+     * comparer. Il n'agit jamais sur la radio ; pendant une série d'essai, la radio ne réagit pas aux phrases lues.
+     */
+    var bench: SherpaBench? = null
+
     @Volatile
     var useGoogleSpeech: Boolean = true
         set(value) {
@@ -307,6 +313,7 @@ class VoskVoiceInput(
                     val n = record.read(buffer)
                     if (n > 0) {
                         googleSpeech?.feed(buffer, n)
+                        bench?.feed(buffer, n)
                         shadow?.let { s ->
                             s.fed = true
                             if (rec.acceptWaveForm(buffer, n)) s.command.append(' ').append(textOf(rec.result))
@@ -338,6 +345,7 @@ class VoskVoiceInput(
                 val n = record.read(buffer)
                 if (n < 0) error("Erreur micro ($n)")
                 if (n == 0 || paused) continue
+                bench?.feed(buffer, n)
                 if (rec.acceptWaveForm(buffer, n)) {
                     val text = textOf(rec.result)
                     withContext(Dispatchers.Main) { onCommandText(text) }
@@ -556,6 +564,14 @@ class VoskVoiceInput(
 
     private fun onText(text: String, freeText: String?) {
         if (text.isBlank() || _state.value == ListenState.PAUSED) return
+        bench?.let { b ->
+            b.reference(freeText ?: text, free = freeText != null || !limitedVocabulary)
+            // Série d'essai : les phrases lues ne sont pas des demandes.
+            if (b.seriesActive) {
+                _heard.value = freeText ?: text
+                return
+            }
+        }
         _heard.value = freeText ?: text
         val norm = DriverCommandParser.normalize(text)
         val wake = DriverCommandParser.normalize(wakeWord)

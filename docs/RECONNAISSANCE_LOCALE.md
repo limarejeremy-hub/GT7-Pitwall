@@ -90,3 +90,52 @@ téléphones. Rien n'a encore été mesuré sur le Fold, en français, avec la v
 
 whisper.cpp reste une solution de repli si sherpa-onnx pose problème. Elle est plus lourde à intégrer (compilation NDK
 dans la CI), pour une précision équivalente à modèle égal.
+
+## 3. Prototype « banc d'essai » sherpa-onnx (dans l'appli)
+
+Carte **Banc d'essai sherpa-onnx (prototype)**, sous « Diagnostic radio ».
+
+- **Bibliothèque :** sherpa-onnx 1.13.8, l'AAR officiel des versions GitHub du projet. La CI le télécharge et vérifie
+  son empreinte SHA-256. Seules les bibliothèques arm64 utiles sont gardées (`libsherpa-onnx-jni`, `libonnxruntime`) :
+  environ 27 Mo dans l'APK.
+- **Modèles :** téléchargés à la demande depuis les archives officielles. L'archive `.tar.bz2` est décompressée au fil
+  du téléchargement, seuls les fichiers utiles sont écrits, et le téléchargement s'arrête quand ils sont tous là.
+  - **Zipformer français en continu :** environ 118 Mo téléchargés sur une archive de 398 Mo. Il garde l'encodeur
+    int8, le décodeur, le joiner int8 et les jetons.
+  - **Whisper base en français :** environ 207 Mo téléchargés. Il garde l'encodeur et le décodeur int8, et les jetons.
+- **Écoute :** le banc reçoit les **mêmes blocs audio que Vosk** (micro du casque PS5 ou micro du Fold), sur un fil de
+  calcul séparé. La file d'attente garde au plus 16 s de son ; si le calcul ne suit pas, les blocs perdus sont comptés
+  et affichés. Rien n'est enregistré.
+- **N'agit jamais sur la radio.** Pendant une **série d'essai**, la radio ignore aussi les phrases lues.
+- **Série d'essai :** les 20 phrases radio de `BenchSeries.PHRASES`, à lire sans « radio ». Chaque phrase est notée
+  pour le moteur testé et pour Vosk au même moment : phrases exactes, et taux d'erreurs de mots (WER) après
+  normalisation des accents, de la ponctuation et des nombres.
+- **Mesures affichées :**
+  - délai entre la fin de la voix et le texte ;
+  - temps de calcul par rapport à la durée parlée ;
+  - durée de chargement et mémoire native prise par le modèle ;
+  - phrases reconnues écran éteint ;
+  - température et niveau de la batterie, au début puis maintenant.
+
+### Mesures préliminaires sur PC (pas sur le Fold)
+Mêmes modèles et mêmes réglages que l'appli (blocs de 0,25 s, 2 fils). Ces chiffres ne valent pas validation : le
+processeur, la voix et le micro ne sont pas ceux de la course.
+
+- **3 phrases Common Voice françaises fournies avec le modèle :**
+  - Zipformer : 1 phrase exacte, 2 à 1 ou 2 mots près. Mais il a été entraîné sur ce corpus, ce qui l'avantage.
+  - Whisper base : nettement plus d'erreurs sur les noms propres.
+- **Les 20 phrases radio lues par deux voix de synthèse françaises (Piper)**, voix propre puis avec un bruit fort
+  (rapport signal/bruit de 10 dB) :
+
+| | voix propre | avec bruit (10 dB) |
+|---|---|---|
+| Zipformer FR | 8 à 23 % d'erreurs de mots, 10 à 16 phrases exactes sur 20 | 15 à 24 %, 7 à 10 sur 20 |
+| Whisper base | 11 à 19 %, 10 à 12 sur 20 | 38 à 40 %, 4 à 5 sur 20 |
+
+- **Calcul sur PC :** environ 10 à 15 % de la durée parlée pour le Zipformer, 16 à 20 % pour Whisper base.
+- **Prononciation de synthèse :** la voix de synthèse prononce mal « pneus » (« peneuse »), ce qui pénalise les deux
+  moteurs.
+
+**Indication à confirmer :** le Zipformer résiste mieux au bruit. Whisper base fait moins d'erreurs sur une voix
+propre, mais se dégrade fortement avec du bruit. La comparaison avec Vosk n'a pas pu être faite sur PC (le serveur du
+modèle Vosk n'était pas joignable depuis l'environnement de travail). Le banc la fait sur le Fold, avec ta voix.
