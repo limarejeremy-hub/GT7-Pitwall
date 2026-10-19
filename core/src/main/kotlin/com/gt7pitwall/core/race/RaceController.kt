@@ -2,6 +2,7 @@ package com.gt7pitwall.core.race
 
 import com.gt7pitwall.core.ai.AiFacts
 import com.gt7pitwall.core.ai.AiReply
+import com.gt7pitwall.core.ai.Intent
 import com.gt7pitwall.core.ai.CoachingObservations
 import com.gt7pitwall.core.ai.RadioAi
 import com.gt7pitwall.core.analysis.GForce
@@ -56,6 +57,7 @@ class RaceController(
     val database: Gt7Database = Gt7Database.EMPTY,
     private val storage: RaceStorage? = null,
     private val radio: RadioFilter = RadioFilter(),
+    private val clock: () -> Long = System::currentTimeMillis,
 ) {
     val tracker = SessionTracker()
     val engineer = RaceEngineer()
@@ -90,6 +92,19 @@ class RaceController(
 
     val aiHistory: List<RadioAi.Exchange> get() = aiExchanges.toList()
 
+    /** Sujet du dernier échange avec l'IA (une relance courte le garde). */
+    val lastAiIntent: Intent? get() = aiExchanges.lastOrNull()?.intent
+
+    private var lastPacketMs: Long? = null
+    private var lastPacketOnTrack = false
+
+    /**
+     * Télémétrie réellement reçue : un paquet GT7 il y a moins de [TELEMETRY_LIVE_MS], voiture en piste. Ce n'est
+     * pas le fait que l'application soit ouverte, ni un ancien paquet resté en mémoire.
+     */
+    fun telemetryLive(): Boolean =
+        lastPacketOnTrack && lastPacketMs?.let { clock() - it < TELEMETRY_LIVE_MS } == true
+
     /** Une conversation avec l'IA est en cours : la phrase suivante lui revient (sauf commande). */
     fun inAiConversation(nowMs: Long = System.currentTimeMillis()): Boolean =
         lastAiAnswerMs?.let { nowMs - it < AI_CONVERSATION_MS } == true
@@ -105,6 +120,8 @@ class RaceController(
     // ------------------------------------------------------------------ Entrées
 
     fun onPacket(p: TelemetryPacket): List<EngineerMessage> {
+        lastPacketMs = clock()
+        lastPacketOnTrack = p.isOnTrack
         val events = tracker.update(p)
         gMeter.update(p)?.let { gForce = it }
         val out = mutableListOf<EngineerMessage>()
@@ -239,13 +256,18 @@ class RaceController(
      * Réponse de l'IA (Gemini Nano) à une phrase que l'analyseur n'a pas comprise. Une commande reconnue passe
      * par le même chemin que la voix ; une réponse n'est dite que si elle a passé le contrôle des chiffres.
      */
-    fun aiReply(question: String, reply: AiReply, nowMs: Long = System.currentTimeMillis()): List<EngineerMessage> {
+    fun aiReply(
+        question: String,
+        reply: AiReply,
+        nowMs: Long = System.currentTimeMillis(),
+        intent: Intent = Intent.OTHER,
+    ): List<EngineerMessage> {
         val echo = EngineerMessage("Toi : $question", Priority.INFO, MessageCategory.DRIVER)
         lastAiAnswerMs = if (reply is AiReply.Command) null else nowMs
         val out = when (reply) {
             is AiReply.Command -> command(reply.command)
             is AiReply.Answer -> {
-                aiExchanges.addLast(RadioAi.Exchange(question, reply.text))
+                aiExchanges.addLast(RadioAi.Exchange(question, reply.text, intent))
                 while (aiExchanges.size > AI_HISTORY) aiExchanges.removeFirst()
                 // La radio écoute la relance sans mot de réveil : c'est une conversation.
                 deliver(listOf(EngineerMessage(reply.text, Priority.HIGH, MessageCategory.ANSWER, expectsReply = true, fromAi = true)))
@@ -264,6 +286,13 @@ class RaceController(
                             MessageCategory.ANSWER,
                         )
                         // Conseil écarté : plutôt que d'improviser, l'ingénieur cherche le vrai problème avec le pilote.
+                        // Déjà dit : on ne rabâche pas, on demande ce que le pilote veut vraiment.
+                        AiReply.Reason.REPEAT -> EngineerMessage(
+                            "Je t'ai déjà donné ce conseil. Tu veux parler de quoi exactement : pilotage, stratégie, autre chose ?",
+                            Priority.HIGH,
+                            MessageCategory.ANSWER,
+                            expectsReply = true,
+                        )
                         AiReply.Reason.NONSENSE, AiReply.Reason.BANALITY, AiReply.Reason.UNPROVEN_DEFECT -> EngineerMessage(
                             "Je préfère ne pas te dire de bêtise. Pour t'aider précisément : c'est dans quel virage, et ça se " +
                                 "passe à l'entrée, au point de corde ou en sortie ?",
@@ -277,6 +306,12 @@ class RaceController(
             )
         }
         return listOf(echo) + out
+    }
+
+    /** Réponse de l'ingénieur lui-même, sans IA (test radio, salut, merci, pas de données de course…). */
+    fun localReply(question: String, text: String): List<EngineerMessage> {
+        val echo = EngineerMessage("Toi : $question", Priority.INFO, MessageCategory.DRIVER)
+        return listOf(echo) + deliver(listOf(EngineerMessage(text, Priority.HIGH, MessageCategory.ANSWER)))
     }
 
     /**
@@ -496,6 +531,7 @@ class RaceController(
         const val AI_LAPS = 5
         const val AI_HISTORY = 3
         const val AI_CONVERSATION_MS = 45_000L
+        const val TELEMETRY_LIVE_MS = 3_000L
 
         val AI_TOPICS = mapOf(
             DriverQuery.FUEL to "Carburant",

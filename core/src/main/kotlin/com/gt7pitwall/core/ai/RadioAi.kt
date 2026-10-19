@@ -35,7 +35,7 @@ sealed interface AiReply {
     /** L'IA ne sait pas, ou sa réponse n'est pas sûre : on le dit franchement. */
     data class Rejected(val reason: Reason) : AiReply
 
-    enum class Reason { UNKNOWN, INVENTED_NUMBER, NOT_TRANSMITTED, NONSENSE, BANALITY, UNPROVEN_DEFECT, BAD_COMMAND, EMPTY }
+    enum class Reason { UNKNOWN, INVENTED_NUMBER, NOT_TRANSMITTED, NONSENSE, BANALITY, UNPROVEN_DEFECT, BAD_COMMAND, REPEAT, EMPTY }
 }
 
 /**
@@ -54,6 +54,12 @@ object RadioAi {
 
         /** Bout de phrase capté par le micro ouvert (« et », « euh ») : ignoré. */
         data object Ignore : Route
+
+        /** Message simple (test radio, salut, merci…) : l'ingénieur répond lui-même, tout de suite, sans Gemini. */
+        data class Local(val question: String, val intent: Intent) : Route
+
+        /** Question de stratégie libre sans télémétrie : rien à calculer, réponse honnête sans Gemini. */
+        data class NoRaceData(val question: String) : Route
     }
 
     /** Questions ouvertes : conseils, analyses, résumés — le terrain de l'IA, pas des mots-clés. */
@@ -73,6 +79,8 @@ object RadioAi {
         inConversation: Boolean = false,
         /** Le contrôleur attend un oui / non (arrêt à confirmer, pneus changés ?). */
         engineerAwaitsAnswer: Boolean = false,
+        /** Télémétrie GT7 reçue en ce moment (voiture en piste) : sans elle, aucune donnée de course n'existe. */
+        telemetryLive: Boolean = true,
     ): Route {
         val t = DriverCommandParser.normalize(text)
         val unknownWords = Regex("\\[unk\\]").findAll(t).count()
@@ -89,6 +97,23 @@ object RadioAi {
         if (yesNo && inConversation && !engineerAwaitsAnswer) return Route.Ai(question)
         val statefulCommand = cmd != null && cmd !is DriverCommand.Ask && cmd != DriverCommand.Repeat
         if (statefulCommand) return Route.Parser(clean)
+        // Comprendre d'abord : test radio, présence, salut, merci, « que sais-tu faire ? » ont leur réponse à eux,
+        // jamais un conseil de pilotage. Les sujets précis (pilotage, stratégie) ne sont jamais pris pour ces formules.
+        val intent = IntentClassifier.classify(question)
+        if (intent in IntentClassifier.LOCAL) return Route.Local(question, intent)
+        // « Répète » : toujours compris, même en pleine conversation (un mot seul n'y est pas un fragment).
+        if (cmd == DriverCommand.Repeat) return Route.Parser(clean)
+        // Demande de stratégie que l'analyseur connaît (essence, pneus, plan…) : le calcul déterministe répond,
+        // même en pleine conversation avec Gemini.
+        // Une question ouverte (« résume ma course », « tu penses que… ») reste pour Gemini, avec ces calculs en faits.
+        if (intent == Intent.STRATEGY && cmd is DriverCommand.Ask && !OPEN_QUESTION.containsMatchIn(question)) {
+            return Route.Parser(clean)
+        }
+        // Stratégie sans télémétrie : une demande connue va à l'analyseur (qui dit qu'il n'a pas de données), une
+        // question libre reçoit la même réponse honnête ; Gemini n'a rien à calculer.
+        if (intent == Intent.STRATEGY && !telemetryLive && !inConversation) {
+            return if (cmd != null) Route.Parser(clean) else Route.NoRaceData(question)
+        }
         // Bout de phrase (« et », « euh », « je fais comment dans les ») : jamais envoyé à l'IA.
         if (isFragment(question, inConversation)) return if (cmd != null && !inConversation) Route.Parser(clean) else Route.Ignore
         // Conversation en cours avec Gemini : la relance (« et au freinage ? », « pourquoi ? ») lui revient.
@@ -147,38 +172,84 @@ object RadioAi {
     private const val MAX_SENTENCES = 3
 
     val systemInstruction: String = """
-        Tu es l'ingénieur de course d'un pilote de Gran Turismo 7, à la radio. Tu tutoies le pilote. Tu es précis,
-        naturel et utile, jamais bavard. Réponds en français, en deux ou trois phrases courtes, à dire à voix haute.
-        Règles de coaching :
-        1. Ne reproche au pilote un défaut que s'il figure dans les CONSTATS (prouvés par la télémétrie) ou s'il l'a
+        Tu es l'ingénieur de course d'un pilote de Gran Turismo 7, à la radio. Tu tutoies le pilote et tu parles comme
+        un vrai ingénieur : naturel, direct, jamais bavard. Réponds en français, en une à trois phrases courtes, à dire
+        à voix haute.
+        1. Réponds d'abord exactement à ce que le pilote dit ou demande, selon le SUJET indiqué. Une question simple
+           appelle une réponse simple.
+        2. Ne donne un conseil de pilotage que si le SUJET est le pilotage. Pour un autre sujet, aucun conseil de
+           freinage, de trajectoire ni d'accélération. Ne répète jamais un conseil déjà donné dans les ÉCHANGES
+           PRÉCÉDENTS.
+        3. Si tu ne sais pas ce que le pilote veut, demande-lui une précision courte au lieu de deviner.
+        4. Respecte le CONTEXTE : sans télémétrie, ne parle d'aucun tour, chrono, position, usure ni performance du
+           pilote ; tu peux expliquer ton fonctionnement ou donner un conseil général s'il le demande.
+        5. La stratégie (essence, pneus, arrêts, règlement) se lit uniquement dans les FAITS, calculés par Pitwall :
+           ne calcule rien toi-même et ne décide rien qui ne soit pas dans les FAITS.
+        6. Ne reproche au pilote un défaut que s'il figure dans les CONSTATS (prouvés par la télémétrie) ou s'il l'a
            dit lui-même. Sans preuve, pose une question au lieu de supposer.
-        2. Chaque conseil explique le pourquoi et donne un geste concret (où, quand, comment), en t'appuyant sur les
-           PRINCIPES DE PILOTAGE fournis. Pas de formule creuse comme « sois fluide » ou « reste concentré ».
-        3. Pour approfondir, termine si besoin par UNE question précise (quel virage ? à l'entrée, au point de corde
-           ou en sortie ? l'avant ou l'arrière qui glisse ?), puis utilise sa réponse dans les ÉCHANGES PRÉCÉDENTS
-           pour aller plus loin, un sujet à la fois.
-        4. Tout chiffre cité doit venir des FAITS ou des CONSTATS, écrit en chiffres tel quel. N'invente jamais un
+        7. Un conseil explique le pourquoi et donne un geste concret (où, quand, comment), en t'appuyant sur les
+           PRINCIPES DE PILOTAGE fournis. Pas de formule creuse comme « sois fluide » ou « reste concentré ». Pour
+           approfondir, termine si besoin par UNE question précise (quel virage ? entrée, corde ou sortie ?).
+        8. Tout chiffre cité doit venir des FAITS ou des CONSTATS, écrit en chiffres tel quel. N'invente jamais un
            temps, une position, un écart, un adversaire ni une météo : GT7 ne les transmet pas.
-        5. Réponds $UNKNOWN seulement si on te demande une donnée absente (adversaires, positions des autres…).
+        9. Réponds $UNKNOWN seulement si on te demande une donnée absente (adversaires, positions des autres…).
         Si le pilote annonce quelque chose ou demande un changement (règlement, arrêt, pneus, position, pluie, radio),
         réponds uniquement par une ligne « $COMMAND_PREFIX <phrase> » en reprenant la forme d'un de ces exemples :
         ${COMMAND_EXAMPLES.joinToString(" ; ")}.
     """.trimIndent()
 
     /** Un échange déjà vérifié, gardé pour les relances. */
-    data class Exchange(val question: String, val answer: String)
+    data class Exchange(val question: String, val answer: String, val intent: Intent = Intent.OTHER)
 
-    fun prompt(question: String, facts: AiFacts, history: List<Exchange> = emptyList()): String = buildString {
+    /** Relances qui continuent le sujet précédent (« et au freinage ? », « pourquoi ? », « oui »). */
+    private val FOLLOW_UP = Regex(
+        "^(et|mais|donc|alors|oui|non|ouais|ok|d'accord|pourquoi|comment ca|c'est a dire|ca veut dire|precise|explique|" +
+            "detaille|encore|ensuite|et si|et pour|et au|et en|et a|et dans|dans quel|lequel|laquelle|ou ca|quand ca|" +
+            "vas y|continue|je vois|exact|jamais|souvent|toujours|parfois)(\\s|$)",
+    )
+
+    /** La phrase continue l'échange précédent : relance explicite, ou réponse très courte. */
+    fun isFollowUp(question: String): Boolean {
+        val t = IntentClassifier.clean(question)
+        return FOLLOW_UP.containsMatchIn(t) || t.split(' ').filter { it.isNotBlank() }.size <= 3
+    }
+
+    private fun subjectLabel(intent: Intent): String = when (intent) {
+        Intent.COACHING -> "pilotage (le pilote demande un conseil ou décrit un problème de conduite)"
+        Intent.STRATEGY -> "stratégie (essence, pneus, arrêts, règlement, course) : réponds avec les FAITS, sans conseil de pilotage"
+        else -> "conversation : réponds simplement à ce qui est dit, sans conseil de pilotage ; demande une précision si besoin"
+    }
+
+    fun prompt(
+        question: String,
+        facts: AiFacts,
+        history: List<Exchange> = emptyList(),
+        intent: Intent = Intent.COACHING,
+        telemetryLive: Boolean = true,
+    ): String = buildString {
+        append("CONTEXTE : ")
+        append(
+            if (telemetryLive) {
+                "télémétrie GT7 active, course suivie en direct. Réponses courtes : le pilote conduit."
+            } else {
+                "aucune télémétrie GT7 en ce moment (pas de course suivie). Ne cite aucun tour, chrono, position, usure ni performance."
+            },
+        )
+        append("\nSUJET : ").append(subjectLabel(intent)).append("\n\n")
         append("FAITS :\n").append(facts.text).append("\n\n")
-        append("CONSTATS (prouvés par la télémétrie) :\n")
-        if (facts.observations.isEmpty()) {
-            append("- Aucun défaut de pilotage prouvé pour l'instant.\n")
-        } else {
-            facts.observations.forEach { append("- ").append(it.text).append('\n') }
+        // Constats et principes de pilotage : seulement quand on parle de pilotage. Ailleurs, ils pousseraient le
+        // modèle à répondre « freinage » à « tu m'entends ? ».
+        if (intent == Intent.COACHING) {
+            append("CONSTATS (prouvés par la télémétrie) :\n")
+            if (facts.observations.isEmpty()) {
+                append("- Aucun défaut de pilotage prouvé pour l'instant.\n")
+            } else {
+                facts.observations.forEach { append("- ").append(it.text).append('\n') }
+            }
+            append("\nPRINCIPES DE PILOTAGE :\n")
+            DrivingPrinciples.select(question, history, facts.evidence).forEach { append("- ").append(it.text).append('\n') }
+            append('\n')
         }
-        append("\nPRINCIPES DE PILOTAGE :\n")
-        DrivingPrinciples.select(question, history, facts.evidence).forEach { append("- ").append(it.text).append('\n') }
-        append('\n')
         if (history.isNotEmpty()) {
             append("ÉCHANGES PRÉCÉDENTS :\n")
             history.forEach { append("- Pilote : ").append(it.question).append("\n  Ingénieur : ").append(it.answer).append('\n') }
@@ -187,7 +258,14 @@ object RadioAi {
         append("LE PILOTE DIT : « ").append(question.trim()).append(" »\n\nRÉPONSE :")
     }
 
-    fun parse(raw: String?, question: String, facts: AiFacts, history: List<Exchange> = emptyList()): AiReply {
+    fun parse(
+        raw: String?,
+        question: String,
+        facts: AiFacts,
+        history: List<Exchange> = emptyList(),
+        /** Réponses déjà dites (toute la conversation) : un conseil n'est pas répété. */
+        previousAnswers: List<String> = history.map { it.answer },
+    ): AiReply {
         val text = raw?.trim()?.trim('"', '«', '»', ' ')?.takeIf { it.isNotEmpty() } ?: return AiReply.Rejected(AiReply.Reason.EMPTY)
         if (text.uppercase().startsWith(UNKNOWN)) return AiReply.Rejected(AiReply.Reason.UNKNOWN)
 
@@ -208,8 +286,10 @@ object RadioAi {
         val driverSaid = (history.map { it.question } + question).filterNot(::isQuestion).joinToString(" ")
         val sentences = sentences(text.lines().filter { it.isNotBlank() }.joinToString(" ") { it.trim() })
         var firstProblem: AiReply.Reason? = null
+        val said = previousAnswers.flatMap { sentences(it) }
         val kept = sentences.filter { sentence ->
             val problem = when {
+                said.any { repeats(sentence, it) } -> AiReply.Reason.REPEAT
                 !numbersAllowed(sentence, source) -> AiReply.Reason.INVENTED_NUMBER
                 talksAboutOthers(sentence) -> AiReply.Reason.NOT_TRANSMITTED
                 sentence.uppercase().contains(UNKNOWN) -> AiReply.Reason.UNKNOWN
@@ -239,6 +319,19 @@ object RadioAi {
         val allowedPairs = withUnits(src).toSet()
         return withUnits(t).all { it in allowedPairs }
     }
+
+    /** Même idée déjà dite : la plupart des mots porteurs de sens sont communs aux deux phrases. */
+    fun repeats(a: String, b: String): Boolean {
+        fun words(s: String) = IntentClassifier.clean(s).split(' ').filter { it.length >= 4 }.toSet()
+        val wa = words(a)
+        val wb = words(b)
+        if (wa.size < MIN_REPEAT_WORDS || wb.size < MIN_REPEAT_WORDS) return false
+        val common = (wa intersect wb).size.toDouble()
+        return common / minOf(wa.size, wb.size) >= REPEAT_OVERLAP
+    }
+
+    private const val MIN_REPEAT_WORDS = 4
+    private const val REPEAT_OVERLAP = 0.6
 
     private val INTERROGATIVE = Regex("^(est ce|comment|pourquoi|quand|ou est|quel|quelle|quels|quelles|combien|qu'est|que dois|dois je|tu crois|tu penses)")
 

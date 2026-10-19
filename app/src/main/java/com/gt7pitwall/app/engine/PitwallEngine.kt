@@ -1,6 +1,7 @@
 package com.gt7pitwall.app.engine
 
 import com.gt7pitwall.core.ai.AiTrace
+import com.gt7pitwall.core.ai.IntentClassifier
 import com.gt7pitwall.core.ai.RadioConversation
 import com.gt7pitwall.core.ai.LanguageModel
 import com.gt7pitwall.core.analysis.GForce
@@ -16,6 +17,7 @@ import com.gt7pitwall.core.knowledge.Gt7Database
 import com.gt7pitwall.core.race.RaceController
 import com.gt7pitwall.core.race.RaceStorage
 import com.gt7pitwall.core.radio.DriverCommand
+import com.gt7pitwall.core.radio.DriverCommandParser
 import com.gt7pitwall.core.radio.DriverQuery
 import com.gt7pitwall.core.radio.VoiceInput
 import com.gt7pitwall.core.radio.VoiceInputEvent
@@ -204,6 +206,9 @@ class PitwallEngine(
         scope.launch {
             val messages = if (lm != null && lm.ready) {
                 askAi(lm, question)
+            } else if (IntentClassifier.classify(question) in IntentClassifier.LOCAL || DriverCommandParser.parse(question) != null) {
+                // Sans Gemini, l'ingénieur répond quand même aux messages simples et aux questions qu'il calcule.
+                conversation.onUtterance(question, question, lm, ::deliver).also { mutex.withLock { publish(force = true) } }
             } else {
                 listOf(EngineerMessage("Gemini n'est pas prêt : ${lm?.status ?: "désactivé"}", Priority.HIGH, MessageCategory.ANSWER))
             }

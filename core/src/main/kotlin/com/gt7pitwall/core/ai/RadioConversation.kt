@@ -13,9 +13,10 @@ import kotlinx.coroutines.withTimeoutOrNull
 data class AiTrace(val question: String, val raw: String?, val verdict: String, val latencyMs: Long)
 
 /**
- * Un tour de radio : aiguillage (analyseur, IA ou fragment ignoré), question à l'IA avec les faits de la course,
- * contrôle de la réponse, puis enregistrement dans la conversation. Le modèle tourne hors du verrou : la
- * télémétrie continue d'être traitée pendant qu'il réfléchit.
+ * Un tour de radio : comprendre l'intention, puis répondre par le bon chemin — l'ingénieur lui-même pour les
+ * messages simples (test radio, salut, merci), l'analyseur pour les commandes et les calculs, l'IA pour le reste,
+ * avec les faits de la course et le sujet de la question. La réponse de l'IA est contrôlée puis enregistrée dans la
+ * conversation. Le modèle tourne hors du verrou : la télémétrie continue d'être traitée pendant qu'il réfléchit.
  */
 class RadioConversation(
     private val race: RaceController,
@@ -34,10 +35,14 @@ class RadioConversation(
         onThinking: (EngineerMessage) -> Unit = {},
     ): List<EngineerMessage> {
         val route = mutex.withLock {
-            RadioAi.route(text, freeText, race.inAiConversation(clock()), race.awaitingDriverAnswer)
+            RadioAi.route(text, freeText, race.inAiConversation(clock()), race.awaitingDriverAnswer, race.telemetryLive())
         }
         return when {
             route is RadioAi.Route.Ignore -> emptyList()
+            route is RadioAi.Route.Local -> mutex.withLock {
+                race.localReply(route.question, LocalReplies.text(route.intent, race.telemetryLive()))
+            }
+            route is RadioAi.Route.NoRaceData -> mutex.withLock { race.localReply(route.question, LocalReplies.NO_RACE_DATA) }
             route is RadioAi.Route.Ai && model != null && model.ready -> ask(model, route.question, onThinking)
             route is RadioAi.Route.Ai && model != null && DriverCommandParser.parse(text) == null -> listOf(
                 EngineerMessage("Toi : ${route.question}", Priority.INFO, MessageCategory.DRIVER),
@@ -47,16 +52,29 @@ class RadioConversation(
         }
     }
 
-    /** Question posée à l'IA (radio ou écran). */
+    /** Question posée à l'IA (radio ou écran). Un message simple reçoit d'abord la réponse de l'ingénieur. */
     suspend fun ask(model: LanguageModel, question: String, onThinking: (EngineerMessage) -> Unit = {}): List<EngineerMessage> {
+        val asked = IntentClassifier.classify(question)
+        if (asked in IntentClassifier.LOCAL) {
+            return mutex.withLock { race.localReply(question, LocalReplies.text(asked, race.telemetryLive())) }
+        }
         onThinking(EngineerMessage("Gemini réfléchit : « $question »", Priority.INFO, MessageCategory.DRIVER))
-        val (facts, history) = mutex.withLock { race.aiFacts() to race.aiHistory }
+        val context = mutex.withLock { Context(race.aiFacts(), race.aiHistory, race.telemetryLive(), race.lastAiIntent) }
+        // Une relance (« pourquoi ? », « oui », « et au freinage ? ») garde le sujet et la conversation ; une nouvelle
+        // question repart de zéro, pour ne pas ressortir l'ancien conseil.
+        val followUp = context.lastIntent != null && RadioAi.isFollowUp(question)
+        val intent = if (asked == Intent.OTHER && followUp) context.lastIntent!! else asked
+        val sameSubject = followUp || (intent != Intent.OTHER && intent == context.lastIntent)
+        val history = if (sameSubject) context.history else emptyList()
         val started = clock()
-        val raw = withTimeoutOrNull(timeoutMs) { model.generate(RadioAi.systemInstruction, RadioAi.prompt(question, facts, history)) }
-        val reply = RadioAi.parse(raw, question, facts, history)
+        val prompt = RadioAi.prompt(question, context.facts, history, intent, context.telemetryLive)
+        val raw = withTimeoutOrNull(timeoutMs) { model.generate(RadioAi.systemInstruction, prompt) }
+        val reply = RadioAi.parse(raw, question, context.facts, history, previousAnswers = context.history.map { it.answer })
         lastTrace = AiTrace(question, raw, verdict(reply, raw), clock() - started)
-        return mutex.withLock { race.aiReply(question, reply, clock()) }
+        return mutex.withLock { race.aiReply(question, reply, clock(), intent) }
     }
+
+    private class Context(val facts: AiFacts, val history: List<RadioAi.Exchange>, val telemetryLive: Boolean, val lastIntent: Intent?)
 
     private fun verdict(reply: AiReply, raw: String?): String = when (reply) {
         is AiReply.Answer -> "réponse dite"
@@ -69,6 +87,7 @@ class RadioConversation(
             AiReply.Reason.BANALITY -> "refusée : banalité sans geste concret"
             AiReply.Reason.UNPROVEN_DEFECT -> "refusée : défaut non prouvé par la télémétrie"
             AiReply.Reason.BAD_COMMAND -> "refusée : commande inconnue"
+            AiReply.Reason.REPEAT -> "refusée : conseil déjà donné"
             AiReply.Reason.EMPTY -> if (raw == null) "pas de réponse (délai ou erreur)" else "réponse vide"
         }
     }
