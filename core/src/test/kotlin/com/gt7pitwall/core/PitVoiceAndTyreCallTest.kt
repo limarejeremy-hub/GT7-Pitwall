@@ -56,7 +56,9 @@ class PitVoiceAndTyreCallTest {
         // Le pilote s'arrête plus tôt que prévu, sans essence, puis le dit.
         s.say("j'ai fait un arrêt aux stands")
         assertEquals(StopEvidence.DRIVER_DECLARED, c.ledger.stopList.single().evidence)
-        assertTrue("Arrêts obligatoires : 1 sur 1" in s.lastAnswer, s.lastAnswer)
+        assertTrue(s.texts.takeLast(4).any { "Arrêts obligatoires : 1 sur 1" in it }, s.texts.takeLast(4).toString())
+        // Un arrêt ne dit rien des pneus : l'ingénieur le demande.
+        assertTrue(s.lastAnswer.endsWith("As-tu changé les pneus ?"), s.lastAnswer)
         assertTrue(c.plan!!.stops.isEmpty())
         assertEquals("Nouveau plan : plus d'arrêt jusqu'à l'arrivée.", s.texts.last(planAnnounce))
     }

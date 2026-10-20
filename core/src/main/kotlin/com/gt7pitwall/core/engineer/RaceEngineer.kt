@@ -85,8 +85,20 @@ class RaceEngineer {
     private var lastSpoken: EngineerMessage? = null
     private val tyres = TyreCoach()
 
-    /** Tour où l'usure des pneus a été constatée par la télémétrie (null si rien depuis le dernier arrêt). */
+    /** Tour où une dégradation persistante a été mesurée sur le train de pneus en cours (null sinon). */
     val tyreWearSuspectedLap: Int? get() = tyres.wearSuspectedLap
+
+    /** Diagnostic d'adhérence du relais pneus en cours. */
+    val grip: com.gt7pitwall.core.tyres.GripReport get() = tyres.report
+
+    /** Relais pneus en cours (début, tours à écarter, déclarations), tenu par le contrôleur. */
+    var stintContext: com.gt7pitwall.core.tyres.StintContext = com.gt7pitwall.core.tyres.StintContext()
+
+    /** Pneus neufs déclarés : nouveau relais pneus (un ravitaillement seul ne le fait jamais). */
+    fun onTyresChanged(lap: Int) {
+        tyres.newTyres()
+        stintContext = stintContext.copy(startLap = lap)
+    }
 
     /** Plan de course calculé par le moteur à partir du règlement (null sans règlement exploitable). */
     var plan: RacePlan? = null
@@ -157,9 +169,10 @@ class RaceEngineer {
                 }
 
                 // Le contrôleur annonce l'arrêt enregistré (« Arrêt 1 enregistré : ravitaillement de… »).
+                // Un ravitaillement ne dit rien des pneus : seule la montée en température repart (passage aux stands).
                 SessionEvent.RefuelDetected -> {
                     resetAlerts()
-                    tyres.pitStop()
+                    tyres.pitVisit()
                 }
 
                 // Annoncé dans le message du tour qui vient de se terminer, sinon seul.
@@ -191,7 +204,7 @@ class RaceEngineer {
         }
         if (!raceOver) {
             fuelAlert(fuel)?.let { out += it }
-            snapshot.packet?.let { p -> tyres.onPacket(p)?.let { out += msg(it, Priority.HIGH, MessageCategory.LAP) } }
+            snapshot.packet?.let { p -> tyres.onPacket(p)?.let { out += msg(it.text, it.priority, MessageCategory.LAP) } }
         }
         val result = RadioFilter.criticalFirst(out.filter { RadioFilter.allowed(radioLevel, it) })
         result.lastOrNull()?.let { lastSpoken = it }
@@ -393,7 +406,7 @@ class RaceEngineer {
             sectorFeedback(lap.sectorsMs, lap.lapNumber, snapshot, isNewBest = time != null && e.previousBestMs != null && time < e.previousBestMs)
                 ?.let { sb.append(it).append(' ') }
         }
-        tyres.onLap(snapshot.laps, raining)?.let { sb.append(it).append(' ') }
+        tyres.onLap(snapshot.laps, stintContext.copy(raining = raining))?.let { sb.append(it).append(' ') }
         if (finished) return msg(sb.toString().trim(), Priority.NORMAL, MessageCategory.LAP).also { lastLapDetails = it.text }
 
         currentPosition?.let { sb.append("Tu es P$it. ") }

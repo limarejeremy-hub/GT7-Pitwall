@@ -101,12 +101,19 @@ object RaceJson {
         r.laps.forEach { l ->
             laps.put(
                 JSONObject().put("lap", l.lap).put("timeMs", l.timeMs ?: 0).put("fuelUsed", l.fuelUsed?.toDouble() ?: -1.0)
-                    .put("refuelled", l.refuelled).put("fuelAfter", l.fuelAfter?.toDouble() ?: -1.0),
+                    .put("refuelled", l.refuelled).put("fuelAfter", l.fuelAfter?.toDouble() ?: -1.0)
+                    .put("tyreAge", l.tyreAge ?: -1).put("tyreCompound", l.tyreCompound?.name ?: "").put("tyreCertain", l.tyreCertain)
+                    .put("tcs", l.tcsShare?.toDouble() ?: -1.0).put("lockups", l.lockups ?: -1).put("wheelspins", l.wheelspins ?: -1)
+                    .put("frontEvents", l.frontEvents ?: -1).put("rearEvents", l.rearEvents ?: -1)
+                    .put("wheelTemps", l.wheelTemps?.let { w -> JSONArray(w.map { it.toDouble() }) } ?: JSONArray()),
             )
         }
         val stops = JSONArray()
         r.stops.forEach { s ->
-            stops.put(JSONObject().put("lap", s.lap).put("evidence", s.evidence.name).put("fuelAdded", s.fuelAdded?.toDouble() ?: -1.0))
+            stops.put(
+                JSONObject().put("lap", s.lap).put("evidence", s.evidence.name).put("fuelAdded", s.fuelAdded?.toDouble() ?: -1.0)
+                    .put("tyres", s.tyres.name),
+            )
         }
         val tyres = JSONArray()
         r.tyres.forEach { t -> tyres.put(JSONObject().put("lap", t.lap).put("compound", t.compound?.name ?: "")) }
@@ -158,11 +165,23 @@ object RaceJson {
                     fuelUsed = floatOrNull(l, "fuelUsed"),
                     refuelled = l.optBoolean("refuelled", false),
                     fuelAfter = floatOrNull(l, "fuelAfter"),
+                    tyreAge = l.optInt("tyreAge", -1).takeIf { it >= 0 },
+                    tyreCompound = TyreCompound.parseCodes(l.optString("tyreCompound", "")).firstOrNull(),
+                    tyreCertain = l.optBoolean("tyreCertain", true),
+                    tcsShare = floatOrNull(l, "tcs"),
+                    lockups = l.optInt("lockups", -1).takeIf { it >= 0 },
+                    wheelspins = l.optInt("wheelspins", -1).takeIf { it >= 0 },
+                    frontEvents = l.optInt("frontEvents", -1).takeIf { it >= 0 },
+                    rearEvents = l.optInt("rearEvents", -1).takeIf { it >= 0 },
+                    wheelTemps = l.optJSONArray("wheelTemps")?.takeIf { it.length() == 4 }?.let { a -> (0 until 4).map { a.getDouble(it).toFloat() } },
                 )
             },
             stops = objects("stops").mapNotNull { s ->
                 val ev = StopEvidence.entries.firstOrNull { it.name == s.optString("evidence") } ?: return@mapNotNull null
-                StopEntry(s.optInt("lap"), ev, floatOrNull(s, "fuelAdded"))
+                StopEntry(
+                    s.optInt("lap"), ev, floatOrNull(s, "fuelAdded"),
+                    com.gt7pitwall.core.strategy.TyreService.entries.firstOrNull { it.name == s.optString("tyres") } ?: com.gt7pitwall.core.strategy.TyreService.UNKNOWN,
+                )
             },
             startTyre = TyreCompound.parseCodes(o.optString("startTyre", "")).firstOrNull(),
             tyres = objects("tyres").map { t -> TyreEntry(t.optInt("lap"), TyreCompound.parseCodes(t.optString("compound", "")).firstOrNull()) },

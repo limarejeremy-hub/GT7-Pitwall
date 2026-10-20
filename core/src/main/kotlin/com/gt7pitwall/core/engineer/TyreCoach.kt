@@ -3,6 +3,10 @@ package com.gt7pitwall.core.engineer
 import com.gt7pitwall.core.engineer.FrenchFormat.deltaSpeech
 import com.gt7pitwall.core.session.LapRecord
 import com.gt7pitwall.core.telemetry.TelemetryPacket
+import com.gt7pitwall.core.tyres.GripDiagnosis
+import com.gt7pitwall.core.tyres.GripLevel
+import com.gt7pitwall.core.tyres.GripReport
+import com.gt7pitwall.core.tyres.StintContext
 import kotlin.math.roundToInt
 
 /**
@@ -11,9 +15,19 @@ import kotlin.math.roundToInt
  *
  * GT7 ne transmet ni l'usure des pneus, ni la météo, ni le type de gomme : l'ingénieur parle donc
  * de ce qu'il mesure (températures qui se stabilisent, adhérence qui baisse, chronos qui se dégradent).
+ * Une température stabilisée n'est pas la preuve d'une bonne adhérence, et une dégradation n'est jamais attribuée
+ * d'office à l'usure (voir [GripDiagnosis]). Le relais pneus est indépendant du carburant : un ravitaillement ne
+ * remet rien à zéro, seul un changement de pneus déclaré le fait ([newTyres]).
  * Les seuils sont volontairement prudents et regroupés ici pour être ajustés après les essais.
  */
 class TyreCoach {
+    /** Message de pneus et sa priorité (les températures ne sont qu'une information). */
+    data class Note(val text: String, val priority: Priority)
+
+    /** Dernier diagnostic d'adhérence du relais pneus en cours. */
+    var report: GripReport = GripReport.NONE
+        private set
+    private var announcedLevel = GripLevel.STABLE
 
     // --- Montée en température (échantillon d'une seconde) ---
     private val window = ArrayDeque<Float>()
@@ -46,19 +60,31 @@ class TyreCoach {
         severeActive = false
         lastDegradationLap = -NEVER
         wearSuspectedLap = null
+        report = GripReport.NONE
+        announcedLevel = GripLevel.STABLE
     }
 
-    /** Arrêt au stand : les pneus repartent pour une nouvelle montée en température. */
-    fun pitStop() {
+    /** Passage aux stands (avec ou sans pneus) : nouvelle montée en température à suivre, l'usure n'est pas remise à zéro. */
+    fun pitVisit() {
         window.clear()
         startTemp = null
         warmAnnounced = false
         overheatWarned = false
+    }
+
+    /** Pneus neufs déclarés par le pilote : nouveau relais pneus. */
+    fun newTyres() {
+        pitVisit()
+        gripAlertRef = null
+        severeActive = false
+        lastDegradationLap = -NEVER
         wearSuspectedLap = null
+        report = GripReport.NONE
+        announcedLevel = GripLevel.STABLE
     }
 
     /** À chaque paquet. Renvoie une phrase quand il y a quelque chose à dire. */
-    fun onPacket(p: TelemetryPacket): String? {
+    fun onPacket(p: TelemetryPacket): Note? {
         if (!p.isOnTrack || p.isPaused || p.speedKmh < MIN_SPEED_KMH) return null
         lastSampleId?.let { if (p.packetId - it in 0 until SAMPLE_PACKETS) return null }
         lastSampleId = p.packetId
@@ -71,14 +97,17 @@ class TyreCoach {
         if (warmAnnounced && stable != null) {
             // Gros refroidissement (pluie, longue neutralisation) : nouvelle montée en température à suivre.
             if (t < stable - COOL_DOWN_DROP) {
-                pitStop()
+                pitVisit()
                 startTemp = t
                 window.addLast(t)
                 return null
             }
             if (!overheatWarned && t >= stable + OVERHEAT_RISE) {
                 overheatWarned = true
-                return "Tes pneus chauffent : ${t.roundToInt()} degrés, contre ${stable.roundToInt()} quand ils étaient bien. Ménage-les un peu."
+                return Note(
+                    "Tes pneus chauffent : ${t.roundToInt()} degrés, contre ${stable.roundToInt()} quand ils se sont stabilisés. Ménage-les un peu.",
+                    Priority.NORMAL,
+                )
             }
             if (overheatWarned && t < stable + OVERHEAT_REARM) overheatWarned = false
             return null
@@ -91,13 +120,16 @@ class TyreCoach {
         if (rise >= MIN_WARMUP_RISE && last - first < STABLE_SLOPE) {
             warmAnnounced = true
             stableTemp = last.toFloat()
-            return "Pneus en température, ${last.roundToInt()} degrés en moyenne. Tu peux attaquer !"
+            // Une information, pas un feu vert : une température stable ne prouve pas que l'adhérence est bonne.
+            return Note("Températures des pneus stabilisées, ${last.roundToInt()} degrés en moyenne.", Priority.INFO)
         }
         return null
     }
 
     /** En fin de tour : adhérence et dégradation. Une seule phrase, la plus importante. */
-    fun onLap(laps: List<LapRecord>, raining: Boolean): String? {
+    fun onLap(laps: List<LapRecord>, ctx: StintContext): String? {
+        val raining = ctx.raining
+        report = GripDiagnosis.analyze(laps, ctx)
         val cur = laps.lastOrNull()?.takeIf { it.hasStats() && !it.refuelled } ?: return null
         val prev = laps.dropLast(1).lastOrNull { it.hasStats() && !it.refuelled }
 
@@ -138,31 +170,33 @@ class TyreCoach {
         }
 
         // 4. Dégradation sur le relais (chronos qui baissent + plus de glisse) — pas sous la pluie.
-        if (!raining) degradation(laps, cur)?.let { return it }
+        if (!raining) degradation(cur)?.let { return it }
         return null
     }
 
-    private fun degradation(laps: List<LapRecord>, cur: LapRecord): String? {
-        if (cur.lapNumber - lastDegradationLap < DEGRADATION_REPEAT_LAPS) return null
-        // Relais en cours : après le dernier ravitaillement, sans le tour de sortie des stands.
-        val lastPit = laps.indexOfLast { it.refuelled }
-        val stint = laps.drop(lastPit + 2).filter { it.hasStats() && (it.timeMs ?: 0) > 0 }
-        if (stint.size < DEGRADATION_MIN_LAPS) return null
-        val best = stint.sortedBy { it.timeMs }.take(2)
-        val recent = stint.takeLast(2)
-        if (recent.any { it in best }) return null
-        val loss = recent.map { it.timeMs!! }.average() - best.map { it.timeMs!! }.average()
-        val tcsRise = recent.map { it.tcsShare ?: 0f }.average() - best.map { it.tcsShare ?: 0f }.average()
-        val eventsRise = recent.map { events(it) }.average() - best.map { events(it) }.average()
-        if (loss < DEGRADATION_LOSS_MS || (tcsRise < DEGRADATION_TCS_RISE && eventsRise < DEGRADATION_EVENTS_RISE)) return null
+    /**
+     * Dégradation sur le relais pneus (pas depuis le dernier ravitaillement) : annoncée quand le diagnostic s'aggrave,
+     * avec les mesures qui l'appuient et les autres causes possibles. Jamais « tes pneus sont usés ».
+     */
+    private fun degradation(cur: LapRecord): String? {
+        val r = report
+        if (r.level >= GripLevel.PERSISTENT && wearSuspectedLap == null) wearSuspectedLap = cur.lapNumber
+        if (r.level <= announcedLevel || r.level < GripLevel.POSSIBLE) {
+            if (r.level <= GripLevel.STABLE) announcedLevel = GripLevel.STABLE
+            return null
+        }
+        if (cur.lapNumber - lastDegradationLap < DEGRADATION_REPEAT_LAPS && r.level != GripLevel.SEVERE) return null
+        announcedLevel = r.level
         lastDegradationLap = cur.lapNumber
-        wearSuspectedLap = cur.lapNumber
-        val why = buildList {
-            if (tcsRise >= DEGRADATION_TCS_RISE) add("le TCS travaille plus")
-            if (eventsRise >= DEGRADATION_EVENTS_RISE) add("ça glisse plus")
-        }.joinToString(" et ")
-        return "Tes chronos se dégradent : plus ${deltaSpeech(loss.toInt())} sur tes meilleurs tours du relais, et $why. " +
-            "Tes pneus fatiguent sûrement, ménage-les."
+        val loss = r.paceLossMs?.let { "plus ${deltaSpeech(it)} sur tes meilleurs tours avec ces pneus" } ?: "tes chronos baissent"
+        val where = r.areas.firstOrNull { it == com.gt7pitwall.core.tyres.GripArea.FRONT || it == com.gt7pitwall.core.tyres.GripArea.REAR }
+            ?.let { ", la glisse augmente surtout ${it.label}" } ?: if (r.evidence.size > 1) ", avec plus de glisse" else ""
+        return when (r.level) {
+            GripLevel.POSSIBLE -> "Possible dégradation : $loss. Pas encore confirmée, je surveille."
+            GripLevel.PERSISTENT -> "Dégradation persistante : $loss$where. Les pneus peuvent en être la cause, mais aussi le trafic ou de petites erreurs."
+            GripLevel.SEVERE -> "Grosse perte d'adhérence : $loss$where. Sois progressif sur les pédales ; je regarde si un arrêt pour les pneus serait rentable."
+            else -> null
+        }
     }
 
     private fun LapRecord.hasStats() = avgTyreTemp != null && tcsShare != null && lockups != null && wheelspins != null

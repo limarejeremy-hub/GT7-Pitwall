@@ -8,6 +8,7 @@ import com.gt7pitwall.core.session.LapRecord
 import com.gt7pitwall.core.session.SessionTracker
 import com.gt7pitwall.core.telemetry.TelemetryPacket
 import com.gt7pitwall.core.telemetry.TelemetryParser
+import com.gt7pitwall.core.tyres.StintContext
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.test.Test
@@ -37,14 +38,15 @@ class TyreCoachTest {
     fun announcesWarmTyresWhenTemperatureStabilises() {
         val coach = TyreCoach()
         val said = mutableListOf<String>()
-        for (s in 0 until 60) coach.onPacket(second(40f + 45f * s / 60f))?.let { said += it } // montée 40 → 85
+        for (s in 0 until 60) coach.onPacket(second(40f + 45f * s / 60f))?.let { said += it.text } // montée 40 → 85
         assertTrue(said.isEmpty(), said.toString())
-        for (s in 0 until 30) coach.onPacket(second(85f + (s % 3) * 0.3f))?.let { said += it } // stable
+        for (s in 0 until 30) coach.onPacket(second(85f + (s % 3) * 0.3f))?.let { said += it.text } // stable
         assertEquals(1, said.size, said.toString())
-        assertTrue(said[0].startsWith("Pneus en température, 85 degrés"), said[0])
-        assertTrue("Tu peux attaquer" in said[0])
+        assertTrue(said[0].startsWith("Températures des pneus stabilisées, 85 degrés"), said[0])
+        // Une température stable n'est pas la preuve d'une bonne adhérence : pas de « tu peux attaquer ».
+        assertTrue("attaquer" !in said[0])
         // Surchauffe : +15 °C par rapport à la température stabilisée, annoncée une fois.
-        val hot = (0 until 5).mapNotNull { coach.onPacket(second(101f)) }
+        val hot = (0 until 5).mapNotNull { coach.onPacket(second(101f))?.text }
         assertEquals(1, hot.size)
         assertTrue(hot[0].startsWith("Tes pneus chauffent : 101 degrés, contre 85"), hot[0])
     }
@@ -64,14 +66,14 @@ class TyreCoachTest {
     fun gripDropThenRecovery() {
         val coach = TyreCoach()
         val laps = mutableListOf(lap(1, 100_000, 86f, 0.05f), lap(2, 99_800, 85f, 0.05f))
-        assertNull(coach.onLap(laps, raining = false))
+        assertNull(coach.onLap(laps, StintContext()))
         laps += lap(3, 104_000, 70f, 0.20f) // pneus -15 °C, TCS 5 % → 20 %
-        val drop = assertNotNull(coach.onLap(laps, raining = false))
+        val drop = assertNotNull(coach.onLap(laps, StintContext()))
         assertTrue(drop.startsWith("Attention, l'adhérence baisse : pneus 15 degrés plus froids, TCS passé de 5 pour cent à 20 pour cent"), drop)
         laps += lap(4, 103_000, 72f, 0.18f)
-        assertNull(coach.onLap(laps, raining = false)) // pas de répétition
+        assertNull(coach.onLap(laps, StintContext())) // pas de répétition
         laps += lap(5, 100_200, 83f, 0.08f)
-        val back = assertNotNull(coach.onLap(laps, raining = false))
+        val back = assertNotNull(coach.onLap(laps, StintContext()))
         assertTrue(back.startsWith("L'adhérence revient : pneus à 83 degrés"), back)
     }
 
@@ -79,9 +81,9 @@ class TyreCoachTest {
     fun reallyHardConditions() {
         val coach = TyreCoach()
         val laps = listOf(lap(1, 100_000, 80f, 0.05f), lap(2, 110_000, 78f, 0.35f, locks = 4, spins = 7))
-        val msg = assertNotNull(coach.onLap(laps, raining = false))
+        val msg = assertNotNull(coach.onLap(laps, StintContext()))
         assertTrue(msg.startsWith("C'est la galère : TCS actif 35 pour cent du tour, 4 blocages et 7 patinages"), msg)
-        assertNull(coach.onLap(laps + lap(3, 110_500, 78f, 0.33f, 4, 7), raining = false)) // déjà signalé
+        assertNull(coach.onLap(laps + lap(3, 110_500, 78f, 0.33f, 4, 7), StintContext())) // déjà signalé
     }
 
     @Test
@@ -96,12 +98,21 @@ class TyreCoachTest {
             lap(6, 101_600, 88f, 0.08f),
         )
         var msg: String? = null
-        for (i in 2..laps.size) msg = coach.onLap(laps.take(i), raining = false) ?: msg
+        for (i in 2..laps.size) msg = coach.onLap(laps.take(i), StintContext()) ?: msg
         val m = assertNotNull(msg)
-        assertTrue(m.startsWith("Tes chronos se dégradent : plus 1,4 seconde"), m)
-        assertTrue("le TCS travaille plus" in m && "ménage-les" in m, m)
+        // D'abord prudent : une dégradation possible, pas une usure affirmée.
+        assertTrue(m.startsWith("Possible dégradation : plus 80 centièmes sur tes meilleurs tours avec ces pneus"), m)
+        assertTrue("Pas encore confirmée" in m, m)
+        // Elle se confirme sur les tours suivants : persistante, avec les autres causes possibles.
+        val more = laps + lap(7, 101_500, 88f, 0.06f) + lap(8, 101_700, 88f, 0.06f)
+        var msg2: String? = null
+        for (i in 7..more.size) msg2 = coach.onLap(more.take(i), StintContext()) ?: msg2
+        val p = assertNotNull(msg2)
+        assertTrue(p.startsWith("Dégradation persistante"), p)
+        assertTrue("mais aussi le trafic ou de petites erreurs" in p, p)
+        assertTrue(listOf("usé", "%").none { it in p }, p)
         // Sous la pluie, la baisse des chronos n'est pas attribuée aux pneus.
-        assertNull(TyreCoach().onLap(laps, raining = true))
+        assertNull(TyreCoach().onLap(laps, StintContext(raining = true)))
     }
 
     @Test

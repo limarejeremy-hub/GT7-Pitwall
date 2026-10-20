@@ -88,11 +88,12 @@ data class HistoryModel(
                 val clean = s.laps.filter { !it.refuelled && !excluded(it.lap) }
                 clean.mapNotNull { it.fuelUsed?.toDouble() }.filter { it > 0.01 }.forEach { fuel += s.id to it }
                 clean.mapNotNull { it.timeMs?.toDouble() }.forEach { pace += s.id to it }
-                // Âge dans le relais : tours depuis le départ ou le dernier arrêt.
+                // Âge des pneus : depuis le départ ou le dernier changement de pneus déclaré, jamais depuis un simple
+                // ravitaillement. Tours au relais pneus incertain (arrêt sans réponse sur les pneus) écartés.
                 for (l in clean) {
                     val t = l.timeMs ?: continue
-                    val lastStop = stopLaps.filter { it < l.lap }.maxOrNull() ?: 0
-                    stintPace += Triple(s.id, l.lap - lastStop - 1, t.toDouble())
+                    val age = tyreAge(s, l) ?: continue
+                    stintPace += Triple(s.id, age, t.toDouble())
                 }
                 // Perte par arrêt : tour d'arrêt + tour suivant, moins deux tours typiques de cette session.
                 val typical = median(clean.mapNotNull { it.timeMs?.toDouble() })
@@ -120,6 +121,17 @@ data class HistoryModel(
             val pitL = cap(learned(pitV, minSamples = 1), pitV.map { it.first })
             val forecastL = cap(learned(forecast, minSamples = 1), forecast.map { it.first })
             return HistoryModel(fuelL, paceL, slope, pitL, forecastL, usable.size, candidates.size - usable.size, relatedIds.size)
+        }
+
+        /**
+         * Âge du train de pneus au tour [l] : enregistré avec le tour, sinon (sessions anciennes) depuis le dernier
+         * changement déclaré ; null si un arrêt sans réponse sur les pneus le rend incertain.
+         */
+        fun tyreAge(s: SessionRecord, l: com.gt7pitwall.core.race.LapEntry): Int? {
+            l.tyreAge?.let { return if (l.tyreCertain) it else null }
+            val since = s.tyres.filter { it.lap <= l.lap }.maxOfOrNull { it.lap } ?: 1
+            val unknown = s.stops.any { it.tyres == TyreService.UNKNOWN && it.lap >= since - 1 && it.lap < l.lap }
+            return if (unknown) null else l.lap - since
         }
 
         /** Mesures aberrantes écartées : au-delà de 3 écarts absolus médians (ou de [relative] autour de la médiane). */

@@ -12,7 +12,34 @@ enum class StopEvidence {
     DRIVER_DECLARED,
 }
 
-data class PitStopRecord(val number: Int, val lap: Int, val evidence: StopEvidence, val fuelAdded: Float?)
+/**
+ * Pneus à un arrêt. GT7 ne transmet pas le changement de pneus : il est toujours déclaré ou confirmé par le pilote. Un
+ * ravitaillement ne prouve pas un changement de pneus, et inversement.
+ */
+enum class TyreService(val label: String) {
+    CHANGED("pneus changés"),
+    NOT_CHANGED("mêmes pneus"),
+
+    /** Pas de réponse du pilote : le relais pneus continue, mais son âge devient incertain. */
+    UNKNOWN("pneus non précisés"),
+}
+
+data class PitStopRecord(
+    val number: Int,
+    val lap: Int,
+    val evidence: StopEvidence,
+    val fuelAdded: Float?,
+    val tyres: TyreService = TyreService.UNKNOWN,
+) {
+    /** Ravitaillement mesuré (le niveau d'essence a monté). */
+    val refuelled: Boolean get() = (fuelAdded ?: 0f) > 0f
+}
+
+/**
+ * Relais pneus en cours, indépendant du carburant : il commence au départ ou au dernier changement de pneus déclaré.
+ * [certain] : faux si un arrêt a eu lieu depuis sans que le pilote dise s'il a changé les pneus.
+ */
+data class TyreStint(val startLap: Int, val age: Int, val compound: TyreCompound?, val certain: Boolean, val fromStart: Boolean)
 
 /** Arrêt possible (sans ravitaillement) en attente de confirmation du pilote. */
 data class StopCandidate(val lap: Int, val locationKnown: Boolean)
@@ -84,6 +111,28 @@ class PitLedger {
         tyreChanges += TyreChange(lap, compound)
         awaitingTyreDeclaration = false
         awaitingTyreChangeAnswer = false
+        // L'arrêt de ce passage (fin du tour précédent ou ce tour-ci) a servi aux pneus.
+        markTyres(lap, TyreService.CHANGED)
+    }
+
+    /** « Mêmes pneus » : l'arrêt récent n'a pas touché aux pneus, le relais pneus continue avec certitude. */
+    fun keepTyres(lap: Int) {
+        awaitingTyreDeclaration = false
+        awaitingTyreChangeAnswer = false
+        markTyres(lap, TyreService.NOT_CHANGED)
+    }
+
+    private fun markTyres(lap: Int, service: TyreService) {
+        val i = stops.indexOfLast { lap - it.lap in 0..2 }
+        if (i >= 0 && (stops[i].tyres == TyreService.UNKNOWN || service == TyreService.CHANGED)) stops[i] = stops[i].copy(tyres = service)
+    }
+
+    /** Relais pneus au tour [currentLap], d'après les seules déclarations de changement (jamais un ravitaillement). */
+    fun tyreStint(currentLap: Int, start: TyreCompound?): TyreStint {
+        val last = tyreChanges.lastOrNull()
+        val since = last?.lap ?: 1
+        val unknownSince = stops.any { it.tyres == TyreService.UNKNOWN && (last == null || it.lap >= last.lap - 1) }
+        return TyreStint(since, tyreAge(currentLap), currentTyre(start), certain = !unknownSince, fromStart = last == null)
     }
 
     /** Gommes utilisées d'après les déclarations du pilote (départ + changements). */
@@ -104,5 +153,9 @@ class PitLedger {
     fun missingRequired(rules: RaceRules): Set<TyreCompound> = rules.requiredTyres - tyresUsed(rules.startTyre)
 
     private fun add(lap: Int, evidence: StopEvidence, amount: Float?): PitStopRecord =
-        PitStopRecord(stops.size + 1, lap, evidence, amount).also { stops += it }
+        // Un changement déjà déclaré pour ce passage (« pneus changés » avant la détection du plein) est gardé.
+        PitStopRecord(
+            stops.size + 1, lap, evidence, amount,
+            tyres = if (tyreChanges.any { it.lap - lap in 0..2 }) TyreService.CHANGED else TyreService.UNKNOWN,
+        ).also { stops += it }
 }

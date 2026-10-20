@@ -2,6 +2,7 @@ package com.gt7pitwall.core.race
 
 import com.gt7pitwall.core.strategy.StopEvidence
 import com.gt7pitwall.core.strategy.TyreCompound
+import com.gt7pitwall.core.strategy.TyreService
 
 /** Comment une session s'est terminée. */
 enum class SessionOutcome {
@@ -26,10 +27,29 @@ data class LapEntry(
     val refuelled: Boolean,
     /** Carburant à bord à la fin du tour, si observé. */
     val fuelAfter: Float? = null,
+    /**
+     * Relais pneus (indépendant du carburant) : tours déjà bouclés avec ce train au début du tour, gomme déclarée, et
+     * certitude (faux si un arrêt sans réponse sur les pneus a eu lieu depuis le dernier changement déclaré).
+     */
+    val tyreAge: Int? = null,
+    val tyreCompound: TyreCompound? = null,
+    val tyreCertain: Boolean = true,
+    /** Mesures GT7 du tour (null si le tour n'a pas été suivi en entier). */
+    val tcsShare: Float? = null,
+    val lockups: Int? = null,
+    val wheelspins: Int? = null,
+    /** Blocages + patinages à l'avant et à l'arrière. */
+    val frontEvents: Int? = null,
+    val rearEvents: Int? = null,
+    /** Températures moyennes des quatre pneus (avant gauche, avant droit, arrière gauche, arrière droit). */
+    val wheelTemps: List<Float>? = null,
 )
 
-/** Arrêt avec sa preuve (mesurée : ravitaillement ; déclarée ou confirmée par le pilote). */
-data class StopEntry(val lap: Int, val evidence: StopEvidence, val fuelAdded: Float?)
+/**
+ * Arrêt avec sa preuve (mesurée : ravitaillement ; déclarée ou confirmée par le pilote) et ce qui a été fait aux pneus
+ * (déclaré ; inconnu si le pilote n'a pas répondu, ou pour les sessions archivées avant ce suivi).
+ */
+data class StopEntry(val lap: Int, val evidence: StopEvidence, val fuelAdded: Float?, val tyres: TyreService = TyreService.UNKNOWN)
 
 /** Pneus déclarés par le pilote (GT7 ne transmet pas la gomme). */
 data class TyreEntry(val lap: Int, val compound: TyreCompound?)

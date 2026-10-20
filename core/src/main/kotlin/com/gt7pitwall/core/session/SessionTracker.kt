@@ -29,6 +29,13 @@ data class LapRecord(
     val lockups: Int? = null,
     /** Patinages à l'accélération. */
     val wheelspins: Int? = null,
+    /** Température moyenne de chaque pneu sur le tour (°C), null si le tour n'a pas été suivi en entier. */
+    val wheelTemps: com.gt7pitwall.core.telemetry.Wheels? = null,
+    /** Blocages et patinages à l'avant et à l'arrière. */
+    val frontLockups: Int? = null,
+    val rearLockups: Int? = null,
+    val frontWheelspins: Int? = null,
+    val rearWheelspins: Int? = null,
 )
 
 sealed interface SessionEvent {
@@ -224,6 +231,11 @@ class SessionTracker(
             avgTyreTemp = if (complete) pl.trace.avgTyreTemp else null,
             lockups = if (complete) pl.trace.lockups else null,
             wheelspins = if (complete) pl.trace.wheelspins else null,
+            wheelTemps = if (complete) pl.trace.avgWheelTemps else null,
+            frontLockups = if (complete) pl.trace.lockupsByAxle[0] else null,
+            rearLockups = if (complete) pl.trace.lockupsByAxle[1] else null,
+            frontWheelspins = if (complete) pl.trace.wheelspinsByAxle[0] else null,
+            rearWheelspins = if (complete) pl.trace.wheelspinsByAxle[1] else null,
             distanceM = if (complete) pl.trace.lapDistance else null,
         )
         // La carte suit le meilleur tour complet (ou le premier disponible).

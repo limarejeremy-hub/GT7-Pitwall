@@ -28,6 +28,20 @@ class SectorTrace(private val sectorCount: Int = DEFAULT_SECTORS) {
     private var tyreTempSum = 0.0
     private var lockState = 0
     private var spinState = 0
+    private val wheelTempSum = DoubleArray(4)
+    private val axleLock = IntArray(2)
+    private val axleSpin = IntArray(2)
+
+    /** Blocages et patinages par essieu (0 : avant, 1 : arrière), mêmes règles que [lockups] et [wheelspins]. */
+    val lockupsByAxle = IntArray(2)
+    val wheelspinsByAxle = IntArray(2)
+
+    /** Température de surface moyenne de chaque pneu sur le tour (°C). */
+    val avgWheelTemps: com.gt7pitwall.core.telemetry.Wheels?
+        get() = if (packets > 0) com.gt7pitwall.core.telemetry.Wheels(
+            (wheelTempSum[0] / packets).toFloat(), (wheelTempSum[1] / packets).toFloat(),
+            (wheelTempSum[2] / packets).toFloat(), (wheelTempSum[3] / packets).toFloat(),
+        ) else null
 
     /** Blocages de roue au freinage (épisodes d'au moins [SLIP_MIN_PACKETS] paquets). */
     var lockups = 0
@@ -73,6 +87,11 @@ class SectorTrace(private val sectorCount: Int = DEFAULT_SECTORS) {
         spinState = 0
         lockups = 0
         wheelspins = 0
+        wheelTempSum.fill(0.0)
+        axleLock.fill(0)
+        axleSpin.fill(0)
+        lockupsByAxle.fill(0)
+        wheelspinsByAxle.fill(0)
         record(p)
     }
 
@@ -108,6 +127,7 @@ class SectorTrace(private val sectorCount: Int = DEFAULT_SECTORS) {
         if (p.isTcsActive) tcsPackets++
         if (p.isAsmActive) asmPackets++
         tyreTempSum += p.tyreTemps.toList().average()
+        p.tyreTemps.toList().forEachIndexed { i, t -> wheelTempSum[i] += t }
         countSlip(p)
     }
 
@@ -120,6 +140,14 @@ class SectorTrace(private val sectorCount: Int = DEFAULT_SECTORS) {
         spinState = if (spinning) spinState + 1 else 0
         if (lockState == SLIP_MIN_PACKETS) lockups++
         if (spinState == SLIP_MIN_PACKETS) wheelspins++
+        if (slips == null) return
+        for (axle in 0..1) {
+            val pair = slips.subList(axle * 2, axle * 2 + 2)
+            axleLock[axle] = if (p.brake > 20 && pair.any { it < LOCK_RATIO }) axleLock[axle] + 1 else 0
+            axleSpin[axle] = if (p.throttle > 20 && pair.any { it > SPIN_RATIO }) axleSpin[axle] + 1 else 0
+            if (axleLock[axle] == SLIP_MIN_PACKETS) lockupsByAxle[axle]++
+            if (axleSpin[axle] == SLIP_MIN_PACKETS) wheelspinsByAxle[axle]++
+        }
     }
 
     private fun record(p: TelemetryPacket) {
