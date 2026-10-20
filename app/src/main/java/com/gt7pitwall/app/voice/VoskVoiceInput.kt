@@ -68,7 +68,7 @@ class VoskVoiceInput(
     var conversationIdleMs: Long
         get() = conversation.idleMs
         set(value) {
-            conversation.idleMs = value.coerceIn(5_000L, 60_000L)
+            conversation.idleMs = value.coerceIn(3_000L, 60_000L)
         }
 
     private val _conversationOpen = MutableStateFlow(false)
@@ -756,6 +756,11 @@ class VoskVoiceInput(
                 _events.tryEmit(VoiceInputEvent.Utterance(rest, free, addressed = true))
                 keepListeningIfSilent()
             } else {
+                // « Radio » redit alors que la conversation est déjà ouverte : rien de nouveau, ni statut ni bip.
+                if (conversation.open) {
+                    conversation.utterance("radio", SystemClock.elapsedRealtime())
+                    return
+                }
                 // « Radio » seul : conversation ouverte, aucune phrase dite. Bip quand le micro écoute vraiment
                 // (Google prêt, ou Vosk aussitôt), dans le casque PS5 via Discord ou sur le Fold.
                 openConversation()

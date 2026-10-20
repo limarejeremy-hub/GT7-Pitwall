@@ -85,7 +85,7 @@ class ConversationWindow(var idleMs: Long = DEFAULT_IDLE_MS) {
     }
 
     companion object {
-        const val DEFAULT_IDLE_MS = 15_000L
+        const val DEFAULT_IDLE_MS = 5_000L
 
         private val CLOSING = Regex(
             "^(merci )?(c'est )?(termine|terminee|fin de (la )?communication|fin de transmission|over|terminer|stop radio|ca sera tout|c'est tout)( merci)?$",

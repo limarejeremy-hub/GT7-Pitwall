@@ -418,7 +418,11 @@ class RaceController(
         val lap = snapshot.packet?.currentLap ?: 0
         val recentDeclared = ledger.stopList.lastOrNull()
             ?.takeIf { it.evidence == StopEvidence.DRIVER_DECLARED && lap - it.lap in 0..1 }?.number
-        return GateContext(telemetryLive(), recentDeclared, ledger.awaitingTyreChangeAnswer, engineer.driverPosition)
+        return GateContext(
+            telemetryLive(), recentDeclared, ledger.awaitingTyreChangeAnswer,
+            noStopYet = ledger.stopCount == 0 && ledger.changes.isEmpty(),
+            position = engineer.driverPosition,
+        )
     }
 
     /** Décision du garde pour une commande vocale, sans l'appliquer (la conversation choisit qui répond). */
@@ -1601,7 +1605,8 @@ class RaceController(
         if (rules.allowedTyres.isNotEmpty() && compound !in rules.allowedTyres) {
             out += "Attention : les ${compound.spoken} ne sont pas dans les gommes autorisées."
         }
-        val atStart = c.atStart || lap < 1
+        // « Je suis en durs » sans arrêt depuis le départ : ce sont les pneus de départ, pas un changement.
+        val atStart = c.atStart || lap < 1 || (c.current && ledger.stopCount == 0 && ledger.changes.isEmpty())
         if (atStart) {
             applyRules(rules.copy(startTyre = compound))
             out += "Noté : départ en ${compound.spoken}."

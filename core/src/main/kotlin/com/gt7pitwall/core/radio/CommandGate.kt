@@ -113,6 +113,8 @@ data class GateContext(
     val recentDeclaredStop: Int? = null,
     /** L'ingénieur vient de demander « As-tu changé les pneus ? ». */
     val awaitingTyreAnswer: Boolean = false,
+    /** Aucun arrêt ni changement de pneus depuis le départ : « je suis en durs » déclare les pneus de départ. */
+    val noStopYet: Boolean = true,
     /** Position actuellement retenue. */
     val position: Int? = null,
 )
@@ -201,6 +203,9 @@ object CommandGate {
             }
         }
         // Gemini ne fait que reformuler : une modification proposée par lui attend toujours le « oui » du pilote.
+        // Pneus de départ déclarés pendant la conversation : pas une intervention de course, aucune confirmation de plus.
+        val startTyres = command is DriverCommand.Tyres && (command.atStart || command.current) && ctx.noStopYet
+        if (source == CommandSource.CONVERSATION && startTyres && v is Vetting.Execute) return v
         if ((source == CommandSource.GEMINI || source == CommandSource.CONVERSATION) && v is Vetting.Execute) {
             return Vetting.Confirm(command, confirmation(command))
         }
@@ -236,7 +241,7 @@ object CommandGate {
     }
 
     private fun tyres(command: DriverCommand, mode: StatementGuard.Mode, garbled: Boolean, ctx: GateContext): Vetting {
-        val atStart = command is DriverCommand.Tyres && command.atStart
+        val atStart = command is DriverCommand.Tyres && (command.atStart || command.current)
         return when (mode) {
             StatementGuard.Mode.QUESTION -> Vetting.Redirect(DriverCommand.Ask(DriverQuery.TYRE_CHANGE))
             StatementGuard.Mode.FUTURE, StatementGuard.Mode.WISH -> Vetting.Discuss(
@@ -280,7 +285,7 @@ object CommandGate {
     fun confirmation(command: DriverCommand): String = when (command) {
         DriverCommand.DeclareStop, is DriverCommand.StopAndTyres -> "Tu confirmes que tu as effectué ton arrêt ?"
         DriverCommand.CancelStop -> "Tu confirmes que je retire le dernier arrêt ?"
-        is DriverCommand.Tyres -> "Tu confirmes ce changement de pneus ?"
+        is DriverCommand.Tyres -> if (command.atStart || command.current) "Tu confirmes tes pneus ?" else "Tu confirmes ce changement de pneus ?"
         DriverCommand.TyresChanged -> "Tu confirmes que tu as changé les pneus ?"
         is DriverCommand.SetLaps -> "Tu confirmes : course de ${command.laps} tours ?"
         is DriverCommand.SetDuration -> "Tu confirmes : course de ${command.minutes} minutes ?"

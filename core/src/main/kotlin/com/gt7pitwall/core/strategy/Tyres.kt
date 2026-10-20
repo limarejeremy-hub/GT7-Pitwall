@@ -47,7 +47,8 @@ enum class TyreCompound(val family: Family, val hardness: Hardness?, val spoken:
                 else -> return null
             }
             val family = when {
-                Regex("(^|\\s)(course|racing|competition)($|\\s)").containsMatchIn(t) -> Family.RACING
+                // « cause » : erreur réelle de reconnaissance de « course » (« je suis en cause dur »).
+                Regex("(^|\\s)(course|cause|racing|competition)($|\\s)").containsMatchIn(t) -> Family.RACING
                 Regex("(^|\\s)sports?($|\\s)").containsMatchIn(t) -> Family.SPORT
                 Regex("(^|\\s)confort($|\\s)").containsMatchIn(t) -> Family.COMFORT
                 else -> null

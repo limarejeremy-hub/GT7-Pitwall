@@ -1399,7 +1399,7 @@ private fun VoiceRadioCard(
     googleSpeech: Boolean,
     onGoogleSpeechChange: (Boolean) -> Unit,
     conversationOpen: Boolean = false,
-    conversationIdleS: Int = 15,
+    conversationIdleS: Int = 5,
     onConversationIdleChange: (Int) -> Unit = {},
     detailedLaps: Boolean = false,
     onDetailedLapsChange: (Boolean) -> Unit = {},
@@ -1502,7 +1502,7 @@ private fun VoiceRadioCard(
                 style = MaterialTheme.typography.bodySmall,
             )
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                listOf(10, 15, 20, 30).forEach { sec ->
+                listOf(5, 10, 15, 20).forEach { sec ->
                     if (sec == conversationIdleS) {
                         Button(onClick = {}, modifier = Modifier.weight(1f)) { Text("$sec s") }
                     } else {

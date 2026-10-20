@@ -212,4 +212,30 @@ class VoiceConversationTest {
         assertTrue("course durs" in r && "Avant 84, arrière 92 degrés : l'arrière est plus chaud de 8 degrés" in r, r)
         assertFalse("avant gauche" in r, r)
     }
+
+    @Test
+    fun startingTyresSaidDuringTheConversationAreNotedAtOnce() {
+        // Essai réel (20 octobre, 23:49) : tour 1, « je suis en pneus durs » sans « radio » devant → confirmation demandée,
+        // restée sans réponse : les pneus de départ n'étaient pas notés.
+        for (s in listOf("je suis en pneus durs course", "je suis en cause dur", "je commence en course dure", "je roule en durs course")) {
+            val (c, _) = live()
+            val out = say(RadioConversation(c), s, addressed = false)
+            assertEquals(com.gt7pitwall.core.strategy.TyreCompound.RH, c.rules.startTyre, "$s → $out")
+            assertTrue(c.ledger.changes.isEmpty(), "pneus de départ, pas un changement : $s")
+            assertFalse(out.any { it.expectsReply }, "aucune confirmation pour les pneus de départ : $out")
+        }
+    }
+
+    @Test
+    fun afterAStopCurrentTyresStillNeedTheUsualValidation() {
+        val (c, sim) = live()
+        sim.say("arrêt fait")
+        sim.say("non")
+        val conv = RadioConversation(c)
+        val out = say(conv, "je suis en durs course", addressed = false)
+        assertTrue(out.any { it.expectsReply && "Tu confirmes" in it.text }, out.toString())
+        assertTrue(c.ledger.changes.isEmpty())
+        say(conv, "oui", addressed = false)
+        assertEquals(com.gt7pitwall.core.strategy.TyreCompound.RH, c.ledger.changes.single().compound)
+    }
 }

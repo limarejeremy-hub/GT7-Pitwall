@@ -25,8 +25,8 @@ class SettingsStore(context: Context) {
 
     /** Conversation continue : secondes de silence avant le double bip et le retour au mot de réveil. */
     var conversationIdleS: Int
-        get() = prefs.getInt("conversation_idle_s", 15)
-        set(value) = prefs.edit().putInt("conversation_idle_s", value.coerceIn(5, 60)).apply()
+        get() = prefs.getInt("conversation_idle_s", 5)
+        set(value) = prefs.edit().putInt("conversation_idle_s", value.coerceIn(3, 60)).apply()
 
     /** Messages de fin de tour détaillés (secteurs, rythme, carburant) ; sinon courts : temps, écart, position. */
     var detailedLapReports: Boolean

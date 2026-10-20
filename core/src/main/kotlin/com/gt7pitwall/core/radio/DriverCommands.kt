@@ -46,7 +46,12 @@ sealed interface DriverCommand {
     data object CancelStop : DriverCommand
 
     /** "J'ai mis les durs" / "je pars en mediums" : gommes déclarées (le texte est interprété avec le règlement). */
-    data class Tyres(val text: String, val atStart: Boolean) : DriverCommand
+    data class Tyres(
+        val text: String,
+        val atStart: Boolean,
+        /** « Je suis en durs » : les pneus montés en ce moment (les pneus de départ tant qu'aucun arrêt n'a eu lieu). */
+        val current: Boolean = false,
+    ) : DriverCommand
 
     /** "J'ai changé les pneus" (gomme non précisée). */
     data object TyresChanged : DriverCommand
@@ -253,9 +258,11 @@ object DriverCommandParser {
                 null
             }
         }
-        val context = has(t, "mis ", "monte", "chausse", "pneus", "pneu ", "gomme", "depart", "je pars", "change")
+        // « Je suis en durs », « je roule en mediums », « je commence en course dure » : les pneus montés en ce moment.
+        val current = has(t, "je suis en ", "je roule en ", "je roule avec", "je commence en ", "je commence avec", "on commence en ", "j'ai les ")
+        val context = current || has(t, "mis ", "monte", "chausse", "pneus", "pneu ", "gomme", "depart", "je pars", "change")
         if (!context) return null
-        return DriverCommand.Tyres(t, atStart = has(t, "depart", "je pars", "on part"))
+        return DriverCommand.Tyres(t, atStart = has(t, "depart", "je pars", "on part", "je commence", "on commence"), current = current)
     }
 
     private val BIG_NUMBERS = listOf(

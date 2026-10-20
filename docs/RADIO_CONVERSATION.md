@@ -7,7 +7,7 @@
   - la conversation est ouverte, et l'écran affiche « Conversation ouverte ».
 - **Questions successives sans « Radio »** :
   - après chaque réponse, l'écoute reprend toute seule, sans bip ;
-  - chaque phrase intelligible prolonge la fenêtre (15 s par défaut, réglable 10 / 15 / 20 / 30 s dans la carte
+  - chaque phrase intelligible prolonge la fenêtre (5 s par défaut, réglable 5 / 10 / 15 / 20 s dans la carte
     « Radio vocale ») ;
   - le temps où l'ingénieur parle ne compte pas.
 - **Fin** :
@@ -60,7 +60,7 @@
 2. **Trois questions de suite, sans « Radio »** : « Quelle est notre meilleure stratégie ? », puis « Combien de
    carburant pour finir ? », puis « Comment vont mes pneus ? ».
    - Attendu : trois réponses, aucun bip entre elles, la fin des réponses non coupée.
-3. **Fermeture sur silence** : 15 s de silence.
+3. **Fermeture sur silence** : 5 s de silence (réglage par défaut).
    - Attendu : un double bip ; « Combien d'essence ? » sans « Radio » n'a plus de réponse.
 4. **Demande d'un trait** : « Radio, quelle est ma position ? », puis après la réponse « et combien de places
    gagnées ? ».
