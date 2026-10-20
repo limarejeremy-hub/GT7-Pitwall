@@ -88,6 +88,8 @@ data class HistorySummary(
     val sameEvent: Int,
     /** Tours mesurés dans les sessions comparables. */
     val comparableLaps: Int,
+    /** Dont sessions d'un autre type (entraînement, type non précisé) reproduisant exactement l'épreuve. */
+    val related: Int = 0,
 ) {
     companion object {
         val EMPTY = HistorySummary(0, 0, 0, 0)
@@ -95,12 +97,18 @@ data class HistorySummary(
         fun of(context: SessionContext, sessions: Collection<SessionRecord>, excludeId: String? = null): HistorySummary {
             val same = sessions.filter { it.id != excludeId && it.context.profile.id == context.profile.id }
             val levels = same.map { it to Compatibility.compare(context, it.context).first }
-            val comparable = levels.filter { it.second != Comparability.INCOMPATIBLE }
+            // Entraînements et sessions au type non précisé : seulement s'ils reproduisent exactement l'épreuve.
+            val related = sessions.filter {
+                it.id != excludeId && HistoryRelation.of(context.profile.id, it.context.profile.id) == HistoryRelation.RELATED &&
+                    Compatibility.compare(context, it.context).first == Comparability.SAME_EVENT
+            }
+            val comparable = levels.filter { it.second != Comparability.INCOMPATIBLE }.map { it.first } + related
             return HistorySummary(
                 sameProfile = same.size,
                 comparable = comparable.size,
-                sameEvent = levels.count { it.second == Comparability.SAME_EVENT },
-                comparableLaps = comparable.sumOf { it.first.completedLaps },
+                sameEvent = levels.count { it.second == Comparability.SAME_EVENT } + related.size,
+                comparableLaps = comparable.sumOf { it.completedLaps },
+                related = related.size,
             )
         }
     }

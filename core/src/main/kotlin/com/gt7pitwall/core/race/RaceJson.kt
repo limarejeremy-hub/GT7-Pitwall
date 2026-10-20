@@ -80,10 +80,11 @@ object RaceJson {
         val arr = o.optJSONArray("entries") ?: JSONArray()
         val entries = (0 until arr.length()).map { i ->
             val e = arr.getJSONObject(i)
-            val p = profile(e.optJSONObject("profile") ?: JSONObject())
+            // Règlements d'avant la séparation des types de session : rangés dans le type par défaut de leur épreuve.
+            val p = profile(e.optJSONObject("profile") ?: JSONObject()).let { it.copy(id = it.id.normalized()) }
             p.id to ProfileEntry(p, rules(e.optJSONObject("rules") ?: JSONObject()))
         }.toMap()
-        ProfileBook(entries, ProfileId.parse(o.optString("active", "")) ?: ProfileId.LEGACY)
+        ProfileBook(entries, (ProfileId.parse(o.optString("active", "")) ?: ProfileId.LEGACY).normalized())
     } catch (e: Exception) {
         null
     }

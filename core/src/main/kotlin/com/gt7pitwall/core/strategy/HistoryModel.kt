@@ -2,6 +2,7 @@ package com.gt7pitwall.core.strategy
 
 import com.gt7pitwall.core.race.Comparability
 import com.gt7pitwall.core.race.Compatibility
+import com.gt7pitwall.core.race.HistoryRelation
 import com.gt7pitwall.core.race.SessionContext
 import com.gt7pitwall.core.race.SessionRecord
 import kotlin.math.abs
@@ -51,6 +52,11 @@ data class HistoryModel(
     val fuelForecastError: Learned?,
     val sessionsUsed: Int,
     val sessionsExcluded: Int,
+    /**
+     * Sessions d'un autre type (entraînement hors ligne, type non précisé) retenues parce que tout le reste est
+     * identique : BoP et réglages non vérifiés, la confiance ne dépasse pas « provisoire ».
+     */
+    val relatedUsed: Int = 0,
 ) {
     companion object {
         val EMPTY = HistoryModel(null, null, null, null, null, 0, 0)
@@ -59,9 +65,15 @@ data class HistoryModel(
         private val INCIDENT = Regex("(?i)accident|accroch|t[eê]te.?[aà].?queue|sortie de piste|touch[eé]|crash|p[eé]nalit")
 
         fun learn(context: SessionContext, sessions: Collection<SessionRecord>, excludeId: String? = null): HistoryModel {
-            val candidates = sessions.filter { it.id != excludeId && it.context.profile.id == context.profile.id }
-            val usable = candidates.filter { Compatibility.compare(context, it.context).first != Comparability.INCOMPATIBLE }
+            val pool = sessions.filter { it.id != excludeId }
+            val same = pool.filter { HistoryRelation.of(context.profile.id, it.context.profile.id) == HistoryRelation.SAME }
+            val related = pool.filter { HistoryRelation.of(context.profile.id, it.context.profile.id) == HistoryRelation.RELATED }
+            val candidates = same + related
+            // Un entraînement ne compte que s'il reproduit exactement l'épreuve (règlement, voiture, circuit, multiplicateurs).
+            val usable = same.filter { Compatibility.compare(context, it.context).first != Comparability.INCOMPATIBLE } +
+                related.filter { Compatibility.compare(context, it.context).first == Comparability.SAME_EVENT }
             if (usable.isEmpty()) return EMPTY.copy(sessionsExcluded = candidates.size)
+            val relatedIds = usable.filter { it in related }.map { it.id }.toSet()
 
             val fuel = mutableListOf<Pair<String, Double>>()
             val pace = mutableListOf<Pair<String, Double>>()
@@ -97,12 +109,17 @@ data class HistoryModel(
                 if (planned != null && actual != null && actual > 0) forecast += s.id to abs(planned - actual) / actual
             }
 
-            val fuelL = learned(withoutOutliers(fuel))
-            val paceL = learned(withoutOutliers(pace, relative = 0.07))
-            val slope = slope(stintPace, paceL?.mean)
-            val pitL = learned(pitLoss.filter { it.second > 0 }, minSamples = 1)
-            val forecastL = learned(forecast, minSamples = 1)
-            return HistoryModel(fuelL, paceL, slope, pitL, forecastL, usable.size, candidates.size - usable.size)
+            fun cap(l: Learned?, ids: Collection<String>): Learned? =
+                if (l != null && l.confidence == Confidence.FAIRLY_RELIABLE && ids.any { it in relatedIds }) l.copy(confidence = Confidence.PROVISIONAL) else l
+            val fuelV = withoutOutliers(fuel)
+            val paceV = withoutOutliers(pace, relative = 0.07)
+            val fuelL = cap(learned(fuelV), fuelV.map { it.first })
+            val paceL = cap(learned(paceV), paceV.map { it.first })
+            val slope = cap(slope(stintPace, paceL?.mean), stintPace.map { it.first })
+            val pitV = pitLoss.filter { it.second > 0 }
+            val pitL = cap(learned(pitV, minSamples = 1), pitV.map { it.first })
+            val forecastL = cap(learned(forecast, minSamples = 1), forecast.map { it.first })
+            return HistoryModel(fuelL, paceL, slope, pitL, forecastL, usable.size, candidates.size - usable.size, relatedIds.size)
         }
 
         /** Mesures aberrantes écartées : au-delà de 3 écarts absolus médians (ou de [relative] autour de la médiane). */

@@ -19,21 +19,95 @@ enum class SessionKind(val label: String) {
     RACE("Course"),
 }
 
-/** Identifiant d'un profil d'épreuve : une série × qualification ou course. */
-data class ProfileId(val series: Series, val kind: SessionKind) {
-    val label: String get() = "${series.label}, ${kind.label.lowercase()}"
-    val code: String get() = "${series.name}/${kind.name}"
+/**
+ * Type de session, choisi par le pilote : la télémétrie ne permet pas de distinguer une Course Sport en ligne d'une
+ * course hors ligne qui la reproduit. Chaque type a son règlement, son historique et sa mémoire.
+ */
+enum class SessionMode(val label: String, val detail: String) {
+    SPORT_OFFICIAL("Sport officiel", "Course A, B ou C en ligne"),
+    SPORT_PRACTICE("Entraînement Sport", "Course hors ligne reprenant A, B ou C : règlement de la semaine pris comme modèle, à vérifier"),
+    CUSTOM("Course personnalisée", "Règlement libre"),
+    TIME_TRIAL("Qualification / chrono", "Performance pure, sans stratégie de course"),
+
+    /** Session archivée avant la séparation des types : officielle ou entraînement, on ne le sait pas. */
+    UNVERIFIED("Type non précisé", "Session archivée avant la séparation des types de session"),
+    ;
+
+    val selectable: Boolean get() = this != UNVERIFIED
+
+    companion object {
+        fun default(series: Series, kind: SessionKind): SessionMode = when {
+            kind == SessionKind.QUALIFYING -> TIME_TRIAL
+            series == Series.OTHER -> CUSTOM
+            else -> SPORT_OFFICIAL
+        }
+    }
+}
+
+/** Identifiant d'un profil d'épreuve : une série × qualification ou course × type de session. */
+data class ProfileId(val series: Series, val kind: SessionKind, val mode: SessionMode = SessionMode.default(series, kind)) {
+    val label: String get() = when (mode) {
+        SessionMode.SPORT_OFFICIAL -> "${series.label}, ${kind.label.lowercase()}"
+        SessionMode.SPORT_PRACTICE -> "Entraînement ${series.label.removePrefix("Course ")}"
+        SessionMode.CUSTOM -> "Course personnalisée"
+        SessionMode.TIME_TRIAL -> if (series == Series.OTHER) "Qualification / chrono" else "${series.label}, qualification"
+        SessionMode.UNVERIFIED -> "${series.label}, ${kind.label.lowercase()} (type non précisé)"
+    }
+    val code: String get() = "${series.name}/${kind.name}/${mode.name}"
+
+    /** Portée de la mémoire voiture × circuit : l'ancien code pour le type par défaut (mémoire conservée), le code complet sinon. */
+    val memoryScope: String get() = if (mode == SessionMode.default(series, kind)) "${series.name}/${kind.name}" else code
+
+    /** Série Sport (A, B, C), officielle ou en entraînement. */
+    val sport: Boolean get() = series != Series.OTHER
+
+    /** Profil d'une session ancienne (type non précisé) rangé dans le type par défaut, pour continuer à l'utiliser. */
+    fun normalized(): ProfileId = if (mode == SessionMode.UNVERIFIED) copy(mode = SessionMode.default(series, kind)) else this
 
     companion object {
         /** Profil où sont rangés le règlement et la mémoire d'avant les profils (migration sans perte). */
         val LEGACY = ProfileId(Series.OTHER, SessionKind.RACE)
 
+        /** Profil cohérent pour un type et une série : personnalisée hors Sport, chrono en qualification. */
+        fun of(mode: SessionMode, series: Series): ProfileId = when (mode) {
+            SessionMode.CUSTOM -> ProfileId(Series.OTHER, SessionKind.RACE, mode)
+            SessionMode.TIME_TRIAL -> ProfileId(series, SessionKind.QUALIFYING, mode)
+            SessionMode.SPORT_OFFICIAL, SessionMode.SPORT_PRACTICE, SessionMode.UNVERIFIED ->
+                ProfileId(if (series == Series.OTHER) Series.DAILY_A else series, SessionKind.RACE, mode)
+        }
+
+        /** « SERIE/TYPE/MODE » ; un ancien code sans type de session donne une session au type non précisé. */
         fun parse(code: String?): ProfileId? {
             val parts = code?.split('/') ?: return null
-            if (parts.size != 2) return null
+            if (parts.size !in 2..3) return null
             val s = Series.entries.firstOrNull { it.name == parts[0] } ?: return null
             val k = SessionKind.entries.firstOrNull { it.name == parts[1] } ?: return null
-            return ProfileId(s, k)
+            val m = if (parts.size == 3) SessionMode.entries.firstOrNull { it.name == parts[2] } ?: return null else SessionMode.UNVERIFIED
+            return ProfileId(s, k, m)
+        }
+    }
+}
+
+/** Ce que l'historique d'une session peut apporter à une autre, selon leurs types. */
+enum class HistoryRelation {
+    /** Même épreuve, même type. */
+    SAME,
+
+    /** Même série et même nature (course), mais l'une est un entraînement ou d'un type non précisé : réutilisable
+     *  seulement si tout le reste est identique, avec une confiance réduite (BoP et réglages non vérifiés). */
+    RELATED,
+
+    NONE,
+    ;
+
+    companion object {
+        private val SPORT_LIKE = setOf(SessionMode.SPORT_OFFICIAL, SessionMode.SPORT_PRACTICE, SessionMode.UNVERIFIED)
+
+        fun of(target: ProfileId, other: ProfileId): HistoryRelation = when {
+            target == other -> SAME
+            target.series == other.series && target.kind == other.kind && target.series != Series.OTHER &&
+                target.kind == SessionKind.RACE && target.mode in SPORT_LIKE && other.mode in SPORT_LIKE -> RELATED
+            else -> NONE
         }
     }
 }
@@ -109,6 +183,12 @@ class ProfileBook(entries: Map<ProfileId, ProfileEntry>, active: ProfileId) {
     fun select(id: ProfileId): ProfileEntry {
         active = id
         return book.getOrPut(id) {
+            // Entraînement : le règlement de la Course Sport sert de modèle, jamais confirmé (conditions à vérifier).
+            if (id.mode == SessionMode.SPORT_PRACTICE) {
+                book[ProfileId(id.series, SessionKind.RACE, SessionMode.SPORT_OFFICIAL)]?.let { official ->
+                    return@getOrPut ProfileEntry(practiceFrom(official.profile, id), official.rules)
+                }
+            }
             val sibling = book[ProfileId(id.series, if (id.kind == SessionKind.RACE) SessionKind.QUALIFYING else SessionKind.RACE)]
             val track = sibling?.rules?.trackId?.takeIf { id.series != Series.OTHER }
             ProfileEntry(EventProfile(id = id, gameVersion = sibling?.profile?.gameVersion), RaceRules(trackId = track))
@@ -182,6 +262,13 @@ class ProfileBook(entries: Map<ProfileId, ProfileEntry>, active: ProfileId) {
     }
 
     companion object {
+        /** Profil d'entraînement repris de l'officiel : les champs confirmés redeviennent probables. */
+        fun practiceFrom(official: EventProfile, id: ProfileId): EventProfile = official.copy(
+            id = id,
+            confirmed = false,
+            ruleStatus = official.ruleStatus.mapValues { (_, st) -> if (st == FieldStatus.CONFIRMED) FieldStatus.PROBABLE else st },
+        )
+
         /** Champs du règlement qui diffèrent entre deux versions. */
         fun changedFields(a: RaceRules, b: RaceRules): Set<RuleField> = buildSet {
             if (a.trackId != b.trackId) add(RuleField.TRACK)

@@ -172,7 +172,7 @@ class RaceController(
     val carName: String? get() = snapshot.packet?.let { database.car(it.carCode)?.fullName }
     /** Mémoire voiture × circuit de l'épreuve active ; écartée si elle a été prise sous une autre version de GT7. */
     val memoryRecord: CarTrackRecord?
-        get() = snapshot.packet?.let { p -> rules.trackId?.let { memory[CarTrackRecord.key(p.carCode, it, profile.id.code)] } }
+        get() = snapshot.packet?.let { p -> rules.trackId?.let { memory[CarTrackRecord.key(p.carCode, it, profile.id.memoryScope)] } }
             ?.takeIf { versionsMatch(it.gameVersion, profile.gameVersion) }
 
     /** Contexte de la session en cours, pour l'archive et les comparaisons. */
@@ -550,8 +550,8 @@ class RaceController(
         schedule = state
         var activeChanged = false
         for ((series, ed) in state.editions) {
-            for (kind in SessionKind.entries) {
-                val id = ProfileId(series, kind)
+            // L'entraînement reçoit aussi l'édition de la semaine, comme modèle : jamais confirmé d'office.
+            for (id in listOf(ProfileId(series, SessionKind.QUALIFYING), ProfileId(series, SessionKind.RACE), ProfileId(series, SessionKind.RACE, SessionMode.SPORT_PRACTICE))) {
                 if (id == profiles.active && raceInProgress) continue
                 if (profiles.applyEdition(id, ed) { SportAutofill.rules(ed, it.kind) } && id == profiles.active) activeChanged = true
             }
@@ -716,10 +716,16 @@ class RaceController(
         // Épreuves Sport seulement : un règlement « autre épreuve » saisi à la main n'est pas rappelé à chaque course.
         if (rulesReminded || profile.confirmed || profile.id.series == Series.OTHER) return emptyList()
         rulesReminded = true
+        val text = if (profile.id.mode == SessionMode.SPORT_PRACTICE) {
+            "${profile.id.label} : je prends le règlement de la Course Sport comme modèle. Vérifie que ta course hors ligne a " +
+                "les mêmes réglages (tours, multiplicateurs, gommes) et confirme-les dans la carte Course."
+        } else {
+            "Règlement de l'épreuve ${profile.id.label} non confirmé. Vérifie-le dans la carte Course : je ne m'appuie " +
+                "sur l'historique que pour des courses comparables."
+        }
         return listOf(
             EngineerMessage(
-                "Règlement de l'épreuve ${profile.id.label} non confirmé. Vérifie-le dans la carte Course : je ne m'appuie " +
-                    "sur l'historique que pour des courses comparables.",
+                text,
                 Priority.INFO,
                 MessageCategory.RADIO,
                 dedupKey = "rules-unconfirmed",
@@ -927,6 +933,7 @@ class RaceController(
                 else -> add("perte par arrêt inconnue")
             }
             if (model.sessionsExcluded > 0) add("${model.sessionsExcluded} course(s) de cette épreuve écartée(s) car non comparables")
+            if (model.relatedUsed > 0) add("dont ${model.relatedUsed} entraînement(s) ou session(s) au type non précisé : BoP et réglages non vérifiés, confiance limitée")
         }
         return StrategyOptions.compare(input, pace, basis, ruleGaps.map { it.label })
     }
@@ -1384,7 +1391,7 @@ class RaceController(
             if (e !is SessionEvent.LapCompleted) continue
             val trackId = rules.trackId
             if (trackId != null) {
-                val scope = profile.id.code
+                val scope = profile.id.memoryScope
                 val key = CarTrackRecord.key(p.carCode, trackId, scope)
                 // Mesures prises sous une autre version de GT7 : on repart de zéro plutôt que de les mélanger.
                 val old = memory[key]?.takeIf { versionsMatch(it.gameVersion, profile.gameVersion) }

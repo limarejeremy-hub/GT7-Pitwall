@@ -504,6 +504,12 @@ private fun LapCard(state: PitwallUiState) {
             p.totalLaps > 0 -> "${p.currentLap} / ${p.totalLaps}"
             else -> "${p.currentLap}"
         }
+        // Type de session toujours visible : un entraînement n'est jamais pris pour une Course Sport officielle.
+        Text(
+            state.profile.id.label,
+            style = MaterialTheme.typography.labelMedium,
+            color = if (state.profile.id.mode == com.gt7pitwall.core.race.SessionMode.SPORT_OFFICIAL) PitColors.Cyan else PitColors.Yellow,
+        )
         Row(verticalAlignment = Alignment.Bottom) {
             Text("Tour ", color = PitColors.Muted)
             Text(lapText, fontSize = 34.sp, fontWeight = FontWeight.Bold)

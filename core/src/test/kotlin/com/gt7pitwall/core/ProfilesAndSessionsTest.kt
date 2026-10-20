@@ -168,7 +168,7 @@ class ProfilesAndSessionsTest {
 
     @Test
     fun memoryFromAnotherGameVersionIsSetAside() {
-        val old = CarTrackRecord(3607, 462, 110_000, 111_000, 4f, 10, scope = raceB.code, gameVersion = "1.60")
+        val old = CarTrackRecord(3607, 462, 110_000, 111_000, 4f, 10, scope = raceB.memoryScope, gameVersion = "1.60")
         val store = FakeStorage(memory = mutableMapOf(old.key to old))
         val c = controller(store)
         c.selectProfile(raceB)

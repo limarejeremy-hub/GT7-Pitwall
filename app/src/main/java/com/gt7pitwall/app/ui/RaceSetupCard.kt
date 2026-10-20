@@ -42,6 +42,7 @@ import com.gt7pitwall.core.knowledge.Gt7Database
 import com.gt7pitwall.core.race.EventProfile
 import com.gt7pitwall.core.race.ProfileId
 import com.gt7pitwall.core.race.Series
+import com.gt7pitwall.core.race.SessionMode
 import com.gt7pitwall.core.race.SessionKind
 import com.gt7pitwall.core.radio.DriverCommand
 import com.gt7pitwall.core.sport.FieldStatus
@@ -270,28 +271,35 @@ private fun EventProfileSection(
 ) {
     val profile = state.profile
     val id = profile.id
-    Text("Épreuve", style = MaterialTheme.typography.labelSmall, color = PitColors.Muted)
-    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-        Series.entries.forEach { s ->
-            val label = when (s) {
-                Series.DAILY_A -> "A"
-                Series.DAILY_B -> "B"
-                Series.DAILY_C -> "C"
-                Series.OTHER -> "Autre"
-            }
-            if (s == id.series) {
-                Button(onClick = {}, modifier = Modifier.weight(1f)) { Text(label, maxLines = 1) }
-            } else {
-                OutlinedButton(onClick = { onProfile(ProfileId(s, id.kind)) }, modifier = Modifier.weight(1f)) { Text(label, maxLines = 1) }
+    // Type de session : la télémétrie ne distingue pas une Course Sport en ligne d'une course hors ligne, le pilote choisit.
+    Text("Type de session", style = MaterialTheme.typography.labelSmall, color = PitColors.Muted)
+    SessionMode.entries.filter { it.selectable }.chunked(2).forEach { row ->
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            row.forEach { m ->
+                if (m == id.mode) {
+                    Button(onClick = {}, modifier = Modifier.weight(1f)) { Text(m.label, maxLines = 1) }
+                } else {
+                    OutlinedButton(onClick = { onProfile(ProfileId.of(m, id.series)) }, modifier = Modifier.weight(1f)) { Text(m.label, maxLines = 1) }
+                }
             }
         }
     }
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        SessionKind.entries.forEach { k ->
-            if (k == id.kind) {
-                Button(onClick = {}, modifier = Modifier.weight(1f)) { Text(k.label) }
-            } else {
-                OutlinedButton(onClick = { onProfile(ProfileId(id.series, k)) }, modifier = Modifier.weight(1f)) { Text(k.label) }
+    Text(id.mode.detail, style = MaterialTheme.typography.bodySmall, color = if (id.mode == SessionMode.SPORT_PRACTICE) PitColors.Yellow else PitColors.Muted)
+    if (id.mode != SessionMode.CUSTOM) {
+        Text("Épreuve", style = MaterialTheme.typography.labelSmall, color = PitColors.Muted)
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+            Series.entries.filter { it != Series.OTHER || id.mode == SessionMode.TIME_TRIAL }.forEach { s ->
+                val label = when (s) {
+                    Series.DAILY_A -> "A"
+                    Series.DAILY_B -> "B"
+                    Series.DAILY_C -> "C"
+                    Series.OTHER -> "Autre"
+                }
+                if (s == id.series) {
+                    Button(onClick = {}, modifier = Modifier.weight(1f)) { Text(label, maxLines = 1) }
+                } else {
+                    OutlinedButton(onClick = { onProfile(ProfileId.of(id.mode, s)) }, modifier = Modifier.weight(1f)) { Text(label, maxLines = 1) }
+                }
             }
         }
     }
