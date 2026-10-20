@@ -14,7 +14,43 @@ data class Wheels(val fl: Float, val fr: Float, val rl: Float, val rr: Float) {
 }
 
 /**
- * Contenu d'un paquet de télémétrie GT7 (formats 'A', 'B' et '~').
+ * Surface sous un pneu (format C). Codes de GT7 d'après MacManley/gt7-udp (README, « Surface Type ») ; un code non
+ * documenté reste [UNKNOWN] avec son caractère brut, jamais deviné.
+ */
+enum class Surface(val code: Char, val label: String) {
+    TARMAC('T', "asphalte"),
+    KERB('C', "vibreur"),
+    DIRT('D', "terre"),
+    GRASS('G', "herbe"),
+    SAND('S', "sable"),
+    SNOW('s', "neige"),
+    UNKNOWN('?', "inconnue"),
+    ;
+
+    companion object {
+        fun of(code: Char): Surface = entries.firstOrNull { it.code == code && it != UNKNOWN } ?: UNKNOWN
+    }
+}
+
+/** Surface sous les quatre pneus, avec les codes bruts reçus (diagnostic). */
+data class TyreSurfaces(val fl: Surface, val fr: Surface, val rl: Surface, val rr: Surface, val raw: String) {
+    fun toList(): List<Surface> = listOf(fl, fr, rl, rr)
+    fun count(s: Surface): Int = toList().count { it == s }
+
+    /** Nombre de roues hors asphalte et hors vibreur (herbe, terre, sable, neige ou inconnu). */
+    val wheelsOff: Int get() = toList().count { it != Surface.TARMAC && it != Surface.KERB }
+
+    companion object {
+        fun parse(bytes: ByteArray): TyreSurfaces {
+            val c = CharArray(4) { (bytes[it].toInt() and 0xFF).toChar() }
+            val raw = String(CharArray(4) { if (c[it] in ' '..'~') c[it] else '.' })
+            return TyreSurfaces(Surface.of(c[0]), Surface.of(c[1]), Surface.of(c[2]), Surface.of(c[3]), raw)
+        }
+    }
+}
+
+/**
+ * Contenu d'un paquet de télémétrie GT7 (formats 'A', 'B', '~' et 'C').
  * Chaque champ correspond strictement à une valeur transmise par le jeu : rien n'est inventé.
  *
  * Remarque : GT7 n'envoie AUCUNE donnée sur les adversaires (positions, écarts),
@@ -109,6 +145,20 @@ data class TelemetryPacket(
     val carType: Int? = null,
     /** Récupération d'énergie (format ~ ; voitures électriques/hybrides). */
     val energyRecovery: Float? = null,
+    /** Surface sous chaque pneu (format C uniquement). */
+    val surfaces: TyreSurfaces? = null,
+    /**
+     * Chrono du tour en cours en millisecondes (format C uniquement, 0x15C). Valeur brute de GT7 : son comportement
+     * (départ, stand, pause) reste à valider sur PS5 avant tout usage à la radio.
+     */
+    val currentLapTimeMs: Int? = null,
+    /** Angle des roues avant gauche et droite, en radians (format C uniquement). */
+    val frontWheelAngleLeftRad: Float? = null,
+    val frontWheelAngleRightRad: Float? = null,
+    /** Empattement en mètres (format C uniquement). */
+    val wheelBaseM: Float? = null,
+    /** Catégorie de la voiture, texte brut de GT7 (« GR3 », « GRX »… ; format C uniquement). */
+    val carCategory: String? = null,
 ) {
     val tyreTemps: Wheels get() = Wheels(tyreTempFrontLeft, tyreTempFrontRight, tyreTempRearLeft, tyreTempRearRight)
 
@@ -168,7 +218,7 @@ data class TelemetryPacket(
     }
 }
 
-/** Décodage d'un paquet GT7 déchiffré (offsets du format 'A', little-endian). */
+/** Décodage d'un paquet GT7 déchiffré (offsets du format 'A', puis extensions B, ~ et C ; little-endian). */
 object TelemetryParser {
 
     private fun wheels(b: ByteBuffer, offset: Int) =
@@ -186,6 +236,7 @@ object TelemetryParser {
         val format = PacketFormat.forLength(plain.size) ?: PacketFormat.A
         val ext = plain.size >= PacketFormat.B.size
         val full = plain.size >= PacketFormat.TILDE.size
+        val c = plain.size >= PacketFormat.C.size
         return TelemetryPacket(
             packetId = b.getInt(0x70),
             positionX = b.getFloat(0x04),
@@ -247,6 +298,19 @@ object TelemetryParser {
             brakeFiltered = if (full) b.get(0x13D).toInt() and 0xFF else null,
             carType = if (full) b.get(0x13E).toInt() and 0xFF else null,
             energyRecovery = if (full) b.getFloat(0x150) else null,
+            surfaces = if (c) TyreSurfaces.parse(plain.copyOfRange(0x158, 0x15C)) else null,
+            currentLapTimeMs = if (c) b.getInt(0x15C) else null,
+            frontWheelAngleLeftRad = if (c) b.getFloat(0x160) else null,
+            frontWheelAngleRightRad = if (c) b.getFloat(0x164) else null,
+            wheelBaseM = if (c) b.getFloat(0x168) else null,
+            carCategory = if (c) category(plain, 0x16C) else null,
         )
+    }
+
+    /** Texte ASCII terminé par un octet nul ; null s'il est vide ou contient un caractère non imprimable. */
+    private fun category(plain: ByteArray, offset: Int): String? {
+        val bytes = plain.copyOfRange(offset, offset + 4).takeWhile { it != 0.toByte() }
+        if (bytes.isEmpty() || bytes.any { it < 0x20 || it > 0x7E }) return null
+        return String(bytes.toByteArray(), Charsets.US_ASCII).trim().ifEmpty { null }
     }
 }

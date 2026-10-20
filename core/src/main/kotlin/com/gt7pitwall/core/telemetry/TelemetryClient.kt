@@ -33,8 +33,12 @@ sealed interface ConnectionStatus {
         /** Diagnostic : paquets reçus mais indéchiffrables, et taille du dernier. */
         val invalidPackets: Long = 0,
         val lastInvalidSize: Int = 0,
-        /** Le format complet (~) a été demandé sans réponse exploitable. */
+        /** Le format préféré (C) a été demandé sans réponse exploitable : un format plus ancien est utilisé. */
         val fullFormatUnanswered: Boolean = false,
+        /** Format demandé au moment de la réception. */
+        val requested: PacketFormat = format,
+        /** Formats demandés restés sans paquet lisible, dans l'ordre d'essai (diagnostic du repli). */
+        val unanswered: List<PacketFormat> = emptyList(),
     ) : ConnectionStatus
 
     /** Des paquets ont été reçus, puis plus rien depuis [silenceMs]. */
@@ -46,7 +50,9 @@ sealed interface ConnectionStatus {
 /**
  * Client UDP de la télémétrie GT7.
  *
- * Envoie régulièrement le heartbeat 'A' à la PS5 (port 33739) et écoute les paquets sur le port 33740.
+ * Envoie régulièrement un heartbeat à la PS5 (port 33739) et écoute les paquets sur le port 33740. Le format le plus
+ * complet (C) est demandé d'abord ; sans paquet lisible dans [Config.formatFallbackMs], le suivant de
+ * [Config.fallbackFormats] est essayé (~, puis A), et le statut indique les formats restés sans réponse.
  * Si aucune adresse n'est fournie, le heartbeat est diffusé en broadcast et l'adresse de la PS5
  * est retenue dès le premier paquet valide (recherche automatique, à confirmer sur le réseau réel).
  */
@@ -62,10 +68,83 @@ class TelemetryClient(
         val noDataAfterMs: Long = 2_000,
         val receiveTimeoutMs: Int = 500,
         /** Format demandé en premier : le plus complet. */
-        val preferredFormat: PacketFormat = PacketFormat.TILDE,
-        /** Sans réponse dans ce délai, on essaie l'autre format (anciennes versions de GT7). */
+        val preferredFormat: PacketFormat = PacketFormat.C,
+        /** Sans réponse dans ce délai, on essaie le format suivant (anciennes versions de GT7, modes sans C). */
         val formatFallbackMs: Long = 4_000,
+        /** Ordre des replis après [preferredFormat]. */
+        val fallbackFormats: List<PacketFormat> = listOf(PacketFormat.TILDE, PacketFormat.A),
+        /** Sonde des formats : flux considéré arrêté après ce silence. */
+        val scanSilenceMs: Long = 2_000,
+        /** Sonde : attente maximale de l'arrêt du flux précédent. */
+        val scanMaxSilenceMs: Long = 15_000,
+        /** Sonde : durée d'écoute de chaque octet de heartbeat. */
+        val scanProbeMs: Long = 6_000,
+        val scanHeartbeatMs: Long = 1_000,
+    ) {
+        val formatOrder: List<PacketFormat> get() = (listOf(preferredFormat) + fallbackFormats).distinct()
+    }
+
+    /** Réponse de la PS5 à un octet de heartbeat essayé par la sonde. */
+    data class ProbeResult(
+        val heartbeat: Char,
+        val packets: Int,
+        /** Taille des paquets reçus → nombre. */
+        val sizes: Map<Int, Int>,
+        /** Constantes XOR connues qui déchiffrent ces paquets (vide : chiffrement inconnu ou aucun paquet). */
+        val keys: List<PacketFormat>,
+        /** Le flux précédent ne s'était pas arrêté : la réponse peut lui appartenir. */
+        val previousStreamStillOn: Boolean,
     )
+
+    data class FormatScan(
+        val running: Boolean = false,
+        val current: Char? = null,
+        val done: Int = 0,
+        val total: Int = 0,
+        val results: List<ProbeResult> = emptyList(),
+    )
+
+    private val _scan = MutableStateFlow(FormatScan())
+
+    /** Sonde des formats (diagnostic Gap Hunter) : quels octets de heartbeat la PS5 accepte, et avec quelle taille. */
+    val scan: StateFlow<FormatScan> = _scan.asStateFlow()
+
+    @Volatile
+    private var scanRequest: List<Char>? = null
+
+    @Volatile
+    private var scanCancel = false
+
+    /**
+     * Essaie chaque octet de [heartbeats] tour à tour : silence jusqu'à l'arrêt du flux, puis heartbeat pendant
+     * [Config.scanProbeMs]. La télémétrie normale est interrompue pendant la sonde (à lancer dans les menus) puis
+     * reprend avec le format préféré. N'utilise que l'interface publique de GT7 (un octet UDP vers le port 33739).
+     */
+    fun startFormatScan(heartbeats: List<Char> = DEFAULT_SCAN) {
+        scanCancel = false
+        scanRequest = heartbeats.distinct()
+    }
+
+    fun cancelFormatScan() {
+        scanCancel = true
+    }
+
+    private class ScanRun(val list: List<Char>, start: Long) {
+        var index = 0
+        var probing = false
+        var phaseSince = start
+        var lastHeartbeat = Long.MIN_VALUE / 2
+        var count = 0
+        val sizes = sortedMapOf<Int, Int>()
+        val keys = linkedSetOf<PacketFormat>()
+        var persisted = false
+        val results = mutableListOf<ProbeResult>()
+    }
+
+    /** Reçoit chaque paquet déchiffré (ou `null` s'il est illisible) : diagnostic uniquement (Gap Hunter). */
+    fun interface RawTap {
+        fun onFrame(plain: ByteArray?, size: Int, nowMs: Long)
+    }
 
     private val _status = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Stopped)
     val status: StateFlow<ConnectionStatus> = _status.asStateFlow()
@@ -80,6 +159,10 @@ class TelemetryClient(
     @Volatile
     var invalidPackets: Long = 0
         private set
+
+    /** Branché seulement quand un diagnostic l'utilise : sinon aucun coût supplémentaire. */
+    @Volatile
+    var rawTap: RawTap? = null
 
     @Volatile
     private var socket: DatagramSocket? = null
@@ -123,7 +206,10 @@ class TelemetryClient(
                 return
             }
             var locked = !discovery
-            var format = config.preferredFormat
+            val order = config.formatOrder
+            var formatIndex = 0
+            var format = order[0]
+            val unanswered = mutableListOf<PacketFormat>()
             var formatSince = clock()
             var gotValidPacket = false
             var lastInvalidSize = 0
@@ -132,20 +218,69 @@ class TelemetryClient(
             var lastHeartbeatAt = Long.MIN_VALUE / 2
             var packetsSinceHeartbeat = 0
             var lastPacketAt = 0L
+            var lastDatagramAt = 0L
+            var scanRun: ScanRun? = null
             var rateWindowStart = clock()
             var rateCount = 0
             var currentRate = 0
 
             while (isActive) {
                 val now = clock()
-                if (!gotValidPacket && now - formatSince >= config.formatFallbackMs) {
+                scanRequest?.let { list ->
+                    scanRequest = null
+                    scanRun = ScanRun(list, now)
+                    _scan.value = FormatScan(true, null, 0, list.size)
+                }
+                val run = scanRun
+                if (run != null) {
+                    val silent = now - lastDatagramAt >= config.scanSilenceMs && now - run.phaseSince >= config.scanSilenceMs
+                    if (!run.probing) {
+                        if (scanCancel) run.index = run.list.size
+                        if (silent || now - run.phaseSince >= config.scanMaxSilenceMs) {
+                            if (run.index >= run.list.size) {
+                                // Fin de la sonde : reprise normale, format préféré d'abord.
+                                scanRun = null
+                                scanCancel = false
+                                _scan.value = FormatScan(false, null, run.results.size, run.list.size, run.results.toList())
+                                formatIndex = 0
+                                format = order[0]
+                                formatSince = now
+                                gotValidPacket = false
+                                fullFormatUnanswered = false
+                                unanswered.clear()
+                                lastHeartbeatAt = Long.MIN_VALUE / 2
+                            } else {
+                                run.probing = true
+                                run.persisted = !silent
+                                run.phaseSince = now
+                                run.count = 0
+                                run.sizes.clear()
+                                run.keys.clear()
+                                run.lastHeartbeat = Long.MIN_VALUE / 2
+                                _scan.value = FormatScan(true, run.list[run.index], run.index, run.list.size, run.results.toList())
+                            }
+                        }
+                    } else if (now - run.phaseSince >= config.scanProbeMs || scanCancel) {
+                        run.results += ProbeResult(run.list[run.index], run.count, run.sizes.toMap(), run.keys.toList(), run.persisted)
+                        run.index++
+                        run.probing = false
+                        run.phaseSince = now
+                        _scan.value = FormatScan(true, null, run.index, run.list.size, run.results.toList())
+                    } else if (now - run.lastHeartbeat >= config.scanHeartbeatMs) {
+                        sendRaw(sock, target, run.list[run.index].code.toByte())
+                        run.lastHeartbeat = now
+                    }
+                }
+                if (scanRun == null && !gotValidPacket && now - formatSince >= config.formatFallbackMs) {
                     if (format == config.preferredFormat) fullFormatUnanswered = true
-                    format = if (format == PacketFormat.A) config.preferredFormat else PacketFormat.A
+                    if (format !in unanswered) unanswered += format
+                    formatIndex = (formatIndex + 1) % order.size
+                    format = order[formatIndex]
                     formatSince = now
                     lastHeartbeatAt = Long.MIN_VALUE / 2
                 }
-                if (packetsSinceHeartbeat >= config.heartbeatEveryPackets ||
-                    now - lastHeartbeatAt >= config.heartbeatIntervalMs
+                if (scanRun == null && (packetsSinceHeartbeat >= config.heartbeatEveryPackets ||
+                    now - lastHeartbeatAt >= config.heartbeatIntervalMs)
                 ) {
                     sendHeartbeat(sock, target, format)
                     lastHeartbeatAt = now
@@ -165,7 +300,16 @@ class TelemetryClient(
                     continue
                 }
 
-                val packet = TelemetryParser.parseEncrypted(buffer, datagram.length)
+                lastDatagramAt = clock()
+                scanRun?.takeIf { it.probing }?.let { r ->
+                    r.count++
+                    val seen = (r.sizes[datagram.length] ?: 0) + 1
+                    r.sizes[datagram.length] = seen
+                    if (seen <= 3) r.keys += GT7Crypto.keysThatDecrypt(buffer, datagram.length)
+                }
+                val plain = GT7Crypto.decrypt(buffer, datagram.length)
+                val packet = plain?.let(TelemetryParser::parseDecrypted)
+                rawTap?.let { tap -> runCatching { tap.onFrame(if (packet != null) plain else null, datagram.length, clock()) } }
                 if (packet == null) {
                     invalidPackets++
                     lastInvalidSize = datagram.length
@@ -192,6 +336,8 @@ class TelemetryClient(
                     invalidPackets,
                     lastInvalidSize,
                     fullFormatUnanswered && packet.format != config.preferredFormat,
+                    format,
+                    unanswered.toList(),
                 )
                 _packets.emit(packet)
             }
@@ -203,12 +349,19 @@ class TelemetryClient(
         }
     }
 
-    private fun sendHeartbeat(sock: DatagramSocket, target: InetAddress, format: PacketFormat) {
+    private fun sendHeartbeat(sock: DatagramSocket, target: InetAddress, format: PacketFormat) = sendRaw(sock, target, format.heartbeat)
+
+    private fun sendRaw(sock: DatagramSocket, target: InetAddress, heartbeat: Byte) {
         try {
-            val data = byteArrayOf(format.heartbeat)
+            val data = byteArrayOf(heartbeat)
             sock.send(DatagramPacket(data, data.size, target, config.ps5Port))
         } catch (e: Exception) {
             _status.value = ConnectionStatus.Error("Envoi du heartbeat impossible : ${e.message}")
         }
+    }
+
+    companion object {
+        /** Lettres majuscules et '~' : A, B, ~ et C servent de témoins connus. */
+        val DEFAULT_SCAN: List<Char> = ('A'..'Z').toList() + '~'
     }
 }

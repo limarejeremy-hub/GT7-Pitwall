@@ -201,6 +201,7 @@ fun PitwallScreen(
         )
         if (devTools) BenchCard(bench)
         if (devTools) PositionProbeCard(engine)
+        if (devTools) GapHunterCard(engine)
         DiscordCard(
             discord = discord,
             autoJoin = discordAutoJoin,
@@ -370,7 +371,11 @@ private fun describe(status: ConnectionStatus): String = when (status) {
         if (status.target == null) "Recherche automatique de la PS5 sur le Wi-Fi…" else "Connexion à ${status.target}…"
     is ConnectionStatus.Receiving -> buildString {
         append("PS5 ${status.ps5Address} • ${status.packetsPerSecond} paquets/s • format ${status.format.label}")
-        if (status.fullFormatUnanswered) append("\nLe format complet (~) n'a pas donné de paquet lisible : format A utilisé.")
+        if (status.unanswered.isNotEmpty()) {
+            append("\nSans réponse lisible : format ${status.unanswered.joinToString(", ") { it.label }} ; format ${status.format.label} utilisé.")
+        } else if (status.requested != status.format) {
+            append("\nFormat ${status.requested.label} demandé, ${status.format.label} reçu (flux déjà ouvert par une autre app ?).")
+        }
         if (status.invalidPackets > 0) {
             append("\nDiagnostic : ${status.invalidPackets} paquet(s) illisible(s), dernier de ${status.lastInvalidSize} octets.")
         }
@@ -1531,5 +1536,114 @@ private fun VoiceRadioCard(
             color = PitColors.Muted,
             style = MaterialTheme.typography.bodySmall,
         )
+    }
+}
+
+/**
+ * Gap Hunter : exploration expérimentale des octets de la télémétrie, à la recherche d'un champ d'écart. Silencieux :
+ * rien n'est annoncé ni utilisé par la stratégie. Une piste affichée est une corrélation, jamais une preuve.
+ */
+@Composable
+private fun GapHunterCard(engine: PitwallEngine) {
+    val s by engine.gap.collectAsStateWithLifecycle()
+    val scan by engine.formatScan.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    var note by rememberSaveable { mutableStateOf("") }
+    fun mark(label: String) {
+        engine.gapHunter.mark(label, System.currentTimeMillis())
+        engine.refreshGap()
+    }
+    PitCard("Gap Hunter (expérimental)") {
+        Text(
+            "Observe tous les octets reçus de GT7 pour chercher un champ d'écart. Aucune source connue ne donne les " +
+                "écarts : une piste ici n'est qu'une corrélation à vérifier. Rien n'est dit à la radio.",
+            style = MaterialTheme.typography.bodySmall,
+            color = PitColors.Muted,
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Exploration active", modifier = Modifier.weight(1f))
+            Switch(checked = s.enabled, onCheckedChange = { engine.setGapHunter(it) })
+        }
+        DiagLine("Paquets lisibles / illisibles", "${s.frames} / ${s.invalid}")
+        if (s.bySize.isNotEmpty()) DiagLine("Tailles", s.bySize.entries.joinToString { "${it.key} o" })
+        if (s.invalidBySize.isNotEmpty()) {
+            DiagLine("Tailles illisibles", s.invalidBySize.entries.joinToString { "${it.key} o × ${it.value}" }, PitColors.Yellow)
+        }
+        DiagLine("Événements", s.events.entries.joinToString { "${it.key.label} ${it.value}" })
+        if (s.candidates.isEmpty()) {
+            DiagLine("Pistes", "aucune")
+        } else {
+            s.candidates.forEach { c ->
+                DiagLine(
+                    "Piste 0x%03X".format(c.field.offset),
+                    "${c.field.label} — ${c.kind.label} ${c.eventsWithChange}/${c.events} (à vérifier)",
+                    PitColors.Yellow,
+                )
+            }
+        }
+        DiagLine("Journal", "${s.lines} lignes" + if (s.dropped > 0) ", ${s.dropped} retirées" else "")
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { mark("dépassement fait") }, modifier = Modifier.weight(1f)) { Text("J'ai doublé") }
+            OutlinedButton(onClick = { mark("je me suis fait doubler") }, modifier = Modifier.weight(1f)) { Text("Doublé") }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(
+                value = note,
+                onValueChange = { v -> note = v.take(40) },
+                label = { Text("Écart lu sur le HUD (ex. devant 1,2)") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                modifier = Modifier.weight(1f),
+            )
+            Button(onClick = { mark("HUD $note"); note = "" }, enabled = note.isNotBlank()) { Text("Noter") }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = { shareExport(context, engine.gapHunter.export()) }, modifier = Modifier.weight(1f)) { Text("Exporter") }
+            OutlinedButton(onClick = { engine.gapHunter.reset(); engine.refreshGap() }, modifier = Modifier.weight(1f)) {
+                Text("Réinitialiser")
+            }
+        }
+
+        Text("Sonde des formats de heartbeat", style = MaterialTheme.typography.labelMedium, color = PitColors.Muted)
+        Text(
+            "Essaie chaque lettre A à Z et « ~ » (environ 15 s chacune) pour voir si GT7 répond avec un autre format. " +
+                "La télémétrie est coupée pendant la sonde : à lancer dans les menus, jamais en course.",
+            style = MaterialTheme.typography.bodySmall,
+            color = PitColors.Muted,
+        )
+        if (scan.running) {
+            DiagLine("En cours", "${scan.done}/${scan.total}" + (scan.current?.let { " — lettre « $it »" } ?: " — attente du silence"))
+            OutlinedButton(onClick = { engine.cancelFormatScan() }) { Text("Arrêter la sonde") }
+        } else {
+            OutlinedButton(onClick = { engine.startFormatScan() }) { Text("Lancer la sonde") }
+        }
+        scan.results.filter { it.packets > 0 }.forEach { r ->
+            DiagLine(
+                "« ${r.heartbeat} »",
+                r.sizes.entries.joinToString { "${it.key} o" } + " — " +
+                    (if (r.keys.isEmpty()) "chiffrement inconnu" else "clé ${r.keys.joinToString("/") { it.label }}") +
+                    if (r.previousStreamStillOn) " (flux précédent encore actif)" else "",
+                if (r.sizes.keys.any { it != 296 && it != 316 && it != 344 && it != 368 }) PitColors.Green else PitColors.Muted,
+            )
+        }
+        if (!scan.running && scan.results.isNotEmpty()) {
+            DiagLine("Sans réponse", scan.results.filter { it.packets == 0 }.joinToString(" ") { it.heartbeat.toString() }.ifEmpty { "—" })
+        }
+    }
+}
+
+/** Partage un export texte sous forme de fichier (le texte peut dépasser la taille admise par un Intent). */
+private fun shareExport(context: android.content.Context, text: String) {
+    runCatching {
+        val dir = java.io.File(context.cacheDir, "exports").apply { mkdirs() }
+        val file = java.io.File(dir, "gt7-pitwall-gap-hunter.txt").apply { writeText(text) }
+        val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.exports", file)
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, "GT7 Pitwall — Gap Hunter")
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(Intent.createChooser(send, "Exporter le journal Gap Hunter"))
     }
 }
