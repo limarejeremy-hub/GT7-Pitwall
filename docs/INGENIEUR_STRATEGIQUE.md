@@ -185,3 +185,169 @@ avec un arrêt carburant nécessaire, ou une course personnalisée en consommati
 À noter pour chaque étape : la phrase reconnue (« Toi : … » à l'écran), la réponse, le délai ressenti, et toute
 réponse fausse ou inattendue. Les tests GitHub vérifient la logique sur des courses simulées ; seule cette séance dit
 si la reconnaissance du casque et le délai conviennent en course.
+
+## Jalon D : pneus, endurance et entraînement (livré)
+
+### D0 — Types de session
+
+- **Quatre types**, choisis dans la carte Course et rappelés en haut de la carte des tours :
+  - Sport officiel ;
+  - entraînement Sport (hors ligne) ;
+  - course personnalisée ;
+  - qualification / chrono.
+- **Ce qui est séparé** : le type fait partie de l'identifiant d'épreuve (`ProfileId.mode`). Règlement, historique,
+  mémoire et archives sont donc séparés : un entraînement n'est jamais archivé comme Course Sport officielle.
+- **Entraînement** : il reprend le règlement de la semaine comme modèle, jamais confirmé d'office. Le rappel radio
+  demande de vérifier les réglages de la course hors ligne.
+- **Réutilisation de l'historique** (`HistoryRelation`) :
+  - un entraînement ne sert à une Course Sport que s'il la reproduit exactement (même règlement, voiture, circuit,
+    multiplicateurs), et la confiance ne dépasse jamais « provisoire » ;
+  - les sessions archivées avant ce jalon sont « type non précisé » et traitées de la même façon ;
+  - course personnalisée et chrono ne se mélangent avec rien.
+
+### D1 — Pneus et carburant indépendants
+
+- **Défaut corrigé** :
+  - un ravitaillement remettait à zéro le suivi d'usure (`TyreCoach.pitStop` sur `RefuelDetected`) ;
+  - la dégradation était mesurée depuis le dernier ravitaillement ;
+  - la comparaison des stratégies supposait des pneus neufs à chaque arrêt.
+- **Relais pneus** (`PitLedger.tyreStint`) : il ne suit que les changements déclarés.
+- **Chaque arrêt note ce qui a été fait aux pneus** : changés, mêmes pneus, ou non précisé.
+  - « As-tu changé les pneus ? » est demandé après chaque arrêt.
+  - Sans réponse, la question expire au bout d'une minute et l'âge des pneus devient incertain : jamais « neufs » par
+    défaut.
+- **Archives** : chaque tour garde l'âge, la gomme et la certitude du relais pneus, ainsi que les mesures d'adhérence
+  (TCS, blocages et patinages par essieu, températures des quatre pneus).
+
+### D2 — Diagnostic d'adhérence (`GripDiagnosis`)
+
+- **Cinq niveaux** :
+  - données insuffisantes ;
+  - comportement stable ;
+  - dégradation possible ;
+  - dégradation persistante ;
+  - perte d'adhérence importante.
+- **Zones** : avant, arrière, gauche / droite, traction, freinage.
+- **Tour lent isolé** : reconnu comme erreur ou incident, pas comme usure.
+- **Toujours cité** : les autres causes possibles (trafic, erreurs, pneus froids, dégâts déclarés, âge incertain).
+- **Températures** : jamais une preuve. « Tu peux attaquer » est remplacé par une simple information
+  (« températures stabilisées »).
+
+### D3 — Apprentissage des relais (`TyreModel`)
+
+- **Relais retenus** : seulement ceux qui sont comparables (même type de session, voiture, circuit, usure, gomme
+  déclarée).
+- **Ce qui est appris** :
+  - la dégradation par tour d'âge ;
+  - les tours avant une perte nette (+0,7 s) ;
+  - le gain des pneus neufs ;
+  - l'essieu qui souffre.
+- **Confiance** : insuffisant sous 2 relais ; relativement fiable à partir de 4 relais sur 3 courses peu dispersés.
+  Gomme non déclarée ou entraînement : provisoire au mieux.
+
+### D4 — Stratégie
+
+- **Même moteur** (`StrategyOptions`, `RacePlanner`), pas de second moteur.
+- **Options comparées** :
+  - pneus à la fin de ce tour ;
+  - pneus au prochain tour ;
+  - pneus au meilleur tour ;
+  - pneus au ravitaillement ;
+  - garder les pneus.
+- **Calcul du temps** : l'âge des pneus ne repart de zéro qu'aux arrêts où ils sont changés.
+- **Seuil pour un arrêt de plus** : il n'est retenu que si son gain dépasse deux fois l'incertitude et au moins 2 s.
+- **Changement de pneus au ravitaillement** : son temps est inconnu, une marge prudente de 10 s est comptée et
+  annoncée dans les données.
+- **Arrêt pour les pneus seuls** : ajouté sans toucher au carburant. L'appel dit « pour les pneus uniquement, pas
+  besoin d'essence ».
+- **Le plan attend** la réponse sur les pneus après l'arrêt avant de recalculer.
+
+### D5 — Radio
+
+- **Nouvelles questions** :
+  - comment vont mes pneus, ils sont encore bons ;
+  - combien de tours avec ces gommes ;
+  - je perds l'avant, tu vois quelque chose ;
+  - je patine en sortie, pourquoi ;
+  - doit-on changer les pneus, gagnerait-on du temps en rentrant maintenant ;
+  - prolonger de deux tours ;
+  - pourquoi rentrer avec assez d'essence.
+- **Déclarations** : « je change seulement les pneus » est noté comme intention. « Je viens de monter des mediums »
+  passe par la commande pneus habituelle.
+- **Réponses** : réponses courtes, détails sur « pourquoi ? ». Elles séparent ce qui est mesuré, déclaré et estimé.
+- **Messages non urgents différés** pendant un gros freinage ou un volant très braqué, 6 s au plus. Alertes, appels
+  au stand et réponses passent toujours tout de suite.
+
+### D6 — Écran
+
+- **Carte « Pneus & endurance »** :
+  - gomme, âge et certitude du relais ;
+  - quatre températures mesurées ;
+  - état de l'adhérence, mesuré, déclaré et autres causes ;
+  - rythme ;
+  - durée seulement si elle est déclarée ou justifiée par l'historique ;
+  - prochain changement et sa raison.
+- **Section stratégie, « PROCHAIN ARRÊT »** :
+  - motif (règlement, carburant, pneus) ;
+  - intervention prévue ;
+  - alternatives avec écarts, incertitude et données.
+
+### Limites
+
+- GT7 ne transmet ni l'usure, ni la gomme montée, ni les changements de pneus : tout cela est déclaré par le pilote,
+  ou déduit des chronos et de la glisse.
+- Le temps d'un changement de pneus n'est pas mesuré : une marge prudente de 10 s le remplace.
+- Le format de paquet A ne transmet pas l'angle du volant : le report des messages pendant les virages ne fonctionne
+  qu'avec les formats B et ~ ; le freinage marche avec tous.
+- La glisse par essieu repose sur les vitesses de roue (seuils prudents). Elle reste à valider sur PS5.
+- Sans historique comparable, la durée de vie des pneus n'est jamais annoncée. La dégradation est mesurée sur le
+  relais en cours, à partir de 4 tours propres.
+- Les tests automatiques simulent des courses. Seuls des essais sur PS5 valideront les seuils.
+
+### Protocole PS5 hors ligne (environ 15 minutes)
+
+1. **Préparation** : course personnalisée hors ligne, 12 tours ou plus.
+   - Usure des pneus ×3 à ×5 ou plus, carburant ×1 (le carburant doit suffire).
+   - Dans Pitwall, type « Entraînement Sport » ou « Course personnalisée », règlement saisi (tours, usure).
+   - Gomme de départ déclarée : « je pars en mediums course ».
+2. **Tours 1 à 4** : rouler régulièrement.
+   - Une seule annonce « températures stabilisées » est attendue, jamais « tu peux attaquer ».
+   - « Comment vont mes pneus ? » : âge, gomme, « pas encore assez de tours » puis « comportement stable ».
+3. **Une erreur volontaire** sur un tour (large, sans sortie) : le tour suivant ne doit pas annoncer de dégradation.
+4. **Tours 5 et plus** : à mesure que l'usure baisse le rythme, on doit entendre « possible dégradation » puis
+   éventuellement « persistante ». Les autres causes doivent être citées, sans aucun pourcentage d'usure.
+   - « Je perds l'avant, tu vois quelque chose ? » : « Noté, d'après toi », puis ce que mesurent les données.
+   - « Est-ce qu'on doit changer les pneus ? » et « On gagnerait du temps en rentrant maintenant ? » : gain chiffré
+     seulement si démontré, sinon le dire.
+5. **Arrêt pour les pneus seulement** (sans essence), à l'appel « pour les pneus uniquement » ou de toi-même :
+   - « Tu as bien effectué ton arrêt ? » → « oui » ; « As-tu changé les pneus ? » → « oui ». La carte Pneus repart à
+     0 tour.
+6. **Ravitaillement sans pneus** (si la course le permet) : « non » à la question. Le relais pneus doit continuer, sans
+   remise à zéro.
+7. **À la fin** : la carte Pneus et la section « PROCHAIN ARRÊT » doivent rester cohérentes avec ce qui a été fait.
+   Envoie les captures si une réponse est fausse.
+
+### Démonstration simulée : le carburant suffit, les pneus imposent l'arrêt
+
+Course de 20 tours, consommation 2 % par tour, chronos qui se dégradent d'environ 0,4 s par tour d'âge des pneus,
+quatre courses comparables archivées (test `TyreStrategyTest.fullRaceTyresForceAStopWhileFuelIsEnough`, extrait de la
+radio) :
+
+```
+RADIO   Course de 20 tours. Stratégie : 1 arrêt (consommation tirée de l'historique, à confirmer). fin du tour 10, sans
+        essence, pour les pneus uniquement. Le carburant suffit, mais tes pneus nous coûtent du temps. Je recommande un
+        arrêt pour les pneus uniquement, fin du tour 10. Aucun ravitaillement nécessaire. Gain estimé 15 s, au-delà de
+        notre incertitude (2,0 s).
+RADIO   Tour 5 : 39 secondes 5. Plus 1,8 seconde sur ton meilleur. […] Possible dégradation : plus 90 centièmes sur tes
+        meilleurs tours avec ces pneus. Pas encore confirmée, je surveille. […] Carburant pour 45,1 tours.
+RADIO   Stand au prochain tour, prépare-toi. On changera les pneus.
+RADIO   Box, box ! Rentre au stand à la fin de ce tour pour les pneus uniquement, pas besoin d'essence.
+RADIO   Je t'ai vu immobilisé 4 secondes sans ravitaillement. Tu as bien effectué ton arrêt ?
+PILOTE  oui
+RADIO   Arrêt 1 enregistré : confirmé par toi. As-tu changé les pneus ?
+PILOTE  oui
+RADIO   Noté : pneus neufs au tour 11.
+RADIO   Tour 12 : 37 secondes 9. Plus 16 centièmes sur ton meilleur. […]
+RADIO   Tour 14 : 37 secondes 7. Meilleur tour, 2 centièmes de mieux ! […]
+RADIO   Course terminée ! Meilleur tour : 37 secondes 7.
+```

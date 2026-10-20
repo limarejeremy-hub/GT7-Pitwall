@@ -16,8 +16,29 @@ object StrategyDialogue {
         /** « Pourquoi on rentre au tour 5 ? » ([lap] : le tour cité, s'il y en a un). */
         data class WhyStop(val lap: Int?) : Ask
 
-        /** « On peut prolonger d'un tour ? », « si je reste dehors un tour de plus ? » */
-        data object Extend : Ask
+        /** « On peut prolonger d'un tour ? », « on peut prolonger de deux tours ? » ([laps] : tours de plus demandés). */
+        data class Extend(val laps: Int = 1) : Ask
+
+        /** « Radio, comment vont mes pneus ? », « ils sont encore bons ? » */
+        data object TyreStatus : Ask
+
+        /** « Il me reste combien de tours avec ces gommes ? » */
+        data object TyreLife : Ask
+
+        /** « Est-ce qu'on doit changer les pneus ? » */
+        data object TyreChange : Ask
+
+        /** « Est-ce qu'on gagnerait du temps en rentrant maintenant ? » */
+        data object GainPitNow : Ask
+
+        /** « Pourquoi tu veux me faire rentrer alors que j'ai assez d'essence ? » */
+        data object WhyPitWithFuel : Ask
+
+        /** « Je perds l'avant, tu vois quelque chose ? », « je patine en sortie, pourquoi ? » : observation et question. */
+        data class GripQuestion(val kind: ObservationKind) : Ask
+
+        /** « Je change seulement les pneus » : intention pour le prochain arrêt, jamais un changement enregistré. */
+        data object TyresOnlyIntent : Ask
 
         /** « On peut avancer l'arrêt ? », « je rentre maintenant ? » */
         data object Early : Ask
@@ -46,6 +67,7 @@ object StrategyDialogue {
         GRIP_REAR("perte d'adhérence à l'arrière"),
         TYRES_WORN("pneus qui fatiguent"),
         TRAFFIC("bloqué dans le trafic"),
+        WHEELSPIN("patinage en sortie de virage"),
         DAMAGE("voiture abîmée ou comportement anormal"),
     }
 
@@ -79,11 +101,39 @@ object StrategyDialogue {
             return Ask.FollowUp
         }
 
+        // Pneus : questions avant les observations (« ils sont encore bons ? » n'est pas un constat).
+        val tyreWord = has(t, " pneu", " gomme", " train ")
+        if (has(t, " (je change|on change|je fais|on fait) (seulement|uniquement|juste) (les )?pneus", " (seulement|uniquement|juste) les pneus ") && !asking) {
+            return Ask.TyresOnlyIntent
+        }
+        if (has(t, " pourquoi .*(rentr|arret|stand|box).*(assez|suffisamment) d'?( )?(essence|carburant)", " (assez|suffisamment) d'?( )?(essence|carburant).*pourquoi")) {
+            return Ask.WhyPitWithFuel
+        }
+        if (has(t, " (gagner|gagnerait|gagnerais|gagne) du temps en (rentrant|s'arretant|m'arretant|changeant)", " rentrer maintenant .*(gagn|rentable|interet)")) {
+            return Ask.GainPitNow
+        }
+        if (tyreWord && has(t, " combien de tours", " tiennent encore", " tenir encore", " encore combien")) return Ask.TyreLife
+        if (tyreWord && has(t, " (doit|faut|faudrait|devrait|devrais|dois)( il| on| je)? (changer|change)", " on change (les )?pneus", " changer (les )?pneus ")) {
+            if (asking || has(t, " est ce qu", " faut il ", " faut ")) return Ask.TyreChange
+        }
+        if (has(t, " comment (vont|va|sont) (mes |les )?(pneus|gommes)", " (mes |les )?pneus (ca va|vont bien|sont bons|tiennent)", " (ils|elles) sont encore bon",
+                " etat (de mes|des) pneus", " pneus encore bons",
+            )
+        ) {
+            return Ask.TyreStatus
+        }
+
         // Observations du pilote (constat, pas une question sur le sujet).
         observation(t)?.let { kind ->
             if (mode != StatementGuard.Mode.QUESTION && mode != StatementGuard.Mode.HYPOTHETICAL) {
+                // « Je perds l'avant, tu vois quelque chose ? » : un constat suivi d'une question.
+                if (has(t, " tu vois quelque chose", " tu vois quoi", " pourquoi ", " c'est normal", " tu as vu", " t'as vu", " qu'est ce qui se passe")) {
+                    return Ask.GripQuestion(kind)
+                }
                 return Ask.Observe(kind, negated = mode == StatementGuard.Mode.NEGATED)
             }
+            // Question sur un constat (« je patine beaucoup en sortie, pourquoi ? ») : la mesure répond.
+            if (mode == StatementGuard.Mode.QUESTION && kind != ObservationKind.TRAFFIC) return Ask.GripQuestion(kind)
         }
 
         if (has(t, " qu'est ce qui (a|as) change", " (quoi|qu'est ce qui) de neuf ", " depuis (le|notre) plan", " plan initial ",
@@ -110,7 +160,8 @@ object StrategyDialogue {
                 " repousser (l'|mon |notre )?arret", " rentrer plus tard ", " rester dehors ",
             ) && !negated && (asking || has(t, " prolong"))
         ) {
-            return Ask.Extend
+            val n = Regex(" (de |d')(deux|2|trois|3) tours").find(t)?.groupValues?.get(2)?.let { if (it == "deux" || it == "2") 2 else 3 } ?: 1
+            return Ask.Extend(n)
         }
         if (has(t, " avancer (l'|mon |notre )?arret", " anticip", " rentrer plus tot ", " rentrer (maintenant|tout de suite|ce tour)",
                 " rentre (maintenant|tout de suite) ", " (je|on) rentre (au|a la fin du) (prochain|ce) tour ",
@@ -146,6 +197,8 @@ object StrategyDialogue {
             ObservationKind.GRIP_REAR
         Regex(" (mes |les )?pneus (sont )?(finis|morts|uses|cuits|a l'agonie|fatiguent|s'usent|lachent|commencent a lacher)| plus de (grip|gomme|pneus) | (je|on) (perds|perd) (de l')?(adherence|grip) ").containsMatchIn(t) ->
             ObservationKind.TYRES_WORN
+        Regex(" (je |ca )?patine| patinage| (l'arriere|les roues) (patine|patinent)| je perds la motricite| pas de motricite").containsMatchIn(t) ->
+            ObservationKind.WHEELSPIN
         Regex(" (bloque|coince|gene|ralenti|englue) (derriere|dans le trafic|par)| dans le trafic | trafic ").containsMatchIn(t) ->
             ObservationKind.TRAFFIC
         Regex(" (la )?voiture (tire|part|vibre|est abimee|est endommagee)| degats | j'ai (tape|touche|abime)| (aileron|suspension) ").containsMatchIn(t) ->

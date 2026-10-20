@@ -272,6 +272,7 @@ fun PitwallScreen(
                         RaceSetupCard(state, rules, engine.database, engine::setRules, engine::command, engine::selectProfile, engine::updateProfile, engine::confirmRules, onRefreshSchedule, engine::declareRules)
                         TrackMapCard(state.snapshot.trackOutline, state.snapshot.packet)
                         FuelCard(state.fuel, state.snapshot.packet)
+                        TyreCard(state, rules)
                         RadioCard(radio, engine::command)
                         voiceRadioCard()
                     }
@@ -283,6 +284,7 @@ fun PitwallScreen(
                     DriveCard(state.snapshot.packet)
                     LapCard(state)
                     FuelCard(state.fuel, state.snapshot.packet)
+                    TyreCard(state, rules)
                     RaceSetupCard(state, rules, engine.database, engine::setRules, engine::command, engine::selectProfile, engine::updateProfile, engine::confirmRules, onRefreshSchedule, engine::declareRules)
                     CarCard(state.snapshot.packet, state.gForce)
                     TrackMapCard(state.snapshot.trackOutline, state.snapshot.packet)
@@ -609,6 +611,68 @@ private fun Metric(label: String, value: String, modifier: Modifier = Modifier, 
 
 private fun f1(v: Float): String = String.format(Locale.FRANCE, "%.1f", v)
 private fun f2(v: Float): String = String.format(Locale.FRANCE, "%.2f", v)
+
+/**
+ * Pneus & endurance : relais pneus (indépendant du carburant), températures mesurées, état de l'adhérence, tendance du
+ * rythme, estimation de durée seulement si l'historique la justifie, et prochain changement conseillé avec sa raison.
+ * GT7 ne transmet pas l'usure : aucun pourcentage n'est affiché.
+ */
+@Composable
+private fun TyreCard(state: PitwallUiState, rules: com.gt7pitwall.core.strategy.RaceRules) {
+    val st = state.tyreStint
+    val g = state.grip
+    PitCard("Pneus & endurance") {
+        Text(
+            buildString {
+                append(st?.compound?.spoken ?: "Gomme non déclarée")
+                st?.let { append(" • ${it.age} tour${if (it.age > 1) "s" else ""}") }
+                if (st != null && !st.certain) append(" • âge incertain")
+            },
+            fontWeight = FontWeight.Bold,
+        )
+        state.snapshot.packet?.tyreTemps?.let { t ->
+            Text(
+                "Températures (mesurées) : AV ${t.fl.roundToInt()} / ${t.fr.roundToInt()}  •  AR ${t.rl.roundToInt()} / ${t.rr.roundToInt()} °C",
+                fontFamily = FontFamily.Monospace,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        val color = when (g.level) {
+            com.gt7pitwall.core.tyres.GripLevel.INSUFFICIENT -> PitColors.Muted
+            com.gt7pitwall.core.tyres.GripLevel.STABLE -> PitColors.Green
+            com.gt7pitwall.core.tyres.GripLevel.POSSIBLE -> PitColors.Yellow
+            else -> PitColors.Red
+        }
+        Text("Adhérence : ${g.level.label}" + if (g.level == com.gt7pitwall.core.tyres.GripLevel.INSUFFICIENT) " (${g.cleanLaps} tours propres sur ${com.gt7pitwall.core.tyres.GripDiagnosis.MIN_LAPS})" else "", color = color)
+        if (g.areas.isNotEmpty()) DiagLine("Zone", g.areas.joinToString(", ") { it.label })
+        if (g.evidence.isNotEmpty()) DiagLine("Mesuré", g.evidence.joinToString(", "))
+        g.slopeMsPerLap?.let { DiagLine("Rythme", "dégradation de ${com.gt7pitwall.core.tyres.GripDiagnosis.seconds(it)} par tour (mesuré)") }
+        if (g.declared.isNotEmpty()) DiagLine("Déclaré", g.declared.joinToString(", "))
+        if (g.alternatives.isNotEmpty()) DiagLine("Autres causes possibles", g.alternatives.joinToString(", "))
+        // Durée restante : seulement si elle est justifiée (déclarée par le pilote, ou apprise sur des relais comparables).
+        val m = state.tyreModel
+        val life = m.performantLaps?.takeIf { it.confidence != com.gt7pitwall.core.strategy.Confidence.INSUFFICIENT }
+        when {
+            rules.tyreStintLaps != null -> DiagLine("Durée de vie", "${rules.tyreStintLaps} tours (déclaré)")
+            life != null -> DiagLine("Durée estimée", "perte nette vers ${life.mean.roundToInt()} tours d'âge (${life.confidence.label} : ${m.basis()})")
+            else -> DiagLine("Durée estimée", "non justifiable : pas assez de relais comparables")
+        }
+        m.slopeMsPerLap?.takeIf { it.confidence != com.gt7pitwall.core.strategy.Confidence.INSUFFICIENT }?.let {
+            DiagLine("Historique", "${com.gt7pitwall.core.tyres.GripDiagnosis.seconds(it.mean)} par tour d'âge (${it.confidence.label}, ${m.basis()})")
+        }
+        val lap = (state.snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)
+        val next = state.plan?.stops?.firstOrNull { it.changeTyres && it.endOfLap >= lap }
+        Text(
+            next?.let { "Prochain changement conseillé : fin du tour ${it.endOfLap} (${it.reasons.joinToString(", ")})" } ?: "Aucun changement de pneus prévu",
+            style = MaterialTheme.typography.bodySmall,
+            color = if (next != null) PitColors.Yellow else PitColors.Muted,
+        )
+        state.strategy?.takeIf { it.recommended in com.gt7pitwall.core.strategy.StrategyOptions.TYRE_KINDS || "pneus" in it.reason }?.let {
+            Text(it.reason, style = MaterialTheme.typography.bodySmall)
+        }
+        Text("GT7 ne transmet pas l'usure : Pitwall juge sur tes chronos, la glisse et tes déclarations.", color = PitColors.Muted, style = MaterialTheme.typography.bodySmall)
+    }
+}
 
 @Composable
 private fun FuelCard(fuel: FuelReport?, p: TelemetryPacket?) {

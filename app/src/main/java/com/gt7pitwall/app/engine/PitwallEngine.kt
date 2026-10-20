@@ -96,8 +96,14 @@ data class PitwallUiState(
     val ruleGaps: List<RuleField> = emptyList(),
     /** Programme Sport connu : fraîcheur, erreur de lecture, péremption. */
     val schedule: ScheduleState? = null,
-    /** Stratégies comparées (normale, anticipée, prolongée) et recommandation. */
+    /** Stratégies comparées (carburant et pneus) et recommandation. */
     val strategy: com.gt7pitwall.core.strategy.StrategyReport? = null,
+    /** Diagnostic d'adhérence du train de pneus en cours (mesuré / déclaré / autres causes). */
+    val grip: com.gt7pitwall.core.tyres.GripReport = com.gt7pitwall.core.tyres.GripReport.NONE,
+    /** Relais pneus en cours, indépendant du carburant. */
+    val tyreStint: com.gt7pitwall.core.strategy.TyreStint? = null,
+    /** Relais pneus comparables appris (estimations). */
+    val tyreModel: com.gt7pitwall.core.tyres.TyreModel = com.gt7pitwall.core.tyres.TyreModel.EMPTY,
     /** Réponses stratégiques prêtes (recommandation, prolonger, autres qui rentrent, carburant pour finir). */
     val brief: com.gt7pitwall.core.strategy.StrategyBrief? = null,
 )
@@ -370,6 +376,9 @@ class PitwallEngine(
             ruleGaps = race.ruleGaps,
             schedule = race.schedule,
             strategy = race.strategy,
+            grip = race.engineer.grip,
+            tyreStint = race.ledger.tyreStint((snap.packet?.currentLap ?: 1).coerceAtLeast(1), race.rules.startTyre),
+            tyreModel = race.tyreModel,
             brief = if (force) race.strategyBrief else _state.value.brief ?: race.strategyBrief,
         )
     }

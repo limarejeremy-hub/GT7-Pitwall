@@ -488,13 +488,41 @@ private fun StrategySection(state: PitwallUiState) {
             style = MaterialTheme.typography.bodySmall,
         )
     }
+    // Prochain arrêt : motif (pneus / carburant / règlement), tour, intervention, gain et incertitude, sources.
+    val lap = (state.snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)
+    state.plan?.nextStop(lap)?.let { next ->
+        Text("PROCHAIN ARRÊT", style = MaterialTheme.typography.labelMedium, color = PitColors.Muted, letterSpacing = 1.5.sp)
+        Text("Fin du tour ${next.endOfLap} • motif : ${next.reasons.joinToString(", ").ifEmpty { "plan" }}", fontWeight = FontWeight.Bold)
+        val cap = state.snapshot.packet?.fuelCapacity
+        val work = buildList {
+            when {
+                next.forFuel -> add("carburant : " + (next.fuel?.let { com.gt7pitwall.core.strategy.FuelUnits.amount(it.toFloat(), cap) } ?: "à calculer"))
+                next.fuel != null -> add("pas d'essence")
+            }
+            val fit = next.tyreToFit
+            when {
+                fit != null -> add("monter les ${fit.spoken}")
+                next.changeTyres -> add("pneus neufs")
+                else -> add("mêmes pneus")
+            }
+        }
+        Text("Intervention prévue : ${work.joinToString(", ")}", style = MaterialTheme.typography.bodySmall)
+    } ?: Text("Aucun arrêt prévu.", style = MaterialTheme.typography.bodySmall)
+    Text("Alternatives", style = MaterialTheme.typography.labelSmall, color = PitColors.Muted)
     report.options.forEach { o ->
         val label = when (o.kind) {
             com.gt7pitwall.core.strategy.OptionKind.NORMAL -> "Normale"
-            com.gt7pitwall.core.strategy.OptionKind.EARLY -> "Anticipée"
-            com.gt7pitwall.core.strategy.OptionKind.EXTENDED -> "Prolongée"
+            com.gt7pitwall.core.strategy.OptionKind.EARLY -> "Essence plus tôt"
+            com.gt7pitwall.core.strategy.OptionKind.EXTENDED -> "Essence plus tard"
+            com.gt7pitwall.core.strategy.OptionKind.TYRES_NOW -> "Pneus fin de ce tour"
+            com.gt7pitwall.core.strategy.OptionKind.TYRES_NEXT -> "Pneus au prochain tour"
+            com.gt7pitwall.core.strategy.OptionKind.TYRES_PLANNED -> "Pneus au meilleur tour"
+            com.gt7pitwall.core.strategy.OptionKind.TYRES_WITH_FUEL -> "Pneus au ravitaillement"
+            com.gt7pitwall.core.strategy.OptionKind.STAY_OUT -> "Garder ces pneus"
         }
-        val stops = if (o.stopLaps.isEmpty()) "sans arrêt" else "arrêt fin T" + o.stopLaps.joinToString(", T")
+        val stops = if (o.stopLaps.isEmpty()) "sans arrêt" else o.plan?.stops?.joinToString(", ") { s ->
+            "T${s.endOfLap} " + s.reasons.joinToString("+").ifEmpty { "arrêt" }
+        } ?: ("arrêt fin T" + o.stopLaps.joinToString(", T"))
         val delta = o.deltaMs
         val detail = when {
             !o.feasible -> "irréalisable : ${o.issues.firstOrNull() ?: "?"}"

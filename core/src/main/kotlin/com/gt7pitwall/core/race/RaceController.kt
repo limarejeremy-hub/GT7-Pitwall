@@ -52,6 +52,8 @@ import com.gt7pitwall.core.strategy.TyreCompound
 import com.gt7pitwall.core.strategy.TyreService
 import com.gt7pitwall.core.strategy.TyreInputs
 import com.gt7pitwall.core.tyres.TyreModel
+import com.gt7pitwall.core.tyres.GripLevel
+import com.gt7pitwall.core.tyres.GripDiagnosis
 import com.gt7pitwall.core.telemetry.TelemetryPacket
 import kotlin.math.roundToInt
 
@@ -300,8 +302,12 @@ class RaceController(
         out.addAll(0, engineer.onUpdate(events, tracker.snapshot, fuel))
         out += engineer.onPosition(positionChanges, nowMs)
         if (events.any { it is SessionEvent.LapCompleted || it is SessionEvent.RaceFinished || it is SessionEvent.PitVisitEnded }) saveSession()
-        return deliver(out)
+        // Messages non urgents différés pendant un gros freinage ou un virage (au plus quelques secondes).
+        if (events.any { it is SessionEvent.SessionReset }) pacer.clear()
+        return deliver(pacer.pace(out, pacer.busy(p), nowMs))
     }
+
+    private val pacer = com.gt7pitwall.core.radio.RadioPacer()
 
     /** Même traitement pour les boutons de l'écran et les commandes vocales. */
     fun command(command: DriverCommand): List<EngineerMessage> {
@@ -1046,13 +1052,25 @@ class RaceController(
         pendingConfirmation = null
         val echo = EngineerMessage("Toi : $question", Priority.INFO, MessageCategory.DRIVER)
         val extra = mutableListOf<EngineerMessage>()
-        val text = if (!telemetryLive() && ask !is StrategyDialogue.Ask.Observe && ask !is StrategyDialogue.Ask.Unclear) {
+        val text = if (!telemetryLive() && ask !is StrategyDialogue.Ask.Observe && ask !is StrategyDialogue.Ask.Unclear &&
+            ask !is StrategyDialogue.Ask.TyresOnlyIntent
+        ) {
             generalAdvice(ask)
         } else {
             when (ask) {
                 StrategyDialogue.Ask.Best -> answerBest()
                 is StrategyDialogue.Ask.WhyStop -> answerWhyStop(ask.lap)
-                StrategyDialogue.Ask.Extend -> answerExtend()
+                is StrategyDialogue.Ask.Extend -> answerExtend(ask.laps)
+                StrategyDialogue.Ask.TyreStatus -> answerTyreStatus()
+                StrategyDialogue.Ask.TyreLife -> answerTyreLife()
+                StrategyDialogue.Ask.TyreChange -> answerTyreChange()
+                StrategyDialogue.Ask.GainPitNow -> answerGainPitNow()
+                StrategyDialogue.Ask.WhyPitWithFuel -> answerWhyPitWithFuel()
+                is StrategyDialogue.Ask.GripQuestion -> answerGripQuestion(ask.kind, question)
+                StrategyDialogue.Ask.TyresOnlyIntent -> {
+                    noteIntention("« ${question.trim()} » (pneus seulement au prochain arrêt)")
+                    "Noté : au prochain arrêt, pneus seulement. Je n'enregistre le changement que quand tu l'as fait."
+                }
                 StrategyDialogue.Ask.Early -> answerEarly()
                 StrategyDialogue.Ask.OthersPitting -> answerOthersPitting()
                 StrategyDialogue.Ask.FuelToFinish -> answerFuelToFinish()
@@ -1073,7 +1091,11 @@ class RaceController(
     private fun generalAdvice(ask: StrategyDialogue.Ask): String = "Conseil général, sans télémétrie : " + when (ask) {
         StrategyDialogue.Ask.Best -> "je n'ai pas de données de course. Je bâtirai le plan sur le règlement et ta consommation mesurée dès le premier tour."
         is StrategyDialogue.Ask.WhyStop -> "un arrêt se place quand l'autonomie ou le règlement l'imposent ; je n'ai pas de plan en cours."
-        StrategyDialogue.Ask.Extend -> "on ne prolonge un relais que si l'autonomie mesurée garde au moins un demi-tour de marge."
+        is StrategyDialogue.Ask.Extend -> "on ne prolonge un relais que si l'autonomie mesurée garde au moins un demi-tour de marge."
+        StrategyDialogue.Ask.TyreStatus, StrategyDialogue.Ask.TyreLife, StrategyDialogue.Ask.TyreChange ->
+            "sans télémétrie, je ne vois ni tes chronos ni la glisse. GT7 ne transmet pas l'usure : je juge sur tes chronos en course."
+        StrategyDialogue.Ask.GainPitNow, StrategyDialogue.Ask.WhyPitWithFuel ->
+            "un arrêt ne vaut que s'il fait gagner plus de temps qu'il n'en coûte ; je n'ai pas de course en cours pour le chiffrer."
         StrategyDialogue.Ask.Early -> "avancer un arrêt ne vaut que si le rythme chute nettement ou si le règlement l'impose."
         StrategyDialogue.Ask.OthersPitting -> "on suit notre propre plan tant que notre autonomie le permet ; je n'ai de données ni sur eux ni sur nous."
         StrategyDialogue.Ask.FuelToFinish -> "je ne connais pas ton carburant tant que GT7 ne m'envoie rien."
@@ -1117,10 +1139,135 @@ class RaceController(
         }
     }
 
-    private fun answerExtend(): String {
+    private fun answerExtend(laps: Int = 1): String {
         val brief = strategyBrief ?: return noPlan
-        return if (plan?.nextStop((snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)) == null) "Rien à prolonger : aucun arrêt n'est prévu."
-        else "Prolonger d'un tour : ${brief.extendOneLap}"
+        val lap = (snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)
+        val next = plan?.nextStop(lap) ?: return "Rien à prolonger : aucun arrêt n'est prévu."
+        val tyres = if (engineer.grip.degrading) " Attention, tes pneus montrent des signes de dégradation : ce sont des tours plus lents." else ""
+        if (laps <= 1) return "Prolonger d'un tour : ${brief.extendOneLap}$tyres"
+        // Plus d'un tour : l'autonomie mesurée décide, avec la marge de sécurité du plan.
+        if (!next.forFuel) return "Prolonger de $laps tours : l'arrêt du tour ${next.endOfLap} n'est pas pour l'essence, l'autonomie n'est pas en cause.$tyres"
+        val autonomy = fuel?.lapsOfFuel ?: return "Prolonger de $laps tours : je n'ai pas encore mesuré ta consommation."
+        val needed = next.endOfLap + laps - lap + 1 + RacePlanner.SAFETY_LAPS
+        return if (autonomy >= needed) {
+            "Prolonger de $laps tours : possible, ${FrenchFormat.decimal(autonomy)} tours d'autonomie, arrêt fin du tour ${next.endOfLap + laps}.$tyres"
+        } else {
+            "Prolonger de $laps tours : non, ${FrenchFormat.decimal(autonomy)} tours d'autonomie ne suffisent pas jusqu'au tour ${next.endOfLap + laps}."
+        }
+    }
+
+    // ------------------------------------------------------------------ Pneus à la radio
+
+    private fun tyreStintText(): String {
+        val lap = (snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)
+        val st = ledger.tyreStint(lap, rules.startTyre)
+        val compound = st.compound?.spoken ?: "gomme non déclarée"
+        return "Pneus de ${st.age} tour${if (st.age > 1) "s" else ""}, $compound" + if (st.certain) "" else ", âge incertain"
+    }
+
+    private fun answerTyreStatus(): String {
+        val g = engineer.grip
+        val declared = g.declared.takeIf { it.isNotEmpty() }?.let { " Tu m'as signalé : ${it.joinToString(", ")} (déclaré)." } ?: ""
+        val body = when (g.level) {
+            GripLevel.INSUFFICIENT -> "Pas encore assez de tours propres avec ces pneus pour juger (${g.cleanLaps} sur ${GripDiagnosis.MIN_LAPS})."
+            GripLevel.STABLE -> g.isolatedLap?.let { "Comportement stable ; le tour $it était un tour isolé, pas une tendance." } ?: "Comportement stable : tes chronos tiennent."
+            else -> "${g.level.label.replaceFirstChar { it.uppercase() }} : ${g.evidence.take(2).joinToString(", ")}. Pas forcément l'usure : ${g.alternatives.last()}."
+        }
+        return "${tyreStintText()}. $body$declared"
+    }
+
+    private fun answerTyreLife(): String {
+        val lap = (snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)
+        val age = ledger.tyreAge(lap)
+        rules.tyreStintLaps?.let { life ->
+            return "Tu m'as dit qu'ils tiennent $life tours (déclaré) : ils en ont $age, il en reste ${(life - age).coerceAtLeast(0)}."
+        }
+        val life = tyreModel.performantLaps?.takeIf { it.confidence != Confidence.INSUFFICIENT }
+            ?: return "Je ne peux pas le dire : pas assez de relais comparables avec ces pneus, et GT7 ne transmet pas l'usure. Ils ont $age tours."
+        val at = life.mean.roundToInt()
+        return "Estimation ${life.confidence.label} (${tyreModel.basis()}) : la perte devient nette vers $at tours d'âge. Tes pneus en ont $age."
+    }
+
+    private fun answerTyreChange(): String {
+        val report = strategy
+        val lap = (snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)
+        val planned = plan?.stops?.firstOrNull { it.changeTyres && it.endOfLap >= lap }
+        if (planned != null) {
+            val why = planned.reasons.joinToString(", ")
+            return "Oui, changement prévu fin du tour ${planned.endOfLap} ($why)." + if (planned.tyresOnly) " Aucun ravitaillement nécessaire." else ""
+        }
+        if (report != null && report.recommended in StrategyOptions.TYRE_KINDS) return firstSentence(report.reason)
+        if (engineer.grip.degrading) return "Les pneus montrent des signes de dégradation, mais je ne peux pas encore démontrer qu'un arrêt nous ferait gagner du temps."
+        return "Non : rien ne montre qu'un changement de pneus nous ferait gagner du temps."
+    }
+
+    private fun answerGainPitNow(): String {
+        val report = strategy ?: return noPlan
+        val now = report.option(OptionKind.TYRES_NOW) ?: report.option(OptionKind.EARLY)
+            ?: return "Je n'ai pas d'arrêt maintenant à comparer : la dégradation de tes pneus n'est pas encore connue."
+        val u = report.uncertaintyMs
+        val d = now.deltaMs
+        val what = if (now.kind == OptionKind.TYRES_NOW) "Rentrer maintenant pour les pneus" else "Rentrer maintenant"
+        return when {
+            !now.feasible -> "$what : non, ${now.issues.firstOrNull() ?: "plan irréalisable"}."
+            d == null || u == null -> "$what : je ne peux pas le chiffrer avec nos données."
+            -d > u -> "$what : gain estimé ${StrategyOptions.seconds(-d)}, incertitude ${StrategyOptions.seconds(u)}." +
+                if (report.recommended == now.kind) "" else " Pas assez net pour changer de stratégie."
+            d > u -> "$what : on perdrait environ ${StrategyOptions.seconds(d)}."
+            else -> "$what : pas de gain démontré, l'écart est sous notre incertitude."
+        }
+    }
+
+    private fun answerWhyPitWithFuel(): String {
+        val lap = (snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)
+        val next = plan?.nextStop(lap) ?: return "Je ne te fais pas rentrer : aucun arrêt n'est prévu."
+        return when {
+            next.forFuel -> "Ton carburant ne suffit pas jusqu'à l'arrivée : arrêt fin du tour ${next.endOfLap}, ${next.fuel?.let { FuelUnits.amount(it.toFloat(), snapshot.packet?.fuelCapacity) } ?: "quantité à calculer"}."
+            next.mandatory -> "Pour l'arrêt obligatoire du règlement, fin du tour ${next.endOfLap}, pas pour l'essence."
+            next.tyreToFit != null -> "Pour monter les ${next.tyreToFit.spoken} imposés par le règlement, pas pour l'essence."
+            next.changeTyres -> "Pas pour l'essence : pour les pneus. " + (strategy?.reason?.takeIf { "pneus" in it }?.let(::firstSentence)
+                ?: "Tu m'as donné leur durée de vie et ils l'atteignent.")
+            else -> "Arrêt prévu fin du tour ${next.endOfLap}."
+        }
+    }
+
+    /** Constat et question du pilote (« je perds l'avant, tu vois quelque chose ? ») : noté comme déclaré, la mesure répond. */
+    private fun answerGripQuestion(kind: StrategyDialogue.ObservationKind, question: String): String {
+        val lap = snapshot.packet?.currentLap ?: 0
+        observations.addLast(Observation(lap, kind, question.trim()))
+        while (observations.size > MAX_OBSERVATIONS) observations.removeFirst()
+        note(DriverNote(lap, "${kind.label} (déclaré)"))
+        val g = engineer.grip
+        val area = when (kind) {
+            StrategyDialogue.ObservationKind.GRIP_FRONT -> com.gt7pitwall.core.tyres.GripArea.FRONT
+            StrategyDialogue.ObservationKind.GRIP_REAR -> com.gt7pitwall.core.tyres.GripArea.REAR
+            StrategyDialogue.ObservationKind.WHEELSPIN -> com.gt7pitwall.core.tyres.GripArea.TRACTION
+            else -> null
+        }
+        val seen = when {
+            g.level == GripLevel.INSUFFICIENT -> "Pas encore assez de tours propres avec ces pneus pour le confirmer."
+            area != null && area in g.areas -> "Les mesures vont dans ton sens : ${g.evidence.take(2).joinToString(", ")}."
+            g.degrading -> "Je mesure ${g.evidence.firstOrNull() ?: "une baisse"}, mais pas spécialement ${area?.label ?: "là"}."
+            else -> "Je ne vois rien de net dans les mesures pour l'instant."
+        }
+        val causes = if (kind == StrategyDialogue.ObservationKind.WHEELSPIN) {
+            " Causes possibles : accélérateur trop tôt ou trop brusque, pneus arrière froids ou fatigués, réglages."
+        } else {
+            " Ça peut venir des pneus, mais aussi du trafic, de la piste ou de ta trajectoire."
+        }
+        return "Noté, d'après toi. $seen$causes"
+    }
+
+    /** Détails sur demande (« pourquoi ? ») après une réponse sur les pneus. */
+    private fun tyreDetails(): String {
+        val g = engineer.grip
+        val basis = listOfNotNull(
+            g.evidence.takeIf { it.isNotEmpty() }?.joinToString(", ")?.let { "mesuré : $it" },
+            g.declared.takeIf { it.isNotEmpty() }?.joinToString(", ")?.let { "déclaré : $it" },
+            tyreModel.slopeMsPerLap?.takeIf { it.confidence != Confidence.INSUFFICIENT }?.let { "estimé : ${StrategyOptions.seconds(it.mean.toLong())} par tour d'âge (${it.confidence.label}, ${tyreModel.basis()})" },
+        )
+        val alt = g.alternatives.takeIf { it.isNotEmpty() }?.let { " Autres causes possibles : ${it.joinToString(", ")}." } ?: ""
+        return (if (basis.isEmpty()) "Je n'ai pas encore de mesure nette sur ces pneus." else "Je me base sur : ${basis.joinToString(" ; ")}.") + alt
     }
 
     private fun answerEarly(): String {
@@ -1174,7 +1321,8 @@ class RaceController(
         val report = strategy ?: return noPlan
         val basis = report.basis.take(3).joinToString(", ")
         return when (lastStrategyAsk) {
-            StrategyDialogue.Ask.Best, StrategyDialogue.Ask.Extend, StrategyDialogue.Ask.Early ->
+            StrategyDialogue.Ask.TyreStatus, StrategyDialogue.Ask.TyreChange, StrategyDialogue.Ask.TyreLife, is StrategyDialogue.Ask.GripQuestion -> tyreDetails()
+            StrategyDialogue.Ask.Best, is StrategyDialogue.Ask.Extend, StrategyDialogue.Ask.Early, StrategyDialogue.Ask.GainPitNow ->
                 "${firstSentence(report.reason)} Je me base sur : $basis."
             else -> "Je me base sur : $basis.${rulesWarning()}"
         }
@@ -1367,7 +1515,7 @@ class RaceController(
     /** Réponse attendue qui change le plan (la question sur les pneus ne compte que si leur durée de vie est connue). */
     private val awaitingPlanAnswer: Boolean
         get() = pendingConfirmation != null || ledger.awaitingTyreDeclaration || ledger.pending != null ||
-            (ledger.awaitingTyreChangeAnswer && rules.tyreStintLaps != null)
+            (ledger.awaitingTyreChangeAnswer && (rules.tyreStintLaps != null || performanceTyreLaps.isNotEmpty() || plan?.stops?.any { it.forTyres } == true))
 
     private val awaitingAnswer: Boolean
         get() = pendingConfirmation != null || ledger.awaitingTyreDeclaration || ledger.awaitingTyreChangeAnswer || ledger.pending != null

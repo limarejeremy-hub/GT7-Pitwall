@@ -224,6 +224,8 @@ class TyreStrategyTest {
         // Arrêt sans essence, confirmé, pneus changés : nouveau relais pneus, le plan pneus est fait.
         sim.pitStop(fuel = 0f)
         sim.say("oui")
+        // Tant que le pilote n'a pas dit s'il a changé les pneus, l'ingénieur ne relance pas un arrêt pneus.
+        assertFalse(sim.texts.takeLast(3).any { "Je recommande un arrêt pour les pneus" in it }, sim.texts.takeLast(3).toString())
         sim.say("oui")
         assertEquals(1, c2.ledger.stopCount)
         assertEquals(TyreService.CHANGED, c2.ledger.stopList.single().tyres)

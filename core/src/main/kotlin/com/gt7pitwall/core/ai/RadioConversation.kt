@@ -89,7 +89,11 @@ class RadioConversation(
             // Une observation ou une phrase mal reconnue qui est aussi une commande reste à l'analyseur et au garde.
             if (stateful && (ask is StrategyDialogue.Ask.Observe || ask is StrategyDialogue.Ask.Unclear)) return@withLock null
             // Hors course ou en pleine discussion de pilotage, « l'avant glisse en sortie » est une question de pilotage.
-            if (ask is StrategyDialogue.Ask.Observe && (!race.telemetryLive() || race.inAiConversation(clock()))) return@withLock null
+            if ((ask is StrategyDialogue.Ask.Observe || ask is StrategyDialogue.Ask.GripQuestion) &&
+                (!race.telemetryLive() || race.inAiConversation(clock()))
+            ) {
+                return@withLock null
+            }
             // « Je vais prolonger d'un tour » : intention notée, et l'ingénieur dit ce qu'il en pense.
             val intention = StatementGuard.mode(heard) in INTENTION_MODES
             if (intention) race.noteIntention("« ${heard.trim()} »")
