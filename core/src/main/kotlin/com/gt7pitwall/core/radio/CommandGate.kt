@@ -98,6 +98,12 @@ enum class CommandSource {
 
     /** Phrase reformulée par Gemini (« COMMANDE: … ») : jamais exécutée sans confirmation du pilote. */
     GEMINI,
+
+    /**
+     * Phrase entendue pendant la conversation continue, sans « Radio » devant : elle peut venir du jeu ou d'un autre
+     * participant. Une modification de la course attend toujours le « oui » du pilote.
+     */
+    CONVERSATION,
 }
 
 /** Ce que l'on sait de la course au moment de la phrase. */
@@ -180,7 +186,9 @@ object CommandGate {
             }
         }
         // Gemini ne fait que reformuler : une modification proposée par lui attend toujours le « oui » du pilote.
-        if (source == CommandSource.GEMINI && v is Vetting.Execute) return Vetting.Confirm(command, confirmation(command))
+        if ((source == CommandSource.GEMINI || source == CommandSource.CONVERSATION) && v is Vetting.Execute) {
+            return Vetting.Confirm(command, confirmation(command))
+        }
         return v
     }
 

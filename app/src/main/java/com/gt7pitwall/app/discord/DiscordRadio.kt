@@ -6,6 +6,9 @@ import com.gt7pitwall.core.engineer.MessageCategory
 import com.gt7pitwall.core.engineer.Priority
 import com.gt7pitwall.core.radio.RemoteVoice
 import com.gt7pitwall.core.radio.SpeechQueue
+import com.gt7pitwall.core.radio.RadioTone
+import com.gt7pitwall.core.radio.RadioTones
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -85,7 +88,47 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
     private val sender by lazy { OpusQueueSender() }
     private var jda: JDA? = null
 
-    private class Queued(val message: EngineerMessage, val onFailed: (EngineerMessage) -> Unit)
+    /** Phrase à dire, ou signal déjà encodé ([frames]) : même file, donc jamais un bip au milieu d'une phrase. */
+    private class Queued(
+        val message: EngineerMessage,
+        val onFailed: (EngineerMessage) -> Unit,
+        val frames: List<ByteArray>? = null,
+        val done: CompletableDeferred<Boolean>? = null,
+    ) {
+        val isTone: Boolean get() = frames != null
+    }
+
+    private val _speaking = MutableStateFlow(false)
+    /**
+     * Vrai tant que l'ingénieur parle réellement dans le salon (synthèse, envoi des trames et fin de lecture dans le
+     * casque). Les bips n'en font pas partie : ils n'empêchent pas d'écouter.
+     */
+    val speaking: StateFlow<Boolean> = _speaking.asStateFlow()
+
+    /** Trames Opus des signaux, encodées une seule fois. */
+    private val toneFrames = java.util.concurrent.ConcurrentHashMap<RadioTone, List<ByteArray>>()
+
+    /**
+     * Joue un signal dans le casque PS5, après ce qui est déjà en file. Renvoie quand il a été envoyé (false : salon
+     * quitté ou encodage impossible, à jouer ailleurs).
+     */
+    suspend fun playTone(tone: RadioTone): Boolean {
+        if (!live) return false
+        val frames = toneFrames[tone] ?: runCatching { OpusFrames.encode(RadioTones.pcm(tone, OpusFrames.SAMPLE_RATE)) }.getOrNull()
+            ?.takeIf { it.isNotEmpty() }?.also { toneFrames[tone] = it } ?: return false
+        val done = CompletableDeferred<Boolean>()
+        val dropped = queue.offer(Queued(EngineerMessage("[bip]", Priority.HIGH, MessageCategory.RADIO), { done.complete(false) }, frames, done))
+        if (dropped != null) sender.clear()
+        wake.trySend(Unit)
+        return withTimeoutOrNull(TONE_TIMEOUT_MS) { done.await() } ?: false
+    }
+
+    /**
+     * Pilote dont la voix est écoutée : le seul humain du salon, ou à défaut le premier qui parle. La voix des autres
+     * participants n'est jamais prise pour une demande du pilote (le bot ne reçoit pas sa propre voix).
+     */
+    @Volatile
+    private var pilotUserId: Long? = null
 
     private val queue = SpeechQueue<Queued> { it.message.priority }
     private val wake = Channel<Unit>(Channel.CONFLATED)
@@ -133,7 +176,10 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
         override val label = "micro du casque PS5 (Discord)"
         override val isPhoneMic = false
         private val packets = LinkedBlockingQueue<ByteArray>(MIC_BUFFER)
-        private val sink: (Long, ByteArray) -> Unit = { _, opus -> packets.offer(opus) }
+        private val sink: (Long, ByteArray) -> Unit = { user, opus ->
+            val pilot = pilotUserId ?: user.also { pilotUserId = it }
+            if (user == pilot) packets.offer(opus)
+        }
         private var decoder: OpusDecoderStream? = null
         private var pending = ShortArray(0)
 
@@ -207,6 +253,12 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
             false
         } else {
             runCatching { client.getVoiceChannelById(id)?.members?.any { !it.user.isBot } ?: false }.getOrDefault(true)
+        }
+        // Un seul humain dans le salon : c'est le pilote.
+        runCatching {
+            val humans = id?.let { client?.getVoiceChannelById(it) }?.members?.filter { !it.user.isBot }.orEmpty()
+            if (humans.size == 1) pilotUserId = humans.single().idLong
+            if (humans.isEmpty()) pilotUserId = null
         }
     }
 
@@ -511,8 +563,9 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
     }
 
     override fun stop() {
-        queue.drain()
+        queue.drain().forEach { it.done?.complete(false) }
         sender.clear()
+        _speaking.value = false
     }
 
     /** Diffuse la file une phrase après l'autre : synthèse → Opus → attente de la fin de la lecture. */
@@ -526,7 +579,8 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
                     item.onFailed(item.message)
                     continue
                 }
-                val frames = try {
+                if (!item.isTone) _speaking.value = true
+                val frames = item.frames ?: try {
                     framesFor(item.message.text)
                 } catch (e: Throwable) {
                     null
@@ -549,6 +603,12 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
                 ) {
                     delay(FRAME_MS)
                 }
+                item.done?.complete(true)
+            }
+            // File vide : la dernière trame met encore un instant à sortir du casque (tampon de Discord et de la PS5).
+            if (_speaking.value) {
+                delay(PLAYBACK_TAIL_MS)
+                if (queue.isEmpty) _speaking.value = false
             }
         }
     }
@@ -569,6 +629,7 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
     private fun failPending() {
         sender.clear()
         queue.drain().forEach { it.onFailed(it.message) }
+        _speaking.value = false
     }
 
     fun leave() {
@@ -633,6 +694,9 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
         const val SHUTDOWN_S = 5L
         const val FRAME_MS = 20L
         const val PLAYBACK_MARGIN_MS = 2_000L
+        /** Fin de lecture dans le casque après la dernière trame envoyée (tampons réseau et PS5). */
+        const val PLAYBACK_TAIL_MS = 300L
+        const val TONE_TIMEOUT_MS = 3_000L
         const val WATCHDOG_MS = 5_000L
         const val REJOIN_AFTER_MS = 20_000L
         const val PHRASE_CACHE_SIZE = 40

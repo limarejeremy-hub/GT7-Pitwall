@@ -89,6 +89,9 @@ class SpeechQueue<T>(private val priorityOf: (T) -> Priority) {
     @Synchronized
     fun poll(): T? = items.removeFirstOrNull()
 
+    val isEmpty: Boolean
+        @Synchronized get() = items.isEmpty()
+
     /** Vide la file (connexion perdue, sortie du salon) et renvoie ce qui n'a pas été diffusé. */
     @Synchronized
     fun drain(): List<T> {

@@ -1,8 +1,10 @@
 package com.gt7pitwall.app.voice
 
-import android.media.AudioManager
-import android.media.ToneGenerator
 import android.os.SystemClock
+import com.gt7pitwall.core.radio.ConversationWindow
+import com.gt7pitwall.core.radio.GoogleOutcome
+import com.gt7pitwall.core.radio.RadioTone
+import com.gt7pitwall.core.radio.TonePlayer
 import com.gt7pitwall.core.radio.DriverCommandParser
 import com.gt7pitwall.core.radio.RequestArbiter
 import com.gt7pitwall.core.radio.RequestPick
@@ -39,9 +41,10 @@ enum class ListenState { OFF, LOADING, WAITING_WAKE_WORD, AWAKE, PAUSED, ERROR }
 /**
  * Radio du pilote : reconnaissance vocale française hors ligne (Vosk) avec mot de réveil.
  *
- * "radio, combien d'essence ?" -> phrase transmise directement.
- * "radio" seul -> l'ingénieur répond "je t'écoute" et prend la phrase suivante.
- * Le micro est mis en pause pendant que l'ingénieur parle (pas d'écho de sa propre voix).
+ * "radio, combien d'essence ?" -> phrase transmise directement, et la conversation reste ouverte.
+ * "radio" seul -> bip court quand le micro écoute vraiment, puis conversation continue : après chaque réponse, l'écoute
+ * reprend sans mot de réveil ni bip, jusqu'à « terminé » ou [conversationIdleMs] de silence (double bip).
+ * Le micro est mis en pause pendant que l'ingénieur parle, sur le Fold comme sur Discord ([speaking] réunit les deux).
  *
  * Deux reconnaissances écoutent le même micro : l'une limitée au vocabulaire de la radio (fiable dans le bruit,
  * utilisée pour les commandes), l'autre libre ([freeTranscription], pour les questions posées à l'IA).
@@ -52,8 +55,31 @@ enum class ListenState { OFF, LOADING, WAITING_WAKE_WORD, AWAKE, PAUSED, ERROR }
  */
 class VoskVoiceInput(
     private val models: VoiceModelManager,
-    private val tts: TtsVoiceOutput,
+    /** L'ingénieur parle réellement (haut-parleur du Fold ou salon Discord, fin de lecture comprise). */
+    private val speaking: StateFlow<Boolean>,
+    /** Bips de la radio, joués là où l'ingénieur parle (casque PS5 via Discord, ou Fold). */
+    private val tones: TonePlayer,
 ) : VoiceInput {
+
+    /** Conversation continue ouverte par « radio » (règles testées dans le module core). */
+    private val conversation = ConversationWindow()
+
+    /** Silence (ms) après lequel la conversation se referme ; chaque phrase intelligible la prolonge. */
+    var conversationIdleMs: Long
+        get() = conversation.idleMs
+        set(value) {
+            conversation.idleMs = value.coerceIn(5_000L, 60_000L)
+        }
+
+    private val _conversationOpen = MutableStateFlow(false)
+    /** Conversation ouverte (affichage discret, rien n'est dit). */
+    val conversationOpen: StateFlow<Boolean> = _conversationOpen.asStateFlow()
+
+    /** Dernière fois que Vosk entendait quelqu'un parler (phrase en cours) : la conversation ne se ferme pas au milieu. */
+    @Volatile
+    private var lastVoiceActivityMs = 0L
+    private var tickJob: Job? = null
+    private var reopenJob: Job? = null
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -271,7 +297,13 @@ class VoskVoiceInput(
                 paused = false
                 audioJob = scope.launch(Dispatchers.IO) { listen(record, rec, free) }
                 _state.value = ListenState.WAITING_WAKE_WORD
-                ttsJob = scope.launch { tts.speaking.collectLatest(::onEngineerSpeaking) }
+                ttsJob = scope.launch { speaking.collectLatest(::onEngineerSpeaking) }
+                tickJob = scope.launch {
+                    while (isActive) {
+                        delay(TICK_MS)
+                        tickConversation()
+                    }
+                }
             } catch (e: Exception) {
                 _error.value = e.message ?: e.javaClass.simpleName
                 _state.value = ListenState.ERROR
@@ -279,20 +311,80 @@ class VoskVoiceInput(
         }
     }
 
-    private var tone: ToneGenerator? = null
+    /** Bip de disponibilité, une fois par conversation, quand le micro écoute vraiment. */
+    private fun readyBeep() {
+        if (conversation.micReady() != null) {
+            scope.launch { tones.play(RadioTone.READY) }
+            _events.tryEmit(VoiceInputEvent.Listening)
+        }
+    }
 
-    private fun beep() {
-        try {
-            val t = tone ?: ToneGenerator(AudioManager.STREAM_MUSIC, BEEP_VOLUME).also { tone = it }
-            t.startTone(ToneGenerator.TONE_PROP_ACK, BEEP_MS.toInt())
-        } catch (e: Exception) {
-            // Pas de bip possible : l'écoute démarre quand même.
+    private fun setConversation(open: Boolean) {
+        _conversationOpen.value = open
+    }
+
+    /** Ferme la conversation : double bip, retour au mot de réveil. */
+    private fun closeConversation(byDriver: Boolean) {
+        conversation.reset()
+        setConversation(false)
+        reopenJob?.cancel()
+        if (googleSpeech?.listening == true) {
+            shadow = null
+            phoneFallback.cancelActive()
+            streamFallback.cancelActive()
+            googleSpeech?.cancel()
+            micReleased = false
+        }
+        awakeUntil = 0
+        expiryJob?.cancel()
+        if (_state.value != ListenState.PAUSED) _state.value = ListenState.WAITING_WAKE_WORD
+        _events.tryEmit(VoiceInputEvent.ConversationClosed(byDriver))
+        scope.launch { tones.play(RadioTone.CLOSED) }
+    }
+
+    /** Fermeture après [conversationIdleMs] de silence, jamais pendant que le pilote parle ou qu'une phrase est en cours. */
+    private fun tickConversation() {
+        if (!conversation.open || audioJob == null) return
+        val now = SystemClock.elapsedRealtime()
+        val busy = googleSpeech?.listening == true || pendingCommand != null || now - lastVoiceActivityMs < VOICE_GRACE_MS
+        if (busy) return
+        if (conversation.tick(now) != null) closeConversation(byDriver = false)
+    }
+
+    /** Ouvre la conversation (« radio » dit seul, ou en tête d'une demande). */
+    private fun openConversation() {
+        conversation.wake(SystemClock.elapsedRealtime())
+        setConversation(true)
+    }
+
+    /**
+     * Après une réponse : l'écoute reprend sans mot de réveil. Bip seulement la première fois que le micro écoute dans
+     * cette conversation (demande dite d'un trait avec « radio »).
+     */
+    private fun resumeConversation() {
+        val google = google()
+        if (google != null) {
+            listenWithGoogle(google, startDelayMs = 0, signal = Signal.BEEP_WHEN_READY)
+        } else {
+            listenWithVosk()
+            readyBeep()
+        }
+    }
+
+    /** Une demande vient d'être transmise : si l'ingénieur ne répond pas (phrase ignorée), l'écoute reprend quand même. */
+    private fun keepListeningIfSilent() {
+        reopenJob?.cancel()
+        reopenJob = scope.launch {
+            delay(REOPEN_IF_SILENT_MS)
+            if (conversation.open && !speaking.value && googleSpeech?.listening != true && audioJob != null) resumeConversation()
         }
     }
 
     fun stop() {
-        tone?.release()
-        tone = null
+        conversation.reset()
+        setConversation(false)
+        tickJob?.cancel()
+        reopenJob?.cancel()
         phoneFallback.cancelActive()
         streamFallback.cancelActive()
         googleSpeech?.cancel()
@@ -364,6 +456,9 @@ class VoskVoiceInput(
                 if (rec.acceptWaveForm(buffer, n)) {
                     val text = textOf(rec.result)
                     withContext(Dispatchers.Main) { onCommandText(text) }
+                } else if (conversation.open && partialOf(rec.partialResult).isNotBlank()) {
+                    // Le pilote est en train de parler : la conversation ne se referme pas au milieu de sa phrase.
+                    lastVoiceActivityMs = SystemClock.elapsedRealtime()
                 }
                 if (free != null && free.acceptWaveForm(buffer, n)) {
                     val text = textOf(free.result)
@@ -423,13 +518,18 @@ class VoskVoiceInput(
     override fun expectReply() {
         scope.launch {
             if (audioJob == null) return@launch
+            // Conversation ouverte : l'écoute reprend de toute façon après la question de l'ingénieur.
+            if (conversation.open) return@launch
             // Si l'ingénieur parle encore, l'écoute s'ouvrira à la fin de sa phrase.
-            if (tts.speaking.value) awakeUntil = 1 else awake()
+            if (speaking.value) awakeUntil = 1 else awake()
         }
     }
 
     private suspend fun onEngineerSpeaking(speaking: Boolean) {
         if (audioJob == null) return
+        // Le temps où l'ingénieur parle ne compte pas dans la fenêtre de conversation.
+        conversation.engineerSpeaking(speaking, SystemClock.elapsedRealtime())
+        if (speaking) reopenJob?.cancel()
         if (speaking) {
             // L'ingénieur reprend la parole pendant une écoute Google : on la relancera après lui.
             if (googleSpeech?.listening == true) {
@@ -443,6 +543,15 @@ class VoskVoiceInput(
             paused = true
             _state.value = ListenState.PAUSED
         } else {
+            // Conversation ouverte : l'écoute reprend sans « radio », une fois la fin de la phrase sortie du casque.
+            if (conversation.open) {
+                delay(if (google() != null) GOOGLE_AFTER_SPEECH_MS else RESUME_DELAY_MS)
+                if (this.speaking.value || !conversation.open) return
+                paused = false
+                conversation.engineerSpeaking(false, SystemClock.elapsedRealtime())
+                resumeConversation()
+                return
+            }
             // Réponse attendue avec Google : on ouvre l'écoute presque aussitôt, pour ne pas manquer le début.
             val google = google()
             if (awakeUntil > 0 && google != null) {
@@ -489,7 +598,7 @@ class VoskVoiceInput(
         scope.launch {
             if (startDelayMs > 0) delay(startDelayMs)
             // L'ingénieur parle : l'écoute sera relancée à la fin de sa phrase (onEngineerSpeaking).
-            if (tts.speaking.value || audioJob == null) return@launch
+            if (speaking.value || audioJob == null) return@launch
             val external = !phoneMicInUse
             if (external) {
                 shadow = Shadow(session)
@@ -507,23 +616,30 @@ class VoskVoiceInput(
             google.listenOnce(
                 audio = if (external) ExternalAudio.create() else null,
                 onReady = {
-                    if (signal == Signal.BEEP_WHEN_READY) {
-                        beep()
-                        _events.tryEmit(VoiceInputEvent.Listening)
-                    }
+                    // Bip de disponibilité : quand Google écoute vraiment, une fois par conversation.
+                    if (signal == Signal.BEEP_WHEN_READY) readyBeep()
                 },
             ) { result -> onGoogleResult(policy, session, result) }
         }
     }
 
     private fun onGoogleResult(policy: SpeechFallbackPolicy, session: Int, result: GoogleResult) {
-        val decision = policy.finish(session, result.outcome, result.errorCode)
+        // En pleine conversation, un silence après une réponse est normal : ni échec de Google, ni message au pilote.
+        val quiet = conversation.open && conversation.exchanges > 0 &&
+            (result.outcome == GoogleOutcome.SPEECH_TIMEOUT || result.outcome == GoogleOutcome.NO_MATCH)
+        val decision = policy.finish(session, if (quiet) GoogleOutcome.CANCELLED else result.outcome, result.errorCode)
         refreshFallbackInfo()
         // Écoute annulée ou remplacée entre-temps (redémarrage, l'ingénieur a repris la parole) : rien à faire ici.
         decision ?: return
         micReleased = false
         awakeUntil = 0
-        if (_state.value == ListenState.AWAKE) _state.value = ListenState.WAITING_WAKE_WORD
+        if (quiet) {
+            // Le micro reste ouvert (Vosk) jusqu'à la fin de la fenêtre de conversation.
+            shadow = null
+            listenWithVosk()
+            return
+        }
+        if (_state.value == ListenState.AWAKE && !conversation.open) _state.value = ListenState.WAITING_WAKE_WORD
         val parallel = shadow?.takeIf { it.session == session }
         shadow = null
         val source = if (parallel != null) "casque PS5" else "micro du Fold"
@@ -542,7 +658,7 @@ class VoskVoiceInput(
                 is RequestPick.Google -> {
                     _heard.value = result.text ?: pick.text
                     log(googleBy, result.text, proof)
-                    _events.tryEmit(VoiceInputEvent.Utterance(pick.text, pick.text))
+                    deliverUtterance(pick.text, pick.text, pick.text)
                 }
                 is RequestPick.Vosk -> {
                     // Même phrase, entendue par Vosk en parallèle : le pilote n'a rien à répéter.
@@ -550,7 +666,7 @@ class VoskVoiceInput(
                     refreshFallbackInfo()
                     _heard.value = free.ifBlank { command }
                     log("Vosk, même phrase ($source)", free.ifBlank { command }, "$googleBy : ${result.outcome.label}" + (proof?.let { " — $it" } ?: ""))
-                    _events.tryEmit(VoiceInputEvent.Utterance(pick.command, pick.free))
+                    deliverUtterance(pick.command, pick.free, pick.free ?: pick.command)
                 }
                 RequestPick.Repeat -> if (decision.fallbackToVosk) {
                     log("aucun", null, "$googleBy : ${result.outcome.label}" + (if (parallel != null) ", Vosk : rien entendu" else "") +
@@ -563,8 +679,35 @@ class VoskVoiceInput(
         }
     }
 
-    /** Fenêtre d'écoute Vosk sans mot de réveil (après un échec de Google, ou sans Google). */
+    /**
+     * Phrase du pilote transmise à l'ingénieur. En conversation : « terminé » la referme ; sinon elle prolonge la fenêtre,
+     * et une phrase entendue sans « radio » devant ([VoiceInputEvent.Utterance.addressed] faux) ne peut modifier la course
+     * qu'après confirmation.
+     */
+    private fun deliverUtterance(command: String, free: String?, heard: String, addressed: Boolean = true) {
+        if (conversation.open) {
+            if (ConversationWindow.isClosing(heard)) {
+                closeConversation(byDriver = true)
+                return
+            }
+            val first = conversation.addressedByWake
+            conversation.utterance(heard, SystemClock.elapsedRealtime())
+            _events.tryEmit(VoiceInputEvent.Utterance(command, free, addressed = addressed && first))
+            keepListeningIfSilent()
+            return
+        }
+        _events.tryEmit(VoiceInputEvent.Utterance(command, free, addressed = addressed))
+    }
+
+    /** Fenêtre d'écoute Vosk sans mot de réveil (conversation ouverte, après un échec de Google, ou sans Google). */
     private fun listenWithVosk() {
+        if (conversation.open) {
+            // La conversation décide de la fermeture (silence ou « terminé »).
+            awakeUntil = Long.MAX_VALUE
+            _state.value = ListenState.AWAKE
+            expiryJob?.cancel()
+            return
+        }
         awakeUntil = SystemClock.elapsedRealtime() + AWAKE_MS
         _state.value = ListenState.AWAKE
         expiryJob?.cancel()
@@ -599,26 +742,40 @@ class VoskVoiceInput(
         if (wake.isNotEmpty() && match != null) {
             val rest = norm.substring(match.range.last + 1).trim()
             if (rest.length >= 2) {
+                // Demande dite d'un trait : elle est transmise, et la conversation reste ouverte pour la suite.
                 awakeUntil = 0
                 log("Vosk", freeText ?: text, "phrase dite d'un trait avec « $wakeWord » (Google n'est essayé qu'après « $wakeWord » seul)")
                 fallback.voskHandledRequest()
                 refreshFallbackInfo()
-                _events.tryEmit(VoiceInputEvent.Utterance(rest, free))
+                if (!conversation.open) openConversation()
+                if (ConversationWindow.isClosing(rest)) {
+                    closeConversation(byDriver = true)
+                    return
+                }
+                conversation.utterance(rest, SystemClock.elapsedRealtime())
+                _events.tryEmit(VoiceInputEvent.Utterance(rest, free, addressed = true))
+                keepListeningIfSilent()
             } else {
+                // « Radio » seul : conversation ouverte, aucune phrase dite. Bip quand le micro écoute vraiment
+                // (Google prêt, ou Vosk aussitôt), dans le casque PS5 via Discord ou sur le Fold.
+                openConversation()
+                _events.tryEmit(VoiceInputEvent.Wake)
                 val google = google()
-                if (google != null && !phoneMicInUse) {
-                    // Casque PS5 : le bip du Fold ne s'entendrait pas ; « Je t'écoute » part sur Discord, que le micro
-                    // du casque ne capte pas : l'écoute commence tout de suite (le flux est mis en attente).
-                    _events.tryEmit(VoiceInputEvent.Wake)
-                    listenWithGoogle(google)
-                } else if (google != null) {
-                    // Bip court, et seulement quand Google écoute vraiment : le pilote ne parle pas dans le vide.
+                if (google != null) {
                     listenWithGoogle(google, signal = Signal.BEEP_WHEN_READY)
                 } else {
-                    awake()
-                    _events.tryEmit(VoiceInputEvent.Wake)
+                    listenWithVosk()
+                    readyBeep()
                 }
             }
+            return
+        }
+        // Conversation ouverte : toute phrase est pour l'ingénieur, sans « radio » (modifications à confirmer).
+        if (conversation.open) {
+            log("Vosk", freeText ?: text, voskReason() ?: "conversation ouverte")
+            fallback.voskHandledRequest()
+            refreshFallbackInfo()
+            deliverUtterance(norm, free, freeText ?: text)
             return
         }
         if (awakeUntil > 0 && SystemClock.elapsedRealtime() < awakeUntil) {
@@ -631,6 +788,13 @@ class VoskVoiceInput(
             _events.tryEmit(VoiceInputEvent.Utterance(norm, free))
         }
     }
+
+    private fun partialOf(json: String?): String =
+        try {
+            if (json.isNullOrBlank()) "" else JSONObject(json).optString("partial")
+        } catch (e: Exception) {
+            ""
+        }
 
     private fun textOf(json: String?): String =
         try {
@@ -651,7 +815,10 @@ class VoskVoiceInput(
         const val SHADOW_FLUSH_MS = 1_000L
         const val HISTORY_SIZE = 8
         const val GOOGLE_AFTER_SPEECH_MS = 150L
-        const val BEEP_MS = 150L
-        const val BEEP_VOLUME = 70
+        const val TICK_MS = 250L
+        /** Phrase en cours chez Vosk : pas de fermeture avant ce délai après le dernier mot entendu. */
+        const val VOICE_GRACE_MS = 1_500L
+        /** Délai après une demande sans réponse parlée avant de reprendre l'écoute. */
+        const val REOPEN_IF_SILENT_MS = 2_500L
     }
 }

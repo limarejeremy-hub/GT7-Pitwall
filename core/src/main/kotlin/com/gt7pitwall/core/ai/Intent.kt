@@ -197,7 +197,7 @@ object LocalReplies {
     fun text(intent: Intent, telemetryLive: Boolean): String = when (intent) {
         Intent.RADIO_CHECK ->
             if (telemetryLive) "Affirmatif, je te reçois cinq sur cinq !" else "Affirmatif, je te reçois cinq sur cinq ! $NO_TELEMETRY"
-        Intent.PRESENCE -> if (telemetryLive) "Toujours là, je t'écoute." else "Toujours là. $NO_TELEMETRY"
+        Intent.PRESENCE -> if (telemetryLive) "Toujours là, je te reçois." else "Toujours là. $NO_TELEMETRY"
         Intent.GREETING -> if (telemetryLive) "Salut ! Je suis avec toi, je surveille la course." else "Salut ! Je suis là. $NO_TELEMETRY"
         Intent.THANKS -> "Avec plaisir."
         Intent.ACKNOWLEDGE -> "Parfait, on continue."

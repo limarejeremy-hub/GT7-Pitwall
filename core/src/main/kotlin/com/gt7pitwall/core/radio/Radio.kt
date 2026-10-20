@@ -36,17 +36,25 @@ enum class DriverQuery {
 
 /** Événements de l'entrée vocale (mot de réveil puis phrase du pilote). */
 sealed interface VoiceInputEvent {
-    /** Mot de réveil entendu seul : l'ingénieur écoute la phrase suivante. */
+    /** Mot de réveil entendu seul : la conversation s'ouvre (statut affiché, rien n'est dit). */
     data object Wake : VoiceInputEvent
 
-    /** Écoute ouverte tout de suite après un bip (sans « Je t'écoute » parlé, pour ne pas couper le début de la phrase). */
+    /** Le micro écoute : bip joué (aucune phrase « Je t'écoute » n'est dite). */
     data object Listening : VoiceInputEvent
+
+    /** Conversation refermée (« terminé » ou silence) : double bip, retour au mot de réveil. */
+    data class ConversationClosed(val byDriver: Boolean) : VoiceInputEvent
 
     /**
      * Phrase du pilote adressée à l'ingénieur. [text] vient de la reconnaissance limitée au vocabulaire radio
      * (fiable pour les commandes) ; [freeText], de la reconnaissance libre, sert aux questions posées à l'IA.
      */
-    data class Utterance(val text: String, val freeText: String? = null) : VoiceInputEvent
+    data class Utterance(
+        val text: String,
+        val freeText: String? = null,
+        /** Faux : phrase entendue pendant la conversation continue sans « Radio » devant (modifications à confirmer). */
+        val addressed: Boolean = true,
+    ) : VoiceInputEvent
 
     /** Message de la radio elle-même (« Je n'ai pas reçu ta demande… ») : dit au pilote, jamais silencieux. */
     data class Notice(val text: String) : VoiceInputEvent

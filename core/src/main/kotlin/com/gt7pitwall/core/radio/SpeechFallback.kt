@@ -74,9 +74,9 @@ class SpeechFallbackPolicy(private val maxFailures: Int = 3) {
         val why = outcome.label + (errorCode?.let { ", code $it" } ?: "")
         val notice = if (suspended) {
             "Je n'ai pas reçu ta demande : la reconnaissance Google ne répond pas ($why). Je passe sur la reconnaissance " +
-                "hors ligne pour la suite. Répète, je t'écoute."
+                "hors ligne pour la suite. Répète."
         } else {
-            "Je n'ai pas reçu ta demande (reconnaissance Google : $why). Répète, je t'écoute."
+            "Je n'ai pas reçu ta demande (reconnaissance Google : $why). Répète."
         }
         return Decision(fallbackToVosk = true, notice = notice)
     }

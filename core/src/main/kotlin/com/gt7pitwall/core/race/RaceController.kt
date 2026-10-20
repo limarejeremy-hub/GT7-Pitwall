@@ -400,10 +400,10 @@ class RaceController(
      * Phrase reconnue par la radio vocale. [original] : la phrase complète (reconnaissance libre), dont la forme
      * (négation, futur, question…) décide si la commande s'applique.
      */
-    fun utterance(text: String, original: String = text): List<EngineerMessage> {
+    fun utterance(text: String, original: String = text, source: CommandSource = CommandSource.VOICE): List<EngineerMessage> {
         val echo = EngineerMessage("Toi : $text", Priority.INFO, MessageCategory.DRIVER)
         val cmd = DriverCommandParser.parse(text)
-        return listOf(echo) + if (cmd == null) deliver(listOf(engineer.notUnderstood(text))) else voiceCommand(cmd, original, CommandSource.VOICE)
+        return listOf(echo) + if (cmd == null) deliver(listOf(engineer.notUnderstood(text))) else voiceCommand(cmd, original, source)
     }
 
     /** Commande en attente du « oui » du pilote (déclaration incertaine, ou proposée par Gemini). */

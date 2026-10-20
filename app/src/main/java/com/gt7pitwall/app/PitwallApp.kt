@@ -14,7 +14,11 @@ import com.gt7pitwall.core.radio.RoutedVoiceOutput
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.stateIn
+import com.gt7pitwall.app.voice.RadioTonePlayer
 import kotlinx.coroutines.launch
 import com.gt7pitwall.app.voice.TtsVoiceOutput
 import com.gt7pitwall.app.voice.BenchModelManager
@@ -61,7 +65,12 @@ class PitwallApp : Application() {
         radioOut = RoutedVoiceOutput(voice, discord).also { it.mirrorOnPhone = settings.discordMirrorPhone }
         voiceModels = VoiceModelManager(this)
         bench = SherpaBench(this, BenchModelManager(this))
-        voiceInput = VoskVoiceInput(voiceModels, voice).also {
+        // L'ingénieur parle réellement : sur le Fold (synthèse Android) ou dans le salon Discord (file audio du bot,
+        // fin de lecture comprise). Le micro attend la fin de l'un et de l'autre.
+        val speaking = combine(voice.speaking, discord.speaking) { phone, remote -> phone || remote }
+            .stateIn(CoroutineScope(SupervisorJob() + Dispatchers.Main), SharingStarted.Eagerly, false)
+        voiceInput = VoskVoiceInput(voiceModels, speaking, RadioTonePlayer(discord, radioOut)).also {
+            it.conversationIdleMs = settings.conversationIdleS * 1_000L
             it.wakeWord = settings.wakeWord
             it.limitedVocabulary = settings.limitedVocabulary
             // Transcription libre toujours active : la forme complète de la phrase (négation, question, futur) protège
@@ -122,6 +131,12 @@ class PitwallApp : Application() {
     /** Lancement de la télémétrie : le bot rejoint le dernier salon si le réglage est actif. */
     fun onTelemetryStart() {
         if (settings.discordAutoJoin) discord.autoStart()
+    }
+
+    /** Durée de silence avant la fermeture de la conversation continue. */
+    fun setConversationIdle(seconds: Int) {
+        settings.conversationIdleS = seconds
+        voiceInput.conversationIdleMs = settings.conversationIdleS * 1_000L
     }
 
     fun setDiscordMic(enabled: Boolean) {

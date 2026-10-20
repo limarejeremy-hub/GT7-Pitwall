@@ -356,6 +356,8 @@ object DriverCommandParser {
             "n'ai", "ai", "ne", "jamais", "encore", "vais", "va", "vas", "veux", "voudrais", "pense", "crois", "peut-être",
             "si", "on", "quoi", "doit", "faut", "sont", "celui", "ceux", "ils", "autres", "devant", "derrière", "moi", "nous",
             "rentrer", "rentrent", "maintenant", "mettre", "prolonger", "relais", "son", "leur",
+            // Fin de la conversation continue : « terminé », « fin de communication », « merci, terminé ».
+            "merci", "fin", "communication", "transmission", "terminée",
         )
         return (words.distinct() + "[unk]")
     }

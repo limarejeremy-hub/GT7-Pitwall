@@ -122,6 +122,8 @@ fun PitwallScreen(
     val heard by voiceInput.heard.collectAsStateWithLifecycle()
     val listenError by voiceInput.error.collectAsStateWithLifecycle()
     var wakeWord by rememberSaveable { mutableStateOf(settings.wakeWord) }
+    var conversationIdle by rememberSaveable { mutableStateOf(settings.conversationIdleS) }
+    val conversationOpen by voiceInput.conversationOpen.collectAsStateWithLifecycle()
     var limitedVocab by rememberSaveable { mutableStateOf(settings.limitedVocabulary) }
     var askPosition by rememberSaveable { mutableStateOf(settings.askPositionEachLap) }
     var googleSpeech by rememberSaveable { mutableStateOf(settings.googleSpeech) }
@@ -167,6 +169,13 @@ fun PitwallScreen(
                 googleSpeech = it
                 settings.googleSpeech = it
                 voiceInput.useGoogleSpeech = it
+            },
+            conversationOpen = conversationOpen,
+            conversationIdleS = conversationIdle,
+            onConversationIdleChange = {
+                conversationIdle = it
+                settings.conversationIdleS = it
+                voiceInput.conversationIdleMs = it * 1_000L
             },
         )
         RadioDiagnosticsCard(
@@ -1382,6 +1391,9 @@ private fun VoiceRadioCard(
     onAskPositionChange: (Boolean) -> Unit,
     googleSpeech: Boolean,
     onGoogleSpeechChange: (Boolean) -> Unit,
+    conversationOpen: Boolean = false,
+    conversationIdleS: Int = 15,
+    onConversationIdleChange: (Int) -> Unit = {},
 ) {
     PitCard("Radio vocale") {
         when (modelState) {
@@ -1451,19 +1463,39 @@ private fun VoiceRadioCard(
                 Text("Reconnaissance Google pour les phrases")
                 Text(
                     "Après « $wakeWord » seul, et pour répondre à une question de l'ingénieur : reconnaissance d'Android, " +
-                        "bien plus précise en français. Dis « $wakeWord », attends « Je t'écoute », puis parle.",
+                        "bien plus précise en français. Dis « $wakeWord », attends le bip, puis parle.",
                     color = PitColors.Muted,
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
             Switch(checked = googleSpeech, onCheckedChange = onGoogleSpeechChange)
         }
+        // Conversation continue : « radio » une fois, puis questions successives sans mot de réveil.
+        Column {
+            Text("Conversation continue", style = MaterialTheme.typography.bodyMedium)
+            Text(
+                "Dis « $wakeWord » une fois : bip court, puis pose tes questions à la suite. Fin avec « terminé » ou après " +
+                    "$conversationIdleS s de silence (double bip). Sans « $wakeWord » devant, un arrêt ou un changement de pneus " +
+                    "est toujours confirmé avant d'être noté.",
+                color = PitColors.Muted,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf(10, 15, 20, 30).forEach { sec ->
+                    if (sec == conversationIdleS) {
+                        Button(onClick = {}, modifier = Modifier.weight(1f)) { Text("$sec s") }
+                    } else {
+                        OutlinedButton(onClick = { onConversationIdleChange(sec) }, modifier = Modifier.weight(1f)) { Text("$sec s") }
+                    }
+                }
+            }
+        }
         val (label, color) = when (listenState) {
             ListenState.OFF -> "Micro coupé." to PitColors.Muted
             ListenState.LOADING -> "Chargement du modèle…" to PitColors.Yellow
             ListenState.WAITING_WAKE_WORD -> "En attente de « $wakeWord »" to PitColors.Green
-            ListenState.AWAKE -> "Je t'écoute…" to PitColors.Cyan
-            ListenState.PAUSED -> "L'ingénieur parle (micro en pause)" to PitColors.Muted
+            ListenState.AWAKE -> (if (conversationOpen) "Conversation ouverte, à l'écoute" else "À l'écoute") to PitColors.Cyan
+            ListenState.PAUSED -> (if (conversationOpen) "L'ingénieur répond (conversation ouverte)" else "L'ingénieur parle (micro en pause)") to PitColors.Muted
             ListenState.ERROR -> "Erreur : ${error ?: "micro indisponible"}" to PitColors.Red
         }
         Text(label, color = color, fontWeight = FontWeight.Bold)

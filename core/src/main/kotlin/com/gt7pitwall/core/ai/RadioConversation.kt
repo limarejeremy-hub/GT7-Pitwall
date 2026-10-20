@@ -6,6 +6,7 @@ import com.gt7pitwall.core.engineer.Priority
 import com.gt7pitwall.core.race.RaceController
 import com.gt7pitwall.core.race.StrategyDialogue
 import com.gt7pitwall.core.radio.DriverCommand
+import com.gt7pitwall.core.radio.CommandSource
 import com.gt7pitwall.core.radio.DriverCommandParser
 import com.gt7pitwall.core.radio.StatementGuard
 import com.gt7pitwall.core.radio.Vetting
@@ -37,7 +38,10 @@ class RadioConversation(
         freeText: String?,
         model: LanguageModel?,
         onThinking: (EngineerMessage) -> Unit = {},
+        /** Faux : phrase de la conversation continue sans « Radio » devant (bruit possible) : modifications à confirmer. */
+        addressed: Boolean = true,
     ): List<EngineerMessage> {
+        val source = if (addressed) CommandSource.VOICE else CommandSource.CONVERSATION
         // Question stratégique ou observation : le moteur répond lui-même (plan, comparaison, carburant), jamais Gemini,
         // et rien n'est enregistré (ni arrêt, ni pneus). Les commandes qui changent l'état gardent leur chemin.
         strategyDialogue(text, freeText)?.let { return it }
@@ -68,12 +72,12 @@ class RadioConversation(
                 // ou une hypothèse sur la stratégie devient une discussion avec Gemini quand il est prêt.
                 val original = freeText?.takeIf { it.isNotBlank() } ?: text
                 val cmd = DriverCommandParser.parse(text)
-                val discuss = cmd?.let { mutex.withLock { race.vet(it, original) } } as? Vetting.Discuss
+                val discuss = cmd?.let { mutex.withLock { race.vet(it, original, source) } } as? Vetting.Discuss
                 if (discuss != null && discuss.mode in DISCUSSED_WITH_AI && model != null && model.ready) {
                     mutex.withLock { discuss.intention?.let(race::noteIntention) }
                     ask(model, original, onThinking)
                 } else {
-                    mutex.withLock { race.utterance(text, original) }
+                    mutex.withLock { race.utterance(text, original, source) }
                 }
             }
         }
