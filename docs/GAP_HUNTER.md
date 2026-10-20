@@ -56,7 +56,10 @@ Ces informations ont été vérifiées dans les sources de MacManley/gt7-udp :
   - il faut au moins 3 événements ;
   - **une piste n'est pas une preuve.**
 - **Journal** :
-  - une ligne par seconde (mots inconnus et incertains, en hexadécimal), plus une ligne à chaque événement ;
+  - une ligne par seconde, plus une ligne à chaque événement (changement de 0x84, de tour, d'état) ;
+  - chaque ligne : position X/Z, vitesse, carburant, chrono du tour (C), puis les mots inconnus et incertains en
+    hexadécimal ;
+  - l'état « en course » ne dépend pas du drapeau « en piste », absent des captures réelles en roulant ;
   - 1 500 lignes au maximum, soit environ 25 minutes.
 - **Repères** : « J'ai doublé », « Doublé », et l'écart lu sur le HUD (texte libre), pour comparer avec le journal.
 - **Export** : un fichier texte partagé via Android, sans adresse IP, sans identifiant et sans son.
@@ -88,14 +91,16 @@ Ces informations ont été vérifiées dans les sources de MacManley/gt7-udp :
 
 ## Tests automatisés (données synthétiques)
 
-- **`PacketCTest`, 7 tests** :
+- **`PacketCTest`, 8 tests** :
   - format C : taille, heartbeat, constante ;
   - chiffrement comparé à la règle de nonce publiée ;
   - décodage des nouveaux champs ;
   - pas de champ C inventé pour A et ~ ;
   - catégorie illisible ;
   - paquet plus long ;
-  - identification des clés.
+  - identification des clés ;
+  - **paquet A réel capturé par un autre projet** (vwhitteron/gt-telemetry, MIT), décodé par notre code : vitesse,
+    régime, tours, carCode 3311, et les clés B, C et ~ qui échouent.
 - **`TelemetryClientTest`, 4 tests** avec une fausse PS5 locale :
   - C demandé d'abord ;
   - repli de C vers ~ ;
@@ -109,8 +114,8 @@ Ces informations ont été vérifiées dans les sources de MacManley/gt7-udp :
   - journal borné et export sans adresse réseau ;
   - garde d'annonce des écarts adverses.
 
-**Ces tests prouvent le fonctionnement du code, pas le comportement de GT7.** Aucun paquet C réel n'a encore été
-capturé pour servir de référence.
+**Ces tests prouvent le fonctionnement du code, pas le comportement de GT7.** Le seul paquet réel est un paquet A ;
+aucun paquet B, ~ ou C réel n'a encore été publié ni capturé pour servir de référence.
 
 ## Protocole PS5 (environ 15 minutes)
 

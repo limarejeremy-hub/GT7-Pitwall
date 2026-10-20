@@ -4,6 +4,7 @@ import com.gt7pitwall.core.opponents.NoOpponentsSource
 import com.gt7pitwall.core.opponents.OpponentInfo
 import com.gt7pitwall.core.telemetry.GapHunter
 import com.gt7pitwall.core.telemetry.PacketFormat
+import com.gt7pitwall.core.telemetry.TelemetryPacket
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.test.Test
@@ -18,7 +19,8 @@ import kotlin.test.assertTrue
 class GapHunterTest {
 
     private fun frame(position: Int, planted: Int, noise: Int, lap: Int = 2, size: Int = PacketFormat.C.size): ByteArray {
-        val plain = TestPackets.plain(lap = lap, totalLaps = 10, size = size)
+        // Drapeaux comme en course réelle : en prise, sans le bit « en piste ».
+        val plain = TestPackets.plain(lap = lap, totalLaps = 10, size = size, flags = TelemetryPacket.FLAG_IN_GEAR)
         ByteBuffer.wrap(plain).order(ByteOrder.LITTLE_ENDIAN).apply {
             putShort(0x84, position.toShort())
             putShort(0x86, 12)

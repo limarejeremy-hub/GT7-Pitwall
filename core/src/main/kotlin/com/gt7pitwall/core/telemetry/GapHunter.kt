@@ -177,7 +177,7 @@ class GapHunter(
     @Synchronized
     fun mark(label: String, nowMs: Long) {
         if (firstAt < 0) firstAt = nowMs
-        addLine("${stamp(nowMs)};${lastLap ?: ""};${last84 ?: ""};;${lastState ?: "aucun paquet"};repère : ${label.take(60)};")
+        addLine("${stamp(nowMs)};${lastLap ?: ""};${last84 ?: ""};;${lastState ?: "aucun paquet"};repère : ${label.take(60)};;;;;;")
     }
 
     @Synchronized
@@ -269,7 +269,7 @@ class GapHunter(
         }
         appendLine()
         if (dropped > 0) appendLine("Lignes anciennes retirées : $dropped")
-        appendLine("heure;tour;0x84;0x86;état;motif;mots inconnus et incertains (offset=hex)")
+        appendLine("heure;tour;0x84;0x86;état;motif;X;Z;km/h;carburant;chrono C (ms);mots inconnus et incertains (offset=hex)")
         lines.forEach { appendLine(it) }
     }
 
@@ -326,7 +326,9 @@ class GapHunter(
         val n = minOf(b.capacity() / 4, words)
         val unknown = (0 until n).filter { fieldAt(it * 4).status != Status.KNOWN }
             .joinToString(" ") { "%03X=%s".format(it * 4, hex(b.getInt(it * 4))) }
-        addLine("${stamp(nowMs)};$lap;$raw84;$raw86;$state;$reason;$unknown")
+        val chrono = if (b.capacity() >= PacketFormat.C.size) b.getInt(0x15C).toString() else ""
+        val where = "%.1f;%.1f;%.1f;%.1f;%s".format(b.getFloat(0x04), b.getFloat(0x0C), b.getFloat(0x4C) * 3.6f, b.getFloat(0x44), chrono)
+        addLine("${stamp(nowMs)};$lap;$raw84;$raw86;$state;$reason;$where;$unknown")
     }
 
     private fun addLine(line: String) {
@@ -350,10 +352,13 @@ class GapHunter(
 
         private fun hex(v: Int) = "%08X".format(v)
 
+        /**
+         * Le drapeau « en piste » (bit 0) n'est pas utilisé : des captures réelles montrent une voiture lancée sans lui
+         * (vwhitteron/gt-telemetry, flags 0x0008 ; denwilliams, 0x0418 en roulant).
+         */
         private fun state(flags: Int, lap: Int, totalLaps: Int): String = when {
             flags and TelemetryPacket.FLAG_LOADING != 0 -> "chargement"
             flags and TelemetryPacket.FLAG_PAUSED != 0 -> "pause"
-            flags and TelemetryPacket.FLAG_ON_TRACK == 0 -> "hors piste"
             lap == 0 -> "avant départ"
             totalLaps > 0 && lap > totalLaps -> "arrivée"
             else -> STATE_RACE

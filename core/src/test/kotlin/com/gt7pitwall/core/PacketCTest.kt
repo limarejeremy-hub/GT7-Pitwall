@@ -124,4 +124,33 @@ class PacketCTest {
         assertTrue(PacketFormat.A !in keys)
         assertEquals(emptyList(), GT7Crypto.keysThatDecrypt(ByteArray(368) { 7 }))
     }
+
+    /**
+     * Paquet A RÉEL capturé par un autre projet (vwhitteron/gt-telemetry, licence MIT,
+     * internal/utils/salsa20_test.go, validSalsa20Content) : référence indépendante de notre code.
+     */
+    @Test
+    fun decodesAnIndependentRealCapture() {
+        val enc = hex(VWHITTERON_PACKET_A)
+        assertEquals(listOf(PacketFormat.A), GT7Crypto.keysThatDecrypt(enc)) // les clés B, C et ~ échouent
+        val p = assertNotNull(TelemetryParser.parseEncrypted(enc))
+        assertEquals(PacketFormat.A, p.format)
+        assertEquals(175_771, p.packetId)
+        assertEquals(55.62648f, p.speedMps, 0.0001f)
+        assertEquals(7973.833f, p.engineRpm, 0.01f)
+        assertEquals(4, p.currentLap)
+        assertEquals(139_965, p.bestLapMs)
+        assertEquals(139_965, p.lastLapMs)
+        assertEquals(-1, p.preRacePosition)
+        assertEquals(3311, p.carCode)
+        assertEquals(4, p.currentGear)
+        assertEquals(255, p.throttle)
+        // À noter : voiture lancée à 200 km/h, mais drapeau « en piste » (bit 0) absent (flags 0x0008).
+        assertEquals(0x0008, p.flags)
+        assertNull(p.currentLapTimeMs)
+    }
+
+    companion object {
+        const val VWHITTERON_PACKET_A = "f6374a12433223cf4e531feb646dffaec8f0c8b96edcaf5291b440f2ab4801f1fc5a342c25757409f497e138754658495ec3bcdd6bc548cdc31a8fbc41631f1bfb599f0c0b8dd658700655ddc6eca74cc991ba7a1c14ab1a399075adce555a9d2030412e8ae30433a120bc776134eeb3188adc80394bb8be75aaef6f67039501745f851335a2bc9ce1c655b50709236727f56fd8894dff6610655c1b1232cd5cad28efad037303de47d720f2411ae20d54d64204fdaf198123215b6089623ec23dcbac965bf6d22a293259b27eddfe4ca6068cbec62eeb6a58ef982df96a13004fd1c2c88d58dacbea2804571b48ebf9579539bfb89d49f0271c11eb6f273b0e6a81869c884448311688526e31f0f64aa820a9f8a255d64936989a9eb45e8e1d2bd74602fd30418a"
+    }
 }
