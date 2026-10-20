@@ -18,6 +18,9 @@ enum class DriverQuery {
     PACE,
     SECTORS,
     POSITION,
+
+    /** « Combien de places gagnées ? », « j'ai perdu combien de places ? » : depuis le départ, d'après GT7. */
+    PLACES,
     TYRES,
     PLAN,
 

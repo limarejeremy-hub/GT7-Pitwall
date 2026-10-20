@@ -59,6 +59,9 @@ data class PitwallUiState(
     val stats: LapStats = LapAnalyzer.analyze(emptyList()),
     /** Position annoncée (grille GT7 puis déclarations du pilote). */
     val driverPosition: Int? = null,
+    /** La position vient de GT7 (0x84 filtré), sinon des annonces du pilote. */
+    val positionMeasured: Boolean = false,
+    val positionCars: Int? = null,
     val quiet: Boolean = false,
     val radioLevel: RadioLevel = RadioLevel.FULL,
     val gForce: GForce? = null,
@@ -342,7 +345,9 @@ class PitwallEngine(
             snapshot = snap,
             fuel = race.fuel,
             stats = LapAnalyzer.analyze(snap.laps),
-            driverPosition = race.engineer.driverPosition,
+            driverPosition = race.engineer.currentPosition,
+            positionMeasured = race.engineer.positionMeasured,
+            positionCars = race.engineer.measured.let { it.finalCars ?: it.cars },
             quiet = race.engineer.quiet,
             radioLevel = race.engineer.radioLevel,
             gForce = race.gForce,

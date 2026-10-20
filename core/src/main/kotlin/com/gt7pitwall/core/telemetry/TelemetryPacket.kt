@@ -58,9 +58,12 @@ data class TelemetryPacket(
     /** Dernier tour en millisecondes, -1 si aucun. */
     val lastLapMs: Int,
     val timeOfDayMs: Int,
-    /** Position sur la grille avant le départ, -1 une fois la course lancée. */
+    /**
+     * Documenté comme la place sur la grille (-1 après le départ). Essais PS5 (course hors ligne, Course Sport A) : suit
+     * aussi la position en course, mais compte les voitures pendant le matchmaking. Lu uniquement via PositionTracker.
+     */
     val preRacePosition: Int,
-    /** Nombre de voitures avant le départ, -1 une fois la course lancée. */
+    /** Participants (baisse si une voiture se déconnecte) ; mêmes réserves que [preRacePosition]. */
     val preRaceCarCount: Int,
     val rpmAlertMin: Int,
     val rpmAlertMax: Int,

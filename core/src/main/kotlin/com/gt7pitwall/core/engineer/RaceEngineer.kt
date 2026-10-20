@@ -6,6 +6,8 @@ import com.gt7pitwall.core.engineer.FrenchFormat.decimal
 import com.gt7pitwall.core.engineer.FrenchFormat.deltaSpeech
 import com.gt7pitwall.core.engineer.FrenchFormat.lapTimeSpeech
 import com.gt7pitwall.core.engineer.FrenchFormat.laps
+import com.gt7pitwall.core.race.MeasuredPosition
+import com.gt7pitwall.core.race.PositionTracker
 import com.gt7pitwall.core.radio.DriverCommand
 import com.gt7pitwall.core.radio.DriverQuery
 import com.gt7pitwall.core.session.SessionEvent
@@ -44,11 +46,30 @@ class RaceEngineer {
     private var warnedOneLap = false
     private var announcedNoConsumption = false
 
-    /** Position annoncée par GT7 sur la grille, puis tenue à jour d'après ce que dit le pilote. */
+    /** Position déclarée par le pilote, recalée sur la position mesurée tant que GT7 la transmet. */
     var driverPosition: Int? = null
         private set
 
-    /** Nombre de voitures au départ, transmis par GT7 avant la course. */
+    /** Position mesurée par GT7 (0x84 filtré, voir PositionTracker) : prioritaire sur la position déclarée. */
+    var measured: MeasuredPosition = MeasuredPosition.NONE
+        set(v) {
+            field = v
+            v.position?.let { driverPosition = it }
+            v.cars?.let { carsInRace = it }
+        }
+
+    /** Position retenue : mesurée si GT7 la transmet, sinon déclarée. */
+    val currentPosition: Int? get() = measured.finalPosition ?: measured.position ?: driverPosition
+
+    /** La position vient de GT7 (et non du pilote) en ce moment. */
+    val positionMeasured: Boolean get() = measured.finalPosition != null || measured.position != null
+
+    private var announcedPosition: Int? = null
+    private var lastPositionAnnounceMs: Long? = null
+    private var finishPositionSaid = false
+    private var positionLostSaid = false
+
+    /** Nombre de voitures (participants actuels si GT7 les transmet, sinon au départ). */
     var carsInRace: Int? = null
         private set
 
@@ -127,6 +148,11 @@ class RaceEngineer {
                     raceOver = false
                     positionReportedLap = null
                     lastLapDetails = null
+                    measured = MeasuredPosition.NONE
+                    announcedPosition = null
+                    lastPositionAnnounceMs = null
+                    finishPositionSaid = false
+                    positionLostSaid = false
                     out += msg("Nouvelle session détectée, je repars de zéro.", Priority.NORMAL, MessageCategory.RADIO)
                 }
 
@@ -150,15 +176,9 @@ class RaceEngineer {
                 // Les passages aux stands sont traités par le contrôleur de course (preuves, confirmations).
                 is SessionEvent.PitVisitEnded -> Unit
 
-                is SessionEvent.GridPosition -> {
-                    driverPosition = event.position
-                    carsInRace = event.cars
-                    out += msg(
-                        "Tu pars en position ${event.position} sur ${event.cars}. Bonne course !",
-                        Priority.NORMAL,
-                        MessageCategory.RADIO,
-                    )
-                }
+                // Place sur la grille : annoncée par onPosition, une fois la valeur stable (0x84 vaut un instant 1 au chargement).
+                // Le nombre de participants sert seulement à « je suis dernier » si GT7 ne transmet pas de position stable.
+                is SessionEvent.GridPosition -> if (carsInRace == null) carsInRace = event.cars
 
                 is SessionEvent.LapCompleted -> if (!raceOver) {
                     // L'appel au stand est un message critique à part : il passe avant tout et même en mode silence.
@@ -183,24 +203,30 @@ class RaceEngineer {
         snapshot.packet?.let { fuelCapacity = it.fuelCapacity.takeIf { c -> c > 0f } }
         val reply = when (command) {
             is DriverCommand.Ask -> return answer(command.query, snapshot, fuel).also { lastSpoken = it }
-            is DriverCommand.ReportPosition -> {
+            is DriverCommand.ReportPosition -> measured.position?.let { m ->
+                if (m == command.position) "Bien reçu, P$m, GT7 confirme." else "Noté, mais GT7 me donne P$m : je garde sa mesure."
+            } ?: run {
                 driverPosition = command.position
                 positionReportedLap = snapshotLap
                 if (raceOver) "Bien reçu, tu termines P${command.position}." else "Bien reçu, P${command.position}."
             }
-            DriverCommand.ReportLast -> carsInRace?.let {
+            DriverCommand.ReportLast -> measured.position?.let { m -> "Noté, mais GT7 me donne P$m : je garde sa mesure." } ?: carsInRace?.let {
                 driverPosition = it
                 positionReportedLap = snapshotLap
                 "Compris, dernier, P$it. On remonte."
             } ?: "Compris, tu es dernier. Dis-moi ta place en chiffre, par exemple « je suis vingtième »."
 
-            DriverCommand.Overtook -> {
+            DriverCommand.Overtook -> measured.position?.let { m ->
+                "Bien joué ! Je suis ta position avec GT7 : P$m pour l'instant, je confirme dès qu'elle est stable."
+            } ?: run {
                 val pos = driverPosition?.let { (it - 1).coerceAtLeast(1) }
                 driverPosition = pos
                 if (pos != null) positionReportedLap = snapshotLap
                 if (pos == null) "Bien joué ! Donne-moi ta position quand tu peux." else "Bien joué ! Tu es P$pos."
             }
-            is DriverCommand.SeveralPlaces -> {
+            is DriverCommand.SeveralPlaces -> measured.position?.let { m ->
+                (if (command.lost) "Compris." else "Bien joué !") + " GT7 me donne P$m pour l'instant, je confirme dès qu'elle est stable."
+            } ?: run {
                 // GT7 ne transmet pas la position : on ne la devine pas, on la demande.
                 return EngineerMessage(
                     (if (command.lost) "Compris, tu as perdu plusieurs places." else "Bien joué, plusieurs places de gagnées !") +
@@ -210,7 +236,9 @@ class RaceEngineer {
                     expectsReply = true,
                 ).also { lastSpoken = it }
             }
-            DriverCommand.Overtaken -> {
+            DriverCommand.Overtaken -> measured.position?.let { m ->
+                "Compris. Je suis ta position avec GT7 : P$m pour l'instant, je confirme dès qu'elle est stable."
+            } ?: run {
                 val pos = driverPosition?.let { p -> (p + 1).let { n -> carsInRace?.let { minOf(n, it) } ?: n } }
                 driverPosition = pos
                 if (pos != null) positionReportedLap = snapshotLap
@@ -295,9 +323,8 @@ class RaceEngineer {
                 else -> "En attente du départ."
             }
 
-            DriverQuery.POSITION -> driverPosition?.let {
-                "D'après ce que tu m'as dit, tu es P$it. GT7 ne me transmet pas les positions en course."
-            } ?: "GT7 ne me transmet pas les positions en course. Dis-moi par exemple « je suis troisième »."
+            DriverQuery.POSITION -> positionAnswer()
+            DriverQuery.PLACES -> placesAnswer()
 
             DriverQuery.SECTORS -> sectorReport(snapshot)
 
@@ -369,7 +396,7 @@ class RaceEngineer {
         tyres.onLap(snapshot.laps, raining)?.let { sb.append(it).append(' ') }
         if (finished) return msg(sb.toString().trim(), Priority.NORMAL, MessageCategory.LAP).also { lastLapDetails = it.text }
 
-        driverPosition?.let { sb.append("Tu es P$it. ") }
+        currentPosition?.let { sb.append("Tu es P$it. ") }
 
         val totalLaps = snapshot.packet?.totalLaps?.takeIf { it > 0 } ?: plan?.totalLaps ?: 0
         when {
@@ -403,7 +430,8 @@ class RaceEngineer {
         }
         val priority = if (finalLapNext) Priority.HIGH else Priority.NORMAL
         lastLapDetails = sb.toString().trim()
-        if (askPositionEachLap && radioLevel == RadioLevel.FULL) {
+        // Position transmise par GT7 : inutile de la demander au pilote.
+        if (askPositionEachLap && radioLevel == RadioLevel.FULL && measured.position == null) {
             sb.append(" Ta position ?")
             return EngineerMessage(sb.toString().trim(), priority, MessageCategory.LAP, expectsReply = true)
         }
@@ -568,12 +596,111 @@ class RaceEngineer {
         val best = snapshot.bestRecordedLapMs ?: p?.bestLapMs?.takeIf { it > 0 }
         // GT7 ne transmet pas la position en course : seule une position donnée par le pilote dans le dernier tour compte.
         val recent = positionReportedLap?.let { it >= finishTotalLaps - 1 } == true
+        val m = measured
+        // Position mesurée pendant la course : le classement de la ligne suit dès qu'il est stable (onPosition).
+        val waitForGt7 = m.finalPosition == null && m.tracked && m.enabled
         val text = buildString {
             append("Course terminée ! ")
             if (best != null) append("Meilleur tour : ${lapTimeSpeech(best)}. ")
-            if (recent) driverPosition?.let { append("Tu termines P$it.") } else append("Ta position à l'arrivée ?")
+            when {
+                m.finalPosition != null -> {
+                    finishPositionSaid = true
+                    append("Tu termines P${m.finalPosition} sur ${m.finalCars}.")
+                }
+                waitForGt7 -> Unit
+                recent -> driverPosition?.let { append("Tu termines P$it.") }
+                else -> append("Ta position à l'arrivée ?")
+            }
         }
-        return EngineerMessage(text.trim(), Priority.HIGH, MessageCategory.RADIO, expectsReply = !recent)
+        val asks = m.finalPosition == null && !waitForGt7 && !recent
+        return EngineerMessage(text.trim(), Priority.HIGH, MessageCategory.RADIO, expectsReply = asks)
+    }
+
+    /**
+     * Changements de la position mesurée : place sur la grille, arrivée, perte du signal, et au plus une annonce de
+     * changement toutes les [POSITION_ANNOUNCE_MS], avec la position stable du moment (jamais à chaque dépassement).
+     */
+    fun onPosition(changes: List<PositionTracker.Change>, nowMs: Long): List<EngineerMessage> {
+        val out = mutableListOf<EngineerMessage>()
+        for (c in changes) {
+            when (c) {
+                is PositionTracker.Change.Finished -> if (raceOver && !finishPositionSaid) {
+                    finishPositionSaid = true
+                    out += msg("Classement GT7 à l'arrivée : P${c.position} sur ${c.cars}.", Priority.HIGH, MessageCategory.RADIO)
+                }
+                PositionTracker.Change.Lost -> if (!positionLostSaid && !raceOver) {
+                    positionLostSaid = true
+                    out += msg("Je ne reçois plus ta position de GT7. Donne-la-moi si besoin.", Priority.NORMAL, MessageCategory.RADIO)
+                }
+                is PositionTracker.Change.Moved -> {
+                    positionLostSaid = false
+                    if (snapshotLap == 0 && announcedPosition == null) {
+                        announcedPosition = c.to
+                        lastPositionAnnounceMs = nowMs
+                        out += msg("Tu pars en position ${c.to} sur ${c.cars}. Bonne course !", Priority.NORMAL, MessageCategory.RADIO)
+                    }
+                }
+                is PositionTracker.Change.CarsChanged -> Unit
+            }
+        }
+        val pos = measured.position
+        if (pos != null && measured.settled && !raceOver && snapshotLap >= 1 && pos != announcedPosition &&
+            lastPositionAnnounceMs?.let { nowMs - it >= POSITION_ANNOUNCE_MS } != false
+        ) {
+            val before = announcedPosition
+            announcedPosition = pos
+            lastPositionAnnounceMs = nowMs
+            if (before != null) {
+                val d = before - pos
+                val places = if (kotlin.math.abs(d) > 1) "${kotlin.math.abs(d)} places" else "une place"
+                val s = if (kotlin.math.abs(d) > 1) "s" else ""
+                // Clé propre à l'annonce : la même phrase plus tard dans la course n'est pas un doublon.
+                out += EngineerMessage(
+                    if (d > 0) "P$pos, $places gagnée$s." else "P$pos, $places perdue$s.",
+                    Priority.NORMAL,
+                    MessageCategory.RADIO,
+                    dedupKey = "position:$nowMs",
+                )
+            }
+        }
+        return out
+    }
+
+    private fun declaredSuffix(): String = driverPosition?.let { " D'après ce que tu m'as dit, tu es P$it." } ?: ""
+
+    private fun positionAnswer(): String {
+        val m = measured
+        m.finalPosition?.let { return "Tu termines P$it sur ${m.finalCars}, d'après GT7." }
+        m.position?.let { p ->
+            val start = m.startCars?.takeIf { it != m.cars }?.let { " ($it au départ)" } ?: ""
+            return "Tu es P$p sur ${m.cars}$start."
+        }
+        if (!m.enabled) {
+            return "En qualification, je n'utilise pas la position transmise par GT7 : elle n'y est pas validée." +
+                declaredSuffix().ifEmpty { " Dis-moi ta place si tu veux que je la note." }
+        }
+        if (m.tracked) return "Je ne reçois plus ta position de GT7." + declaredSuffix().ifEmpty { " Dis-moi par exemple « je suis troisième »." }
+        return driverPosition?.let { "Pas de position transmise par GT7 pour l'instant. D'après ce que tu m'as dit, tu es P$it." }
+            ?: "Pas de position transmise par GT7 pour l'instant. Dis-moi par exemple « je suis troisième »."
+    }
+
+    private fun placesAnswer(): String {
+        val m = measured
+        if (!m.enabled) return "En qualification, je ne compte pas les places : la position de GT7 n'y est pas validée."
+        val now = m.finalPosition ?: m.position ?: return "Je n'ai pas de position mesurée par GT7 en ce moment, je ne peux pas compter les places."
+        val start = m.startPosition ?: return "Tu es P$now. Je n'ai pas vu ta place sur la grille, je ne peux pas compter les places."
+        val g = start - now
+        val moment = if (m.finalPosition != null) "à l'arrivée" else "maintenant"
+        val cars = m.finalCars ?: m.cars
+        val left = m.startCars?.let { s -> cars?.let { s - it } }?.takeIf { it > 0 }
+            ?.let { " ${if (it > 1) "$it voitures ont" else "Une voiture a"} quitté la course depuis le départ." } ?: ""
+        val n = kotlin.math.abs(g)
+        val pl = if (n > 1) "$n places" else "une place"
+        return when {
+            g > 0 -> "Tu as gagné $pl : P$start au départ, P$now $moment.$left"
+            g < 0 -> "Tu as perdu $pl : P$start au départ, P$now $moment.$left"
+            else -> "Ni gagné ni perdu : P$now $moment, comme au départ.$left"
+        }
     }
 
     /** Tour en cours, pour choisir le prochain arrêt du plan dans les phrases carburant. */
@@ -688,5 +815,8 @@ class RaceEngineer {
         const val NO_DATA = "Je n'ai pas encore de télémétrie."
         const val SECTOR_THRESHOLD_MS = 100
         const val WARNING_REPEAT_LAPS = 5
+
+        /** Au plus une annonce de changement de position toutes les 20 s. */
+        const val POSITION_ANNOUNCE_MS = 20_000L
     }
 }

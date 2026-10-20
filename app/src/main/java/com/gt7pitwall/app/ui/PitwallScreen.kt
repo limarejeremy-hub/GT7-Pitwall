@@ -510,8 +510,13 @@ private fun LapCard(state: PitwallUiState) {
             Spacer(Modifier.weight(1f))
             state.driverPosition?.let {
                 Column(horizontalAlignment = Alignment.End) {
-                    Text("POSITION*", style = MaterialTheme.typography.labelSmall, color = PitColors.Muted)
-                    Text("P$it", fontSize = 34.sp, fontWeight = FontWeight.Bold, color = PitColors.Cyan)
+                    Text(if (state.positionMeasured) "POSITION GT7" else "POSITION*", style = MaterialTheme.typography.labelSmall, color = PitColors.Muted)
+                    Text(
+                        "P$it" + (state.positionCars?.takeIf { state.positionMeasured }?.let { "/$it" } ?: ""),
+                        fontSize = 34.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = PitColors.Cyan,
+                    )
                 }
             }
         }
@@ -531,9 +536,9 @@ private fun LapCard(state: PitwallUiState) {
             Text("Pluie signalée : chronos comparés aux tours sous la pluie", color = PitColors.Cyan, fontWeight = FontWeight.Bold)
         }
         SectorRow(state.snapshot.laps)
-        if (state.driverPosition != null) {
+        if (state.driverPosition != null && !state.positionMeasured) {
             Text(
-                "* position de départ GT7 puis d'après tes annonces radio (GT7 ne la transmet pas en course)",
+                "* d'après tes annonces radio (pas de position stable transmise par GT7 en ce moment)",
                 color = PitColors.Muted,
                 style = MaterialTheme.typography.bodySmall,
             )

@@ -143,6 +143,8 @@ class SectorsAndRadioTest {
             putShort(0x86, 12)
         }
         e.onUpdate(t.update(TelemetryParser.parseDecrypted(plain)!!), t.snapshot, null)
+        // Sans position mesurée stable, c'est la déclaration du pilote qui compte.
+        assertEquals("Bien reçu, P4.", e.handle(DriverCommand.ReportPosition(4), t.snapshot, null).text)
         assertEquals(4, e.driverPosition)
         assertEquals("Bien joué ! Tu es P3.", e.handle(DriverCommand.Overtook, t.snapshot, null).text)
         assertEquals("Compris, tu es P4. On reste concentré.", e.handle(DriverCommand.Overtaken, t.snapshot, null).text)

@@ -168,6 +168,8 @@ object DriverCommandParser {
 
         // « gagner / perdre du temps » parle de chrono, pas de place.
         val aboutTime = has(t, "temps", "seconde", "centieme", "dixieme", "chrono", "secteur")
+        // « Combien de places gagnées ? », « j'ai perdu combien de places ? » : une question, jamais un dépassement.
+        if (has(t, "combien") && has(t, "place")) return DriverCommand.Ask(DriverQuery.PLACES)
         // Plusieurs places perdues d'un coup : on ne devine pas la position, on la demande.
         if (!aboutTime && has(t, "doubl", "depass", "passe", "perdu", "perds", "gagne", "pris") &&
             has(t, "tout le monde", "plusieurs", "beaucoup", "des places", "toutes les", "tous les")
@@ -334,7 +336,7 @@ object DriverCommandParser {
     fun vocabulary(wakeWord: String): List<String> {
         val words = wakeWord.lowercase().split(' ').filter { it.isNotBlank() } + listOf(
             "je", "suis", "j'ai", "il", "elle", "on", "m'a", "me", "fait", "doubler", "doublé", "passer", "passé",
-            "dépasser", "dépassé", "perdu", "gagné", "pris", "une", "un", "place", "position", "quelle", "quel",
+            "dépasser", "dépassé", "perdu", "gagné", "gagnées", "perdues", "pris", "une", "un", "place", "places", "position", "quelle", "quel",
             "combien", "essence", "d'essence", "carburant", "réservoir", "secteur", "secteurs", "mes", "mon", "le", "la",
             "en", "de", "dernier", "dernière", "tour", "tours", "meilleur", "chrono", "temps", "rythme", "course",
             "reste", "course", "minutes", "minute", "heure", "heures", "demie", "obligatoire", "obligatoires", "arrêt",

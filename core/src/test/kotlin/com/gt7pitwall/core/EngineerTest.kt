@@ -142,7 +142,7 @@ class EngineerTest {
     }
 
     @Test
-    fun announcesGridPositionOnce() {
+    fun aSingleGridPacketIsNotAnnounced() {
         val t = SessionTracker()
         val e = RaceEngineer()
         val plain = TestPackets.plain(lap = 0, totalLaps = 5)
@@ -151,8 +151,10 @@ class EngineerTest {
             putShort(0x86, 16)
         }
         val p = com.gt7pitwall.core.telemetry.TelemetryParser.parseDecrypted(plain)!!
+        // Valeur brute non filtrée (0x84 vaut un instant 1 au chargement) : la grille n'est annoncée qu'une fois stable
+        // (voir LivePositionTest).
         val first = run(t, e, p).map { it.text }
-        assertTrue("Tu pars en position 8 sur 16. Bonne course !" in first, first.toString())
-        assertTrue(run(t, e, p).isEmpty())
+        assertTrue(first.none { "position" in it }, first.toString())
+        assertEquals(null, e.driverPosition)
     }
 }

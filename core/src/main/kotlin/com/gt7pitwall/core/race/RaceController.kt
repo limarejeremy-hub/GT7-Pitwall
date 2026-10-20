@@ -164,6 +164,9 @@ class RaceController(
     fun inAiConversation(nowMs: Long = System.currentTimeMillis()): Boolean =
         lastAiAnswerMs?.let { nowMs - it < AI_CONVERSATION_MS } == true
 
+    /** Position en course transmise par GT7 (0x84 filtré). */
+    val positionTracker = PositionTracker()
+
     val snapshot: SessionSnapshot get() = tracker.snapshot
     val course: Course? get() = rules.trackId?.let(database::course)
     val carName: String? get() = snapshot.packet?.let { database.car(it.carCode)?.fullName }
@@ -204,6 +207,11 @@ class RaceController(
         lastPacketOnTrack = !p.isLoading && (p.isOnTrack || p.speedKmh > 1f || p.currentLap > 0)
         val events = tracker.update(p)
         gMeter.update(p)?.let { gForce = it }
+        // Position mesurée (0x84) : seulement en course ; en qualification, elle n'a pas été validée.
+        if (events.any { it is SessionEvent.SessionReset }) positionTracker.reset()
+        positionTracker.enabled = profile.id.kind == SessionKind.RACE
+        val nowMs = clock()
+        val positionChanges = runCatching { positionTracker.onPacket(p, nowMs) }.getOrDefault(emptyList())
         // Nouvelle session : la précédente est archivée avant que le registre des arrêts soit vidé.
         if (events.any { it is SessionEvent.SessionReset }) {
             closeSession(SessionOutcome.INTERRUPTED)
@@ -266,7 +274,9 @@ class RaceController(
         val frozen = tracker.pitVisitOpen || pitWindowPackets > 0
         if (!frozen && (events.isNotEmpty() || windowWasOpen)) out += replan()
         fuel = FuelStrategy.compute(tracker.snapshot, plan?.totalLaps)
+        engineer.measured = positionTracker.snapshot(nowMs)
         out.addAll(0, engineer.onUpdate(events, tracker.snapshot, fuel))
+        out += engineer.onPosition(positionChanges, nowMs)
         if (events.any { it is SessionEvent.LapCompleted || it is SessionEvent.RaceFinished || it is SessionEvent.PitVisitEnded }) saveSession()
         return deliver(out)
     }
@@ -1258,6 +1268,7 @@ class RaceController(
             DriverQuery.PACE to "Rythme",
             DriverQuery.SECTORS to "Secteurs",
             DriverQuery.POSITION to "Position",
+            DriverQuery.PLACES to "Places gagnées ou perdues",
             DriverQuery.TYRES to "Pneus",
             DriverQuery.PLAN to "Stratégie",
             DriverQuery.DETAILS to "Détail du dernier tour",
