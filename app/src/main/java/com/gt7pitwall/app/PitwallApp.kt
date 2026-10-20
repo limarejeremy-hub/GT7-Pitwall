@@ -91,6 +91,7 @@ class PitwallApp : Application() {
         }
         engine = PitwallEngine(radioOut, voiceInput, loadDatabase(), RaceStore(this)).also {
             it.voiceEnabled = settings.voiceEnabled
+            it.detailedLapReports = settings.detailedLapReports
             it.askPositionEachLap = { settings.askPositionEachLap && voiceInput.isRunning }
             it.languageModel = gemini
         }

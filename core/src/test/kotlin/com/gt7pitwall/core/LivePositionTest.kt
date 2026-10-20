@@ -115,7 +115,7 @@ class LivePositionTest {
             if (t in 192.0..192.05) lap1After6 = rp.c.engineer.currentPosition
             if (t in 390.5..390.55) atHudP10 = rp.c.engineer.answer(DriverQuery.POSITION, rp.c.snapshot, rp.c.fuel).text
             if (rp.said.size > seen) {
-                if (rp.said.drop(seen).any { Regex("^P\\d+, ").containsMatchIn(it.text) }) announceTimes += t
+                if (rp.said.drop(seen).any { Regex("^P\\d+\\.$").containsMatchIn(it.text) }) announceTimes += t
                 seen = rp.said.size
             }
         }
@@ -126,9 +126,9 @@ class LivePositionTest {
         assertEquals(7, lap1After6, "un 6 de 0,3 s (roue dans roue) n'est pas retenu")
         assertEquals("Tu es P10 sur 12.", atHudP10, "HUD P10 au tour 3")
 
-        // Anti-spam : jamais deux annonces de position à moins de 20 s, malgré la bagarre du dernier tour.
+        // Anti-spam : jamais deux annonces de position à moins de 8 s, malgré la bagarre du dernier tour.
         assertTrue(announceTimes.isNotEmpty(), said.toString())
-        assertTrue(announceTimes.zipWithNext().all { (a, b) -> b - a >= 19.99 }, announceTimes.toString())
+        assertTrue(announceTimes.zipWithNext().all { (a, b) -> b - a >= 7.99 }, announceTimes.toString())
 
         // Arrivée : P8 sur 11 (une voiture s'est déconnectée au tour 5), figée malgré la fin de session.
         val m = r.c.engineer.measured
@@ -153,8 +153,9 @@ class LivePositionTest {
             Seg(80.0, 1, 5, 7, 16, onTrack),
         )
         val said = texts(replay(segs))
-        val announces = said.filter { Regex("^P\\d+, ").containsMatchIn(it) }
-        assertEquals(listOf("P9, une place gagnée.", "P7, 2 places gagnées."), announces, said.toString())
+        val announces = said.filter { Regex("^P\\d+\\.$").containsMatchIn(it) }
+        // Deux dépassements à 5 s d'intervalle : regroupés, seule la nouvelle place est dite.
+        assertEquals(listOf("P7."), announces, said.toString())
     }
 
     @Test
@@ -233,7 +234,7 @@ class LivePositionTest {
         val without = lapMessages(com.gt7pitwall.core.race.MeasuredPosition.NONE)
         assertTrue(without.isNotEmpty() && without.all { it.endsWith("Ta position ?") }, without.toString())
         val with = lapMessages(com.gt7pitwall.core.race.MeasuredPosition(position = 5, cars = 12, tracked = true))
-        assertTrue(with.isNotEmpty() && with.none { "Ta position ?" in it } && with.all { "Tu es P5." in it }, with.toString())
+        assertTrue(with.isNotEmpty() && with.none { "Ta position ?" in it } && with.all { it.endsWith("P5.") }, with.toString())
     }
 
     @Test
@@ -275,5 +276,46 @@ class LivePositionTest {
             .filter { it.category != MessageCategory.DRIVER }
         assertEquals("Tu as gagné 2 places : P6 au départ, P4 maintenant.", out.single().text)
         assertEquals(4, r.c.engineer.currentPosition)
+    }
+
+    @Test
+    fun aDoubleOvertakeOrAPileUpIsAnnouncedAsTheNewPlaceOnly() {
+        // Essai réel (20 octobre, 22:13) : P17, puis 16 et 15 à 3 s d'intervalle → une seule annonce, « P15. ».
+        val double = listOf(
+            Seg(0.0, 0, 12, 18, 20, onTrack), Seg(10.0, 2, 12, 17, 20, onTrack),
+            Seg(47.37, 2, 12, 16, 20, onTrack), Seg(50.51, 2, 12, 15, 20, onTrack), Seg(80.0, 2, 12, 15, 20, onTrack),
+        )
+        val said = texts(replay(double)).filter { Regex("^P\\d+\\.$").matches(it) }
+        assertEquals(listOf("P17.", "P15."), said)
+        // Accident devant : six places en quelques secondes → la nouvelle place, pas six annonces.
+        val crash = listOf(Seg(0.0, 0, 12, 10, 20, onTrack), Seg(10.0, 3, 12, 10, 20, onTrack)) +
+            (1..6).map { Seg(30.0 + it * 0.8, 3, 12, 10 - it, 20, onTrack) } + Seg(60.0, 3, 12, 4, 20, onTrack)
+        val crashSaid = texts(replay(crash)).filter { Regex("^P\\d+\\.$").matches(it) }
+        assertEquals(listOf("P4."), crashSaid)
+    }
+
+    @Test
+    fun lapReportsAreShortByDefault() {
+        val segs = listOf(Seg(0.0, 0, 5, 6, 12, onTrack), Seg(10.0, 1, 5, 6, 12, onTrack))
+        val r = replay(segs, until = 20.0)
+        val t = com.gt7pitwall.core.session.SessionTracker()
+        val e = r.c.engineer
+        // Un tour bouclé avec un temps : temps, écart avec le meilleur, position. Ni secteurs, ni rythme, ni carburant large.
+        e.measured = com.gt7pitwall.core.race.MeasuredPosition(position = 3, cars = 12, tracked = true)
+        fun send(lap: Int, last: Int) = repeat(30) {
+            val plain = TestPackets.plain(lap = lap, totalLaps = 8, lastLapMs = last, packetId = ++id, speedMps = 50f)
+            e.onUpdate(t.update(TelemetryParser.parseDecrypted(plain)!!), t.snapshot, null)
+        }
+        send(1, -1)
+        send(2, 98_000)
+        send(3, 98_400)
+        val msgs = mutableListOf<String>()
+        repeat(30) {
+            val plain = TestPackets.plain(lap = 4, totalLaps = 8, lastLapMs = 98_150, packetId = ++id, speedMps = 50f)
+            msgs += e.onUpdate(t.update(TelemetryParser.parseDecrypted(plain)!!), t.snapshot, null).map { it.text }
+        }
+        val lap = msgs.single { it.startsWith("Tour 3") }
+        assertEquals("Tour 3 : 1 minute 38 secondes 2. Plus 15 centièmes sur ton meilleur. P3.", lap)
+        assertTrue(e.answer(com.gt7pitwall.core.radio.DriverQuery.DETAILS, t.snapshot, null).text.startsWith("Tour 3"), "le détail reste disponible")
     }
 }

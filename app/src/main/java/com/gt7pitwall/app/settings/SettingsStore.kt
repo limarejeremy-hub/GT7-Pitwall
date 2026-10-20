@@ -28,6 +28,11 @@ class SettingsStore(context: Context) {
         get() = prefs.getInt("conversation_idle_s", 15)
         set(value) = prefs.edit().putInt("conversation_idle_s", value.coerceIn(5, 60)).apply()
 
+    /** Messages de fin de tour détaillés (secteurs, rythme, carburant) ; sinon courts : temps, écart, position. */
+    var detailedLapReports: Boolean
+        get() = prefs.getBoolean("detailed_lap_reports", false)
+        set(value) = prefs.edit().putBoolean("detailed_lap_reports", value).apply()
+
     var wakeWord: String
         get() = prefs.getString(KEY_WAKE_WORD, DEFAULT_WAKE_WORD) ?: DEFAULT_WAKE_WORD
         set(value) = prefs.edit().putString(KEY_WAKE_WORD, value.trim().ifEmpty { DEFAULT_WAKE_WORD }).apply()

@@ -19,7 +19,7 @@ class SectorsAndRadioTest {
     /** Circuit simulé : ligne droite de 3 km parcourue à vitesse donnée par tiers, 60 paquets/s. */
     private class Track {
         val tracker = SessionTracker()
-        val engineer = RaceEngineer()
+        val engineer = RaceEngineer().apply { shortLapReports = false } // messages de tour détaillés
         var x = 0f
         var id = 0
         var lastLap = -1
@@ -136,7 +136,7 @@ class SectorsAndRadioTest {
     @Test
     fun positionFromGridThenDriverReports() {
         val t = SessionTracker()
-        val e = RaceEngineer()
+        val e = RaceEngineer().apply { shortLapReports = false } // messages de tour détaillés
         val plain = TestPackets.plain(lap = 0, totalLaps = 5)
         java.nio.ByteBuffer.wrap(plain).order(java.nio.ByteOrder.LITTLE_ENDIAN).apply {
             putShort(0x84, 4)
@@ -163,7 +163,7 @@ class SectorsAndRadioTest {
     @Test
     fun quietModeKeepsOnlyAlertsAndRepeatWorks() {
         val t = SessionTracker()
-        val e = RaceEngineer()
+        val e = RaceEngineer().apply { shortLapReports = false } // messages de tour détaillés
         e.onUpdate(t.update(TestPackets.packet(lap = 1, totalLaps = 5)), t.snapshot, null)
         e.handle(DriverCommand.Quiet, t.snapshot, null)
         val lap = e.onUpdate(t.update(TestPackets.packet(lap = 2, totalLaps = 5, lastLapMs = 80_000)), t.snapshot, null)
@@ -191,7 +191,7 @@ class SectorsAndRadioTest {
     @Test
     fun boxCallOnTheRightLap() {
         val t = SessionTracker()
-        val e = RaceEngineer()
+        val e = RaceEngineer().apply { shortLapReports = false } // messages de tour détaillés
         val said = mutableListOf<String>()
         fun go(lap: Int, fuel: Float, last: Int) {
             val p = TestPackets.packet(lap = lap, totalLaps = 10, fuel = fuel, lastLapMs = last)
@@ -220,7 +220,7 @@ class SectorsAndRadioTest {
     @Test
     fun asksPositionEachLapWhenEnabled() {
         val t = SessionTracker()
-        val e = RaceEngineer().apply { askPositionEachLap = true }
+        val e = RaceEngineer().apply { askPositionEachLap = true; shortLapReports = false }
         e.onUpdate(t.update(TestPackets.packet(lap = 1, totalLaps = 5)), t.snapshot, null)
         val m = e.onUpdate(t.update(TestPackets.packet(lap = 2, totalLaps = 5, lastLapMs = 80_000)), t.snapshot, null).single()
         assertTrue(m.text.endsWith("Ta position ?"), m.text)

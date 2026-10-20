@@ -386,6 +386,8 @@ class RaceController(
                 answer(listOf(obligationsSentence()))
             } else if (command.query == DriverQuery.TYRE_CHANGE) {
                 answer(listOf(tyreChangeSentence()))
+            } else if (command.query == DriverQuery.TYRES && snapshot.packet != null) {
+                answer(listOf(tyreSummary()))
             } else {
                 listOf(engineer.handle(command, snapshot, fuel))
             }
@@ -1191,6 +1193,44 @@ class RaceController(
         return "Pneus de ${st.age} tour${if (st.age > 1) "s" else ""}, $compound" + if (st.certain) "" else ", âge incertain"
     }
 
+    /**
+     * État des pneus en une phrase : gomme et âge, avant contre arrière et gauche contre droite (mesurés), écart avec la
+     * température stabilisée du relais, et diagnostic d'adhérence. Aucune « bonne » température inventée : GT7 ne donne ni
+     * l'usure ni la plage idéale de la gomme.
+     */
+    fun tyreSummary(): String {
+        val t = snapshot.packet?.tyreTemps ?: return "Je n'ai pas encore de télémétrie."
+        val front = (t.fl + t.fr) / 2
+        val rear = (t.rl + t.rr) / 2
+        val left = (t.fl + t.rl) / 2
+        val right = (t.fr + t.rr) / 2
+        val axle = when {
+            front - rear >= AXLE_DIFF_C -> "l'avant est plus chaud de ${(front - rear).roundToInt()} degrés"
+            rear - front >= AXLE_DIFF_C -> "l'arrière est plus chaud de ${(rear - front).roundToInt()} degrés"
+            else -> "avant et arrière équilibrés"
+        }
+        val side = when {
+            left - right >= SIDE_DIFF_C -> ", côté gauche plus chaud de ${(left - right).roundToInt()}"
+            right - left >= SIDE_DIFF_C -> ", côté droit plus chaud de ${(right - left).roundToInt()}"
+            else -> ""
+        }
+        val trend = engineer.tyreStableTemp?.let { ref ->
+            val avg = (front + rear) / 2
+            when {
+                avg - ref >= TREND_DIFF_C -> " Ils sont ${(avg - ref).roundToInt()} degrés plus chauds qu'une fois stabilisés."
+                ref - avg >= TREND_DIFF_C -> " Ils sont ${(ref - avg).roundToInt()} degrés plus froids qu'une fois stabilisés."
+                else -> ""
+            }
+        } ?: ""
+        val g = engineer.grip
+        val grip = when (g.level) {
+            com.gt7pitwall.core.tyres.GripLevel.INSUFFICIENT -> "Adhérence : pas encore assez de tours pour juger."
+            com.gt7pitwall.core.tyres.GripLevel.STABLE -> "Adhérence : comportement stable."
+            else -> "Adhérence : ${g.level.label}" + (g.evidence.firstOrNull()?.let { ", $it" } ?: "") + "."
+        }
+        return "${tyreStintText()}. Avant ${front.roundToInt()}, arrière ${rear.roundToInt()} degrés : $axle$side.$trend $grip"
+    }
+
     private fun answerTyreStatus(): String {
         val g = engineer.grip
         val declared = g.declared.takeIf { it.isNotEmpty() }?.let { " Tu m'as signalé : ${it.joinToString(", ")} (déclaré)." } ?: ""
@@ -1199,7 +1239,12 @@ class RaceController(
             GripLevel.STABLE -> g.isolatedLap?.let { "Comportement stable ; le tour $it était un tour isolé, pas une tendance." } ?: "Comportement stable : tes chronos tiennent."
             else -> "${g.level.label.replaceFirstChar { it.uppercase() }} : ${g.evidence.take(2).joinToString(", ")}. Pas forcément l'usure : ${g.alternatives.last()}."
         }
-        return "${tyreStintText()}. $body$declared"
+        val temps = snapshot.packet?.tyreTemps?.let { t ->
+            val front = (t.fl + t.fr) / 2
+            val rear = (t.rl + t.rr) / 2
+            " Avant ${front.roundToInt()}, arrière ${rear.roundToInt()} degrés."
+        } ?: ""
+        return "${tyreStintText()}.$temps $body$declared"
     }
 
     private fun answerTyreLife(): String {
@@ -1504,6 +1549,9 @@ class RaceController(
     private companion object {
         val INCIDENT_NOTE = Regex("(?i)accident|accroch|t[eê]te.?[aà].?queue|sortie de piste|touch[eé]|crash|abîm|abim")
         const val TYRE_QUESTION_PACKETS = 60 * 60
+        const val AXLE_DIFF_C = 5f
+        const val SIDE_DIFF_C = 5f
+        const val TREND_DIFF_C = 8f
         const val AI_LAPS = 5
         const val AI_HISTORY = 3
         const val AI_CONVERSATION_MS = 45_000L

@@ -183,4 +183,33 @@ class VoiceConversationTest {
         assertFalse(notice?.contains("je t'écoute", ignoreCase = true) ?: false, notice)
         assertFalse(LocalReplies.text(com.gt7pitwall.core.ai.Intent.PRESENCE, true).contains("je t'écoute", ignoreCase = true))
     }
+
+    @Test
+    fun aGarbledQuestionNeverSilencesTheRadio() {
+        val (c, sim) = live()
+        // Essai réel : « est-ce que je suis premier » entendu « est ce que je silence tu premier ».
+        sim.say("est ce que je silence tu premier")
+        assertEquals(com.gt7pitwall.core.engineer.RadioLevel.FULL, c.engineer.radioLevel)
+        sim.say("silence")
+        assertEquals(com.gt7pitwall.core.engineer.RadioLevel.CRITICAL_ONLY, c.engineer.radioLevel)
+        sim.say("tu peux parler")
+        assertEquals(com.gt7pitwall.core.engineer.RadioLevel.FULL, c.engineer.radioLevel)
+    }
+
+    @Test
+    fun tyreStateSaysFrontAgainstRearNotFourRawNumbers() {
+        val c = RaceController(storage = FakeStorage())
+        var id = 0
+        repeat(20) {
+            val plain = TestPackets.plain(lap = 3, totalLaps = 10, packetId = ++id, speedMps = 50f)
+            java.nio.ByteBuffer.wrap(plain).order(java.nio.ByteOrder.LITTLE_ENDIAN).apply {
+                putFloat(0x60, 84f); putFloat(0x64, 84f); putFloat(0x68, 92f); putFloat(0x6C, 92f)
+            }
+            c.onPacket(com.gt7pitwall.core.telemetry.TelemetryParser.parseDecrypted(plain)!!)
+        }
+        c.setRules(c.rules.copy(startTyre = com.gt7pitwall.core.strategy.TyreCompound.RH))
+        val r = c.command(DriverCommand.Ask(com.gt7pitwall.core.radio.DriverQuery.TYRES)).last().text
+        assertTrue("course durs" in r && "Avant 84, arrière 92 degrés : l'arrière est plus chaud de 8 degrés" in r, r)
+        assertFalse("avant gauche" in r, r)
+    }
 }

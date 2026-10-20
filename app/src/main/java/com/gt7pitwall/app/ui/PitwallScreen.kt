@@ -123,6 +123,7 @@ fun PitwallScreen(
     val listenError by voiceInput.error.collectAsStateWithLifecycle()
     var wakeWord by rememberSaveable { mutableStateOf(settings.wakeWord) }
     var conversationIdle by rememberSaveable { mutableStateOf(settings.conversationIdleS) }
+    var detailedLaps by rememberSaveable { mutableStateOf(settings.detailedLapReports) }
     val conversationOpen by voiceInput.conversationOpen.collectAsStateWithLifecycle()
     var limitedVocab by rememberSaveable { mutableStateOf(settings.limitedVocabulary) }
     var askPosition by rememberSaveable { mutableStateOf(settings.askPositionEachLap) }
@@ -176,6 +177,12 @@ fun PitwallScreen(
                 conversationIdle = it
                 settings.conversationIdleS = it
                 voiceInput.conversationIdleMs = it * 1_000L
+            },
+            detailedLaps = detailedLaps,
+            onDetailedLapsChange = {
+                detailedLaps = it
+                settings.detailedLapReports = it
+                engine.detailedLapReports = it
             },
         )
         RadioDiagnosticsCard(
@@ -1394,6 +1401,8 @@ private fun VoiceRadioCard(
     conversationOpen: Boolean = false,
     conversationIdleS: Int = 15,
     onConversationIdleChange: (Int) -> Unit = {},
+    detailedLaps: Boolean = false,
+    onDetailedLapsChange: (Boolean) -> Unit = {},
 ) {
     PitCard("Radio vocale") {
         when (modelState) {
@@ -1457,6 +1466,18 @@ private fun VoiceRadioCard(
                 )
             }
             Switch(checked = askPosition, onCheckedChange = onAskPositionChange)
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Messages de tour détaillés")
+                Text(
+                    "Coupé : temps, écart avec ton meilleur et position seulement (le carburant s'il devient juste). " +
+                        "Le détail reste disponible avec « détails ».",
+                    color = PitColors.Muted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Switch(checked = detailedLaps, onCheckedChange = onDetailedLapsChange)
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {

@@ -39,7 +39,7 @@ class EngineerTest {
     @Test
     fun announcesRadioCheckLapsAndFuel() {
         val t = SessionTracker()
-        val e = RaceEngineer()
+        val e = RaceEngineer().apply { shortLapReports = false } // messages de tour détaillés
         val first = run(t, e, packet(lap = 1, totalLaps = 5, fuel = 100f))
         assertEquals(MessageCategory.RADIO, first.single().category)
 
@@ -59,7 +59,7 @@ class EngineerTest {
     @Test
     fun pitCallAndLowFuelAlertsOnce() {
         val t = SessionTracker()
-        val e = RaceEngineer()
+        val e = RaceEngineer().apply { shortLapReports = false } // messages de tour détaillés
         run(t, e, packet(lap = 1, totalLaps = 10, fuel = 30f))
         run(t, e, packet(lap = 2, totalLaps = 10, fuel = 20f, lastLapMs = 90_000))
         val msgs = run(t, e, packet(lap = 3, totalLaps = 10, fuel = 10f, lastLapMs = 91_000))
@@ -81,7 +81,7 @@ class EngineerTest {
     @Test
     fun answersQueriesFromRealDataOnly() {
         val t = SessionTracker()
-        val e = RaceEngineer()
+        val e = RaceEngineer().apply { shortLapReports = false } // messages de tour détaillés
         val none = e.answer(DriverQuery.FUEL, t.snapshot, null)
         assertEquals(RaceEngineer.NO_DATA, none.text)
 
@@ -108,7 +108,7 @@ class EngineerTest {
     @Test
     fun replayOfRealFiveLapRaceWithoutFuelConsumption() {
         val t = SessionTracker()
-        val e = RaceEngineer()
+        val e = RaceEngineer().apply { shortLapReports = false } // messages de tour détaillés
         val laps = listOf(90_637, 100_007, 99_624, 90_615, 86_961)
         val all = mutableListOf<com.gt7pitwall.core.engineer.EngineerMessage>()
         all += run(t, e, packet(lap = 0, totalLaps = 5, fuel = 100f))
@@ -144,7 +144,7 @@ class EngineerTest {
     @Test
     fun aSingleGridPacketIsNotAnnounced() {
         val t = SessionTracker()
-        val e = RaceEngineer()
+        val e = RaceEngineer().apply { shortLapReports = false } // messages de tour détaillés
         val plain = TestPackets.plain(lap = 0, totalLaps = 5)
         java.nio.ByteBuffer.wrap(plain).order(java.nio.ByteOrder.LITTLE_ENDIAN).apply {
             putShort(0x84, 8)

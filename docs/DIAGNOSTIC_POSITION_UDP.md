@@ -74,7 +74,8 @@
     ignorées.
 - **Annonces radio** :
   - « Tu pars en position 7 sur 12 », une fois, sur la grille ;
-  - un changement est annoncé au plus toutes les 20 s, seulement si la valeur reçue confirme la position stable ;
+  - un changement est annoncé par la seule nouvelle place (« P6. »), quand la position ne bouge plus depuis 3 s
+    (dépassements multiples et accidents regroupés), au plus toutes les 8 s ;
   - à l'arrivée : « Tu termines P8 sur 11 ».
 - **Questions** :
   - « Quelle est ma position ? » ;

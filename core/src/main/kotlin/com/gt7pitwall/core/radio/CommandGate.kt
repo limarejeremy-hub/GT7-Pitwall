@@ -138,6 +138,9 @@ sealed interface Vetting {
  * (questions, radio, « répète ») passent. Une commande proposée par Gemini n'est jamais appliquée sans « oui ».
  */
 object CommandGate {
+    /** Une commande de radio est une phrase courte (« silence », « radio essentielle », « tu peux parler »). */
+    private const val RADIO_COMMAND_MAX_WORDS = 4
+
     private fun sensitive(c: DriverCommand) = when (c) {
         DriverCommand.DeclareStop, is DriverCommand.StopAndTyres, DriverCommand.CancelStop, is DriverCommand.Tyres,
         DriverCommand.TyresChanged, is DriverCommand.Rule, is DriverCommand.ReportPosition, DriverCommand.ReportLast,
@@ -158,6 +161,18 @@ object CommandGate {
     )
 
     fun vet(command: DriverCommand, text: String, source: CommandSource, ctx: GateContext): Vetting {
+        // « Silence », « radio essentielle », « tu peux parler » : jamais tirés d'une question ou d'une phrase mal reconnue
+        // (essai réel : « est-ce que je suis premier » entendu « est ce que je silence tu premier »).
+        if (command == DriverCommand.Quiet || command == DriverCommand.Essential || command == DriverCommand.Talk) {
+            val mode = StatementGuard.mode(text)
+            val t = DriverCommandParser.normalize(text)
+            if (mode == StatementGuard.Mode.QUESTION || mode == StatementGuard.Mode.HYPOTHETICAL || "[unk]" in t ||
+                t.split(' ').size > RADIO_COMMAND_MAX_WORDS
+            ) {
+                return Vetting.Discuss(mode, "Je garde la radio comme elle est. Dis simplement « silence » ou « tu peux parler ».")
+            }
+            return Vetting.Execute(command)
+        }
         if (!sensitive(command)) return Vetting.Execute(command)
         val mode = StatementGuard.mode(text, ignoreRuleNegations = command is DriverCommand.Rule || command == DriverCommand.CancelStop)
         val t = DriverCommandParser.normalize(text)

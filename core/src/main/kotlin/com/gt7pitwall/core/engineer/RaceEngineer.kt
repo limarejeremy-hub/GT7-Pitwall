@@ -65,6 +65,7 @@ class RaceEngineer {
     val positionMeasured: Boolean get() = measured.finalPosition != null || measured.position != null
 
     private var announcedPosition: Int? = null
+    private var lastMoveMs: Long? = null
     private var lastPositionAnnounceMs: Long? = null
     private var finishPositionSaid = false
     private var positionLostSaid = false
@@ -87,6 +88,9 @@ class RaceEngineer {
 
     /** Tour où une dégradation persistante a été mesurée sur le train de pneus en cours (null sinon). */
     val tyreWearSuspectedLap: Int? get() = tyres.wearSuspectedLap
+
+    /** Température moyenne des pneus quand ils se sont stabilisés sur ce relais (référence), null avant. */
+    val tyreStableTemp: Float? get() = tyres.stableTemp
 
     /** Diagnostic d'adhérence du relais pneus en cours. */
     val grip: com.gt7pitwall.core.tyres.GripReport get() = tyres.report
@@ -136,6 +140,12 @@ class RaceEngineer {
     /** Demander la position au pilote à chaque tour (GT7 ne la transmet pas). */
     var askPositionEachLap: Boolean = false
 
+    /**
+     * Messages de fin de tour courts (par défaut) : temps, écart avec ton meilleur, position, et seulement ce qui compte
+     * (dernier tour, carburant juste, pneus qui se dégradent). Le détail complet reste sur « détails ».
+     */
+    var shortLapReports: Boolean = true
+
     fun onUpdate(events: List<SessionEvent>, snapshot: SessionSnapshot, fuel: FuelReport?): List<EngineerMessage> {
         snapshot.packet?.let { fuelCapacity = it.fuelCapacity.takeIf { c -> c > 0f } }
         val out = mutableListOf<EngineerMessage>()
@@ -163,6 +173,7 @@ class RaceEngineer {
                     measured = MeasuredPosition.NONE
                     announcedPosition = null
                     lastPositionAnnounceMs = null
+                    lastMoveMs = null
                     finishPositionSaid = false
                     positionLostSaid = false
                     out += msg("Nouvelle session détectée, je repars de zéro.", Priority.NORMAL, MessageCategory.RADIO)
@@ -402,16 +413,25 @@ class RaceEngineer {
         } else {
             sb.append("Tour ${lap.lapNumber} bouclé. ")
         }
+        // Version courte dite à la radio ; la version détaillée reste pour « détails ».
+        val short = StringBuilder(sb)
         if (!raining) {
             sectorFeedback(lap.sectorsMs, lap.lapNumber, snapshot, isNewBest = time != null && e.previousBestMs != null && time < e.previousBestMs)
                 ?.let { sb.append(it).append(' ') }
         }
-        tyres.onLap(snapshot.laps, stintContext.copy(raining = raining))?.let { sb.append(it).append(' ') }
+        tyres.onLap(snapshot.laps, stintContext.copy(raining = raining))?.let {
+            sb.append(it).append(' ')
+            short.append(it).append(' ')
+        }
         if (finished) return msg(sb.toString().trim(), Priority.NORMAL, MessageCategory.LAP).also { lastLapDetails = it.text }
 
-        currentPosition?.let { sb.append("Tu es P$it. ") }
+        currentPosition?.let {
+            sb.append("Tu es P$it. ")
+            short.append("P$it. ")
+        }
 
         val totalLaps = snapshot.packet?.totalLaps?.takeIf { it > 0 } ?: plan?.totalLaps ?: 0
+        if (finalLapNext) short.append("Dernier tour, donne tout ! ")
         when {
             finalLapNext -> sb.append("Dernier tour, donne tout ! ")
             totalLaps > 0 && totalLaps - lap.lapNumber > 1 ->
@@ -438,11 +458,24 @@ class RaceEngineer {
                 }
                 FuelAdvice.NotAvailable, FuelAdvice.RaceFinished -> Unit
                 // L'appel au stand remplace le point carburant détaillé sur ces tours-là.
-                else -> if (box == null) sb.append(fuelSentence(fuel, verbose = false))
+                else -> if (box == null) {
+                    sb.append(fuelSentence(fuel, verbose = false))
+                    // Version courte : le carburant seulement s'il devient juste.
+                    val tight = when (val a = fuel.advice) {
+                        is FuelAdvice.Tight, is FuelAdvice.PitRequired -> true
+                        is FuelAdvice.Comfortable -> a.marginLaps < 1f
+                        else -> false
+                    }
+                    if (tight) short.append(fuelSentence(fuel, verbose = false))
+                }
             }
         }
         val priority = if (finalLapNext) Priority.HIGH else Priority.NORMAL
         lastLapDetails = sb.toString().trim()
+        if (shortLapReports) {
+            sb.setLength(0)
+            sb.append(short)
+        }
         // Position transmise par GT7 : inutile de la demander au pilote.
         if (askPositionEachLap && radioLevel == RadioLevel.FULL && measured.position == null) {
             sb.append(" Ta position ?")
@@ -659,24 +692,20 @@ class RaceEngineer {
                 is PositionTracker.Change.CarsChanged -> Unit
             }
         }
+        // Dépassements groupés : on attend que la position ne bouge plus pendant [POSITION_GROUP_MS] (double dépassement,
+        // accident devant), puis on ne dit que la nouvelle place : « P6. ».
+        if (changes.any { it is PositionTracker.Change.Moved }) lastMoveMs = nowMs
         val pos = measured.position
         if (pos != null && measured.settled && !raceOver && snapshotLap >= 1 && pos != announcedPosition &&
+            lastMoveMs?.let { nowMs - it >= POSITION_GROUP_MS } != false &&
             lastPositionAnnounceMs?.let { nowMs - it >= POSITION_ANNOUNCE_MS } != false
         ) {
             val before = announcedPosition
             announcedPosition = pos
             lastPositionAnnounceMs = nowMs
             if (before != null) {
-                val d = before - pos
-                val places = if (kotlin.math.abs(d) > 1) "${kotlin.math.abs(d)} places" else "une place"
-                val s = if (kotlin.math.abs(d) > 1) "s" else ""
                 // Clé propre à l'annonce : la même phrase plus tard dans la course n'est pas un doublon.
-                out += EngineerMessage(
-                    if (d > 0) "P$pos, $places gagnée$s." else "P$pos, $places perdue$s.",
-                    Priority.NORMAL,
-                    MessageCategory.RADIO,
-                    dedupKey = "position:$nowMs",
-                )
+                out += EngineerMessage("P$pos.", Priority.NORMAL, MessageCategory.RADIO, dedupKey = "position:$nowMs")
             }
         }
         return out
@@ -834,7 +863,10 @@ class RaceEngineer {
         const val SECTOR_THRESHOLD_MS = 100
         const val WARNING_REPEAT_LAPS = 5
 
-        /** Au plus une annonce de changement de position toutes les 20 s. */
-        const val POSITION_ANNOUNCE_MS = 20_000L
+        /** Au plus une annonce de position toutes les 8 s. */
+        const val POSITION_ANNOUNCE_MS = 8_000L
+
+        /** Position inchangée depuis 3 s (en plus des 3 s de stabilité de la mesure) : dépassements multiples regroupés. */
+        const val POSITION_GROUP_MS = 3_000L
     }
 }

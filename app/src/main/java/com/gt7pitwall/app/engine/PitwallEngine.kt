@@ -163,6 +163,13 @@ class PitwallEngine(
         _probe.value = positionProbe.summary()
     }
 
+    /** Messages de fin de tour détaillés ou courts (temps, écart avec ton meilleur, position). */
+    var detailedLapReports: Boolean
+        get() = !race.engineer.shortLapReports
+        set(value) {
+            race.engineer.shortLapReports = !value
+        }
+
     /** Demander la position à chaque tour (si la radio vocale écoute). */
     @Volatile
     var askPositionEachLap: () -> Boolean = { false }
