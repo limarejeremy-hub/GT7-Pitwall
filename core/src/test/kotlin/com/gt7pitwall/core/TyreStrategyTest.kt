@@ -23,6 +23,9 @@ import com.gt7pitwall.core.strategy.StrategyOptions
 import com.gt7pitwall.core.strategy.TyreCompound
 import com.gt7pitwall.core.strategy.TyreInputs
 import com.gt7pitwall.core.strategy.TyreService
+import com.gt7pitwall.core.strategy.Cost
+import com.gt7pitwall.core.strategy.StopCosts
+import com.gt7pitwall.core.strategy.StopKind
 import com.gt7pitwall.core.tyres.TyreModel
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -44,10 +47,13 @@ class TyreStrategyTest {
             fuelSource = DataSource.MEASURED, avgLapMs = 100_000, raceElapsedMs = null, stopsDone = 0, tyreAgeLaps = tyreAge,
         )
 
+    /** Arrêts pneus seuls observés : 25 s ± 2 s, changement des gommes compris (rien à ajouter). */
+    private val observedTyreStops = StopCosts(base = null, observed = mapOf(StopKind.TYRES_ONLY to Cost(25_000.0, 2_000.0, "pneus seuls observés (4 arrêts)")))
+
     @Test
     fun fuelIsEnoughButTyresCostTimeSoATyresOnlyStopIsRecommended() {
-        // Au tour 10 bouclé : chronos qui se dégradent nettement (400 ms par tour d'âge), perte par arrêt connue.
-        val pace = StrategyOptions.Pace(100_000.0, slopeMsPerLap = 400.0, slopeSpread = 40.0, pitLossMs = 25_000.0, pitLossSpread = 2_000.0)
+        // Au tour 10 bouclé : chronos qui se dégradent nettement (400 ms par tour d'âge), arrêts pneus seuls déjà observés.
+        val pace = StrategyOptions.Pace(100_000.0, slopeMsPerLap = 400.0, slopeSpread = 40.0, stopCosts = observedTyreStops)
         val rep = StrategyOptions.compare(input(), pace, emptyList(), emptyList(), TyreInputs(degrading = true))!!
         assertTrue(rep.option(OptionKind.NORMAL)!!.stopLaps.isEmpty(), "le carburant suffit")
         assertEquals(OptionKind.TYRES_NOW, rep.recommended, rep.reason)
@@ -61,6 +67,75 @@ class TyreStrategyTest {
         val stop = rep.recommendedOption.plan!!.stops.single()
         assertTrue(stop.tyresOnly && stop.forTyres && stop.fuel == 0, stop.toString())
         assertEquals(listOf("pneus"), stop.reasons)
+        assertTrue(rep.recommendedOption.assumptions.isEmpty(), "aucune hypothèse : le temps observé comprend le changement")
+    }
+
+    @Test
+    fun theAssumedTyreTimeWeighsBeforeAnyGainIsAnnounced() {
+        // Même situation, mais seul un temps d'arrêt au contenu non précisé est connu : le changement de pneus s'y ajoute
+        // (10 s supposées, ± 10 s). Le gain n'est plus démontré, et l'hypothèse est dite.
+        val pace = StrategyOptions.Pace(100_000.0, slopeMsPerLap = 400.0, slopeSpread = 40.0, pitLossMs = 25_000.0, pitLossSpread = 2_000.0)
+        val rep = StrategyOptions.compare(input(), pace, emptyList(), emptyList(), TyreInputs(degrading = true))!!
+        val now = rep.option(OptionKind.TYRES_NOW)!!
+        assertTrue(now.assumptions.any { "hypothèse provisoire" in it }, now.toString())
+        assertTrue(now.uncertaintyMs!! >= 10_000, "l'incertitude de l'hypothèse compte : $now")
+        assertEquals(OptionKind.NORMAL, rep.recommended)
+        assertTrue("je ne peux pas encore démontrer" in rep.reason, rep.reason)
+        assertTrue(rep.basis.any { it.startsWith("hypothèse : ") && "10 s" in it }, rep.basis.toString())
+    }
+
+    // ------------------------------------------------------------------ Coût d'un arrêt selon son contenu
+
+    private val lane = Cost(20_000.0, 2_000.0, "voie des stands")
+    private val laneCosts = StopCosts(base = lane, baseIncludesRefuel = false)
+
+    @Test
+    fun stopCostsNeverCountAnInterventionTwice() {
+        // Composés : passage aux stands + 10 s supposées pour les pneus ; le plein n'est pas compté (identique entre options).
+        assertEquals(20_000.0, laneCosts.cost(StopKind.FUEL_ONLY)!!.ms)
+        assertEquals(20_000.0, laneCosts.cost(StopKind.NONE)!!.ms)
+        assertEquals(30_000.0, laneCosts.cost(StopKind.TYRES_ONLY)!!.ms)
+        assertEquals(30_000.0, laneCosts.cost(StopKind.FUEL_AND_TYRES)!!.ms)
+        assertTrue(laneCosts.cost(StopKind.TYRES_ONLY)!!.assumed)
+        assertFalse(laneCosts.cost(StopKind.FUEL_ONLY)!!.assumed)
+        // Observés : le temps total contient déjà les interventions, rien n'est ajouté.
+        val observed = laneCosts.copy(observed = mapOf(StopKind.FUEL_AND_TYRES to Cost(34_000.0, 1_500.0, "plein + pneus observés")))
+        assertEquals(34_000.0, observed.cost(StopKind.FUEL_AND_TYRES)!!.ms)
+        assertFalse(observed.cost(StopKind.FUEL_AND_TYRES)!!.assumed)
+        // Changement de pneus appris : il remplace l'hypothèse.
+        val learned = laneCosts.copy(tyreService = Cost(7_000.0, 1_000.0, "changement appris"))
+        assertEquals(27_000.0, learned.cost(StopKind.TYRES_ONLY)!!.ms)
+        assertFalse(learned.cost(StopKind.TYRES_ONLY)!!.assumed)
+    }
+
+    @Test
+    fun tyresOnlyFuelOnlyCombinedAndNoStopAreCostedByContent() {
+        val pace = StrategyOptions.Pace(100_000.0, slopeMsPerLap = 400.0, slopeSpread = 40.0, stopCosts = laneCosts)
+        // Sans arrêt (le carburant suffit) contre pneus seuls : l'arrêt pneus paie passage + changement (30 s).
+        val noStop = StrategyOptions.compare(input(), pace, emptyList(), emptyList(), TyreInputs(degrading = true))!!
+        val normal = noStop.option(OptionKind.NORMAL)!!
+        val tyres = noStop.option(OptionKind.TYRES_NOW)!!
+        assertTrue(normal.stopLaps.isEmpty())
+        assertEquals(listOf(StopKind.TYRES_ONLY), tyres.stopKinds)
+        // Écart = gain de dégradation (58 s - 18,4 s) moins 30 s d'arrêt.
+        assertTrue(kotlin.math.abs((58_000L - 18_400L - 30_000L) + tyres.deltaMs!!) <= 50, tyres.toString())
+
+        // Carburant nécessaire (8 % par tour) : ravitaillement seul contre ravitaillement + pneus au même arrêt.
+        val fuel = StrategyOptions.compare(input(lap = 3, tyreAge = 2, fuelNow = 60f, perLap = 8f), pace, emptyList(), emptyList(), TyreInputs(degrading = true))!!
+        val fuelOnly = fuel.option(OptionKind.NORMAL)!!
+        val combined = fuel.option(OptionKind.TYRES_WITH_FUEL)!!
+        assertEquals(listOf(StopKind.FUEL_ONLY), fuelOnly.stopKinds)
+        assertEquals(listOf(StopKind.FUEL_AND_TYRES), combined.stopKinds)
+        // Même passage aux stands : seul le changement de pneus (10 s supposées) s'ajoute, et son incertitude.
+        val stop = combined.plan!!.stops.single().endOfLap
+        val ageGain = (stop + 1..20).sumOf { (it - 3 + 2) * 400L } - (stop + 1..20).sumOf { (it - stop - 1) * 400L }
+        assertTrue(kotlin.math.abs((ageGain - 10_000L) + combined.deltaMs!!) <= 50, "$ageGain ${combined.deltaMs}")
+        assertTrue(combined.assumptions.isNotEmpty())
+        assertTrue(combined.uncertaintyMs!! >= 10_000)
+        // Arrêt pneus seuls en plus du ravitaillement : deux passages, chacun compté une fois.
+        fuel.options.filter { it.stopKinds.count { k -> k == StopKind.TYRES_ONLY } == 1 && it.stopKinds.contains(StopKind.FUEL_ONLY) }.forEach { o ->
+            assertEquals(2, o.stopLaps.size, o.toString())
+        }
     }
 
     @Test
@@ -78,13 +153,16 @@ class TyreStrategyTest {
     @Test
     fun anExtraStopMustClearlyBeatItsCostAndTheUncertainty() {
         // Gain théorique minuscule (quelques dixièmes) : pas d'arrêt de plus, même si les pneus semblent fatigués.
-        val pace = StrategyOptions.Pace(100_000.0, slopeMsPerLap = 255.0, slopeSpread = 20.0, pitLossMs = 25_000.0, pitLossSpread = 1_000.0)
+        val pace = StrategyOptions.Pace(
+            100_000.0, slopeMsPerLap = 255.0, slopeSpread = 20.0,
+            stopCosts = StopCosts(base = null, observed = mapOf(StopKind.TYRES_ONLY to Cost(25_000.0, 1_000.0, "pneus seuls observés"))),
+        )
         val rep = StrategyOptions.compare(input(), pace, emptyList(), emptyList(), TyreInputs(degrading = true))!!
         val now = rep.option(OptionKind.TYRES_NOW)!!
         assertTrue((now.deltaMs ?: 0) < 0, "un léger gain théorique : $now")
         assertEquals(OptionKind.NORMAL, rep.recommended, rep.reason)
         // Perte aux stands inconnue : aucun classement en secondes entre des stratégies au nombre d'arrêts différent.
-        val unknown = StrategyOptions.compare(input(), pace.copy(pitLossMs = null), emptyList(), emptyList(), TyreInputs(degrading = true))!!
+        val unknown = StrategyOptions.compare(input(), pace.copy(stopCosts = null), emptyList(), emptyList(), TyreInputs(degrading = true))!!
         assertEquals(OptionKind.NORMAL, unknown.recommended)
     }
 

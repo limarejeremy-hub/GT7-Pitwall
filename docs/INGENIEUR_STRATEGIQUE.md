@@ -256,8 +256,17 @@ si la reconnaissance du casque et le délai conviennent en course.
   - garder les pneus.
 - **Calcul du temps** : l'âge des pneus ne repart de zéro qu'aux arrêts où ils sont changés.
 - **Seuil pour un arrêt de plus** : il n'est retenu que si son gain dépasse deux fois l'incertitude et au moins 2 s.
-- **Changement de pneus au ravitaillement** : son temps est inconnu, une marge prudente de 10 s est comptée et
-  annoncée dans les données.
+- **Coût d'un arrêt selon son contenu** (`StopCosts`), sans jamais compter deux fois une intervention :
+  - temps totaux observés par type d'arrêt (ravitaillement seul, pneus seuls, les deux, aucune intervention), appris
+    sur les seuls arrêts dont le pilote a dit ce qu'il a fait des pneus. Ils comprennent déjà ces interventions : rien
+    n'y est ajouté ;
+  - sinon : passage aux stands (arrêt sans intervention observé, voie des stands de la base GT7, ou à défaut arrêts
+    observés avec plein) plus changement de pneus si les pneus sont changés ;
+  - le changement de pneus est appris par différence entre deux types d'arrêts observés. Sinon, une **hypothèse
+    provisoire de 10 s ± 10 s** est utilisée et affichée comme telle. Son incertitude entre dans le seuil : avec elle
+    seule, un arrêt pneus doit gagner plus de 20 s environ pour être recommandé ;
+  - le temps du plein n'est compté que s'il est dans un temps observé : sinon il est ignoré, ce qui ne change rien entre
+    deux stratégies qui ajoutent la même quantité d'essence.
 - **Arrêt pour les pneus seuls** : ajouté sans toucher au carburant. L'appel dit « pour les pneus uniquement, pas
   besoin d'essence ».
 - **Le plan attend** la réponse sur les pneus après l'arrêt avant de recalculer.
@@ -296,7 +305,8 @@ si la reconnaissance du casque et le délai conviennent en course.
 
 - GT7 ne transmet ni l'usure, ni la gomme montée, ni les changements de pneus : tout cela est déclaré par le pilote,
   ou déduit des chronos et de la glisse.
-- Le temps d'un changement de pneus n'est pas mesuré : une marge prudente de 10 s le remplace.
+- Tant qu'aucun arrêt comparable avec pneus n'a été observé, le temps du changement de pneus est une hypothèse
+  (10 s ± 10 s), qui rend une recommandation d'arrêt pneus plus difficile à démontrer.
 - Le format de paquet A ne transmet pas l'angle du volant : le report des messages pendant les virages ne fonctionne
   qu'avec les formats B et ~ ; le freinage marche avec tous.
 - La glisse par essieu repose sur les vitesses de roue (seuils prudents). Elle reste à valider sur PS5.
@@ -330,14 +340,16 @@ si la reconnaissance du casque et le délai conviennent en course.
 ### Démonstration simulée : le carburant suffit, les pneus imposent l'arrêt
 
 Course de 20 tours, consommation 2 % par tour, chronos qui se dégradent d'environ 0,4 s par tour d'âge des pneus,
-quatre courses comparables archivées (test `TyreStrategyTest.fullRaceTyresForceAStopWhileFuelIsEnough`, extrait de la
-radio) :
+quatre courses comparables archivées avec un arrêt pneus seuls observé (25 s, changement compris), test
+`TyreStrategyTest.fullRaceTyresForceAStopWhileFuelIsEnough`, extrait de la radio. Le gain de 15 s repose sur ces arrêts
+observés : aucune hypothèse de temps de changement n'y entre. Sans eux, le même calcul ajouterait 10 s ± 10 s et ne
+démontrerait plus de gain.
 
 ```
 RADIO   Course de 20 tours. Stratégie : 1 arrêt (consommation tirée de l'historique, à confirmer). fin du tour 10, sans
         essence, pour les pneus uniquement. Le carburant suffit, mais tes pneus nous coûtent du temps. Je recommande un
         arrêt pour les pneus uniquement, fin du tour 10. Aucun ravitaillement nécessaire. Gain estimé 15 s, au-delà de
-        notre incertitude (2,0 s).
+        notre incertitude (3,2 s).
 RADIO   Tour 5 : 39 secondes 5. Plus 1,8 seconde sur ton meilleur. […] Possible dégradation : plus 90 centièmes sur tes
         meilleurs tours avec ces pneus. Pas encore confirmée, je surveille. […] Carburant pour 45,1 tours.
 RADIO   Stand au prochain tour, prépare-toi. On changera les pneus.

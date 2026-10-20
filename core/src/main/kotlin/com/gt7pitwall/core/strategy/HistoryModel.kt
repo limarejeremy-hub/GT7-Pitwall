@@ -46,7 +46,7 @@ data class HistoryModel(
     val lapTimeMs: Learned?,
     /** Évolution des chronos par tour de relais (ms par tour, mesurée), si elle est significative. */
     val paceSlopeMsPerLap: Learned?,
-    /** Temps perdu par arrêt (ms), mesuré sur les tours d'arrêt et de sortie. */
+    /** Temps perdu par arrêt (ms), mesuré sur les tours d'arrêt et de sortie, tous contenus confondus. */
     val pitLossMs: Learned?,
     /** Erreur moyenne des prévisions de consommation passées (0,04 = 4 %), sur les courses où elle est mesurable. */
     val fuelForecastError: Learned?,
@@ -57,6 +57,13 @@ data class HistoryModel(
      * identique : BoP et réglages non vérifiés, la confiance ne dépasse pas « provisoire ».
      */
     val relatedUsed: Int = 0,
+    /**
+     * Temps perdu par arrêt selon son contenu (ravitaillement seul, pneus seuls, les deux, rien), seulement pour les arrêts
+     * dont le pilote a dit ce qui a été fait aux pneus. Chaque valeur comprend déjà les interventions de ce type d'arrêt.
+     */
+    val pitLossByKind: Map<StopKind, Learned> = emptyMap(),
+    /** Arrêts dont on ne sait pas ce qui a été fait aux pneus (sessions anciennes, pas de réponse) : contenu inconnu. */
+    val pitLossUnknownContent: Learned? = null,
 ) {
     companion object {
         val EMPTY = HistoryModel(null, null, null, null, null, 0, 0)
@@ -79,6 +86,8 @@ data class HistoryModel(
             val pace = mutableListOf<Pair<String, Double>>()
             val stintPace = mutableListOf<Triple<String, Int, Double>>() // session, âge dans le relais, chrono
             val pitLoss = mutableListOf<Pair<String, Double>>()
+            val pitByKind = mutableMapOf<StopKind, MutableList<Pair<String, Double>>>()
+            val pitUnknown = mutableListOf<Pair<String, Double>>()
             val forecast = mutableListOf<Pair<String, Double>>()
 
             for (s in usable) {
@@ -101,7 +110,18 @@ data class HistoryModel(
                     for (stop in s.stops) {
                         val inLap = s.laps.firstOrNull { it.lap == stop.lap }?.timeMs
                         val outLap = s.laps.firstOrNull { it.lap == stop.lap + 1 }?.timeMs
-                        if (inLap != null && outLap != null) pitLoss += s.id to (inLap + outLap - 2 * typical)
+                        if (inLap != null && outLap != null) {
+                            val loss = inLap + outLap - 2 * typical
+                            pitLoss += s.id to loss
+                            // Contenu connu seulement si le pilote a dit ce qu'il a fait des pneus.
+                            if (stop.tyres == TyreService.UNKNOWN) {
+                                pitUnknown += s.id to loss
+                            } else {
+                                val fuelled = (stop.fuelAdded ?: 0f) > 0f || stop.evidence == StopEvidence.REFUEL
+                                val kind = StopKind.of(fuelled, stop.tyres == TyreService.CHANGED)
+                                pitByKind.getOrPut(kind) { mutableListOf() } += s.id to loss
+                            }
+                        }
                     }
                 }
                 // Erreur de la prévision de départ, mesurée sur les tours propres de cette course.
@@ -120,7 +140,10 @@ data class HistoryModel(
             val pitV = pitLoss.filter { it.second > 0 }
             val pitL = cap(learned(pitV, minSamples = 1), pitV.map { it.first })
             val forecastL = cap(learned(forecast, minSamples = 1), forecast.map { it.first })
-            return HistoryModel(fuelL, paceL, slope, pitL, forecastL, usable.size, candidates.size - usable.size, relatedIds.size)
+            val byKind = pitByKind.mapNotNull { (k, v) -> cap(learned(v.filter { it.second > 0 }, minSamples = 1), v.map { it.first })?.let { k to it } }.toMap()
+            val unknownV = pitUnknown.filter { it.second > 0 }
+            val unknownL = cap(learned(unknownV, minSamples = 1), unknownV.map { it.first })
+            return HistoryModel(fuelL, paceL, slope, pitL, forecastL, usable.size, candidates.size - usable.size, relatedIds.size, byKind, unknownL)
         }
 
         /**

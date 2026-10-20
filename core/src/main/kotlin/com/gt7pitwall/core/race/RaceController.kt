@@ -51,11 +51,15 @@ import com.gt7pitwall.core.strategy.StopEvidence
 import com.gt7pitwall.core.strategy.TyreCompound
 import com.gt7pitwall.core.strategy.TyreService
 import com.gt7pitwall.core.strategy.TyreInputs
+import com.gt7pitwall.core.strategy.StopCosts
+import com.gt7pitwall.core.strategy.StopKind
+import com.gt7pitwall.core.strategy.Cost
 import com.gt7pitwall.core.tyres.TyreModel
 import com.gt7pitwall.core.tyres.GripLevel
 import com.gt7pitwall.core.tyres.GripDiagnosis
 import com.gt7pitwall.core.telemetry.TelemetryPacket
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 /** Stockage du règlement et de la mémoire voiture × circuit (implémenté côté Android). */
 interface RaceStorage {
@@ -962,10 +966,7 @@ class RaceController(
             lapSpreadMs = learnedPace?.spread ?: 0.0,
             slopeMsPerLap = stint?.first ?: learnedTyre?.mean ?: model.paceSlopeMsPerLap?.mean,
             slopeSpread = stint?.second ?: learnedTyre?.spread ?: model.paceSlopeMsPerLap?.spread ?: 0.0,
-            pitLossMs = model.pitLossMs?.mean ?: laneMs,
-            // Voie des stands seule : le temps du plein n'y est pas ; marge d'incertitude d'autant.
-            pitLossSpread = model.pitLossMs?.spread ?: laneMs?.let { it * 0.5 } ?: 0.0,
-            pitLossFromLaneOnly = model.pitLossMs == null && laneMs != null,
+            stopCosts = stopCosts(model, laneMs),
         )
         val basis = buildList {
             when {
@@ -984,17 +985,42 @@ class RaceController(
                 learnedTyre != null -> add("dégradation apprise de ${StrategyOptions.seconds(learnedTyre.mean.toLong())} par tour d'âge des pneus (estimé, ${learnedTyre.confidence.label} : ${tyreModel.basis()})")
                 model.paceSlopeMsPerLap != null -> add("chronos qui évoluent de ${StrategyOptions.seconds(model.paceSlopeMsPerLap.mean.toLong())} par tour de relais (mesuré, ${model.paceSlopeMsPerLap.sessions} courses)")
             }
-            when {
-                model.pitLossMs != null -> add("perte par arrêt apprise (${model.pitLossMs.basis("arrêts")})")
-                laneMs != null -> add("perte par arrêt : voie des stands seulement (base GT7), sans le temps du plein")
-                else -> add("perte par arrêt inconnue")
-            }
+            // Coûts des arrêts (passage, pneus, plein) : détaillés par la comparaison elle-même.
+            if (model.pitLossMs == null && laneMs == null && model.pitLossByKind.isEmpty()) add("perte par arrêt inconnue")
             if (model.sessionsExcluded > 0) add("${model.sessionsExcluded} course(s) de cette épreuve écartée(s) car non comparables")
             if (model.relatedUsed > 0) add("dont ${model.relatedUsed} entraînement(s) ou session(s) au type non précisé : BoP et réglages non vérifiés, confiance limitée")
         }
         val degrading = engineer.grip.degrading || (stint != null && stint.first > 0)
-        val tyreBasis = if (pace.slopeMsPerLap != null && pace.slopeMsPerLap > 0) listOf("temps d'un changement de pneus inconnu : marge prudente de 10 s comptée") else emptyList()
-        return StrategyOptions.compare(input, pace, basis + tyreBasis, ruleGaps.map { it.label }, TyreInputs(degrading = degrading))
+        return StrategyOptions.compare(input, pace, basis, ruleGaps.map { it.label }, TyreInputs(degrading = degrading))
+    }
+
+    /**
+     * Coût d'un arrêt selon son contenu, sans compter deux fois une intervention : temps observés par type d'arrêt (ils
+     * comprennent déjà ce qui y a été fait), sinon passage aux stands + changement de pneus (appris par différence entre
+     * arrêts avec et sans pneus, sinon hypothèse provisoire de 10 s ± 10 s).
+     */
+    private fun stopCosts(model: HistoryModel, laneMs: Double?): StopCosts? {
+        fun c(l: com.gt7pitwall.core.strategy.Learned, what: String) =
+            Cost(l.mean, maxOf(l.spread, l.mean * 0.1), "$what observés (${l.samples} arrêt${if (l.samples > 1) "s" else ""})")
+        val observed = model.pitLossByKind.mapValues { (k, l) -> c(l, k.label) }
+        val lane = laneMs?.let { Cost(it, it * 0.5, "voie des stands seule (base GT7)") }
+        val unknown = model.pitLossUnknownContent?.let { Cost(it.mean, maxOf(it.spread, it.mean * 0.2), "arrêts passés au contenu non précisé") }
+        val (base, withRefuel) = when {
+            observed[StopKind.NONE] != null -> observed[StopKind.NONE] to false
+            lane != null -> lane to false
+            observed[StopKind.FUEL_ONLY] != null -> observed[StopKind.FUEL_ONLY] to true
+            unknown != null -> unknown to true
+            else -> null to false
+        }
+        // Temps du changement de pneus appris par différence entre deux types d'arrêts observés, jamais supposé inclus ailleurs.
+        val learnedTyre = listOfNotNull(
+            observed[StopKind.TYRES_ONLY]?.let { t -> (observed[StopKind.NONE] ?: lane)?.let { t to it } },
+            observed[StopKind.FUEL_AND_TYRES]?.let { t -> observed[StopKind.FUEL_ONLY]?.let { t to it } },
+        ).firstOrNull()?.let { (with, without) ->
+            Cost((with.ms - without.ms).coerceAtLeast(0.0), sqrt(with.spread * with.spread + without.spread * without.spread), "changement de pneus appris (${with.source} contre ${without.source})")
+        }
+        if (base == null && observed.isEmpty()) return null
+        return StopCosts(base, withRefuel, learnedTyre ?: StopCosts.ASSUMED_TYRE_SERVICE, observed)
     }
 
     /**
