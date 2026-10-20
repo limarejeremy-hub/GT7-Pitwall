@@ -5,12 +5,30 @@ import kotlin.math.max
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
-/** Les trois stratégies comparées. */
+/** Les stratégies comparées : carburant (normale, anticipée, prolongée) et pneus. */
 enum class OptionKind(val label: String) {
     NORMAL("stratégie normale"),
     EARLY("arrêt anticipé"),
     EXTENDED("relais prolongé"),
+    /** Changer les pneus à la fin du tour en cours. */
+    TYRES_NOW("changement de pneus à la fin de ce tour"),
+    /** Changer les pneus à la fin du tour suivant. */
+    TYRES_NEXT("changement de pneus au prochain tour"),
+    /** Changer les pneus au tour qui fait gagner le plus de temps (plus tard dans la course). */
+    TYRES_PLANNED("changement de pneus au meilleur tour"),
+    /** Changer les pneus au ravitaillement déjà prévu. */
+    TYRES_WITH_FUEL("changement de pneus au ravitaillement"),
+    /** Garder les pneus actuels jusqu'à l'arrivée (sans l'arrêt pneus retenu). */
+    STAY_OUT("rester en piste avec ces pneus"),
 }
+
+/** Ce que la comparaison doit savoir des pneus, en plus du rythme. */
+data class TyreInputs(
+    /** Signes de dégradation (diagnostic d'adhérence ou chronos qui se dégradent nettement). */
+    val degrading: Boolean = false,
+    /** Temps ajouté par un changement de pneus (ms), appris ; null : inconnu, une marge prudente est comptée. */
+    val serviceMs: Double? = null,
+)
 
 /** Une stratégie : le plan de [RacePlanner], sa faisabilité, et son temps estimé quand c'est possible. */
 data class StrategyOption(
@@ -25,7 +43,13 @@ data class StrategyOption(
     val estimatedMs: Long? = null,
     /** Écart avec la stratégie normale (ms, négatif = plus rapide). */
     val deltaMs: Long? = null,
-)
+) {
+    /** Arrêts où les pneus sont changés (le relais pneus repart de zéro), indépendamment du carburant. */
+    val tyreLaps: List<Int> get() = plan?.stops?.filter { it.changeTyres }?.map { it.endOfLap } ?: emptyList()
+
+    /** Arrêt pour les pneus seuls que cette stratégie ajoute. */
+    val tyresOnlyStop: PlannedStop? get() = plan?.stops?.firstOrNull { it.tyresOnly && it.forTyres }
+}
 
 /**
  * Comparaison des stratégies, structurée pour l'écran et la radio : la recommandation, pourquoi, et sur quoi elle
@@ -75,18 +99,50 @@ object StrategyOptions {
         pace: Pace,
         basis: List<String>,
         unverifiedRules: List<String>,
+        tyres: TyreInputs = TyreInputs(),
     ): StrategyReport? {
         val normal = RacePlanner.plan(input) ?: return null
         val normalStops = normal.stops.map { it.endOfLap }
         val options = mutableListOf(option(OptionKind.NORMAL, normal, normalStops, emptyList()))
-        val first = normalStops.firstOrNull()
+        // Variantes carburant : le premier arrêt hors arrêt pneus seuls, avancé ou retardé d'un tour.
+        val fuelStops = normal.stops.filterNot { it.tyresOnly && it.forTyres }.map { it.endOfLap }
+        val first = fuelStops.firstOrNull()
+        val fuelInput = input.copy(previousStops = fuelStops)
         if (first != null) {
-            options += variant(input, normalStops, OptionKind.EARLY, first - 1)
-            options += variant(input, normalStops, OptionKind.EXTENDED, first + 1)
+            options += variant(fuelInput, fuelStops, OptionKind.EARLY, first - 1)
+            options += variant(fuelInput, fuelStops, OptionKind.EXTENDED, first + 1)
         }
         val currentLap = max(input.currentLap, 1)
         val lapsLeft = normal.totalLaps - currentLap + 1
-        val timed = options.map { o -> o.copy(estimatedMs = if (o.feasible) estimate(o.stopLaps, currentLap, lapsLeft, input.tyreAgeLaps, pace) else null) }
+        // Variantes pneus : seulement si la dégradation des chronos est connue (mesurée ou apprise).
+        val slope = pace.slopeMsPerLap
+        if (slope != null && slope > 0) {
+            fun tyreOption(kind: OptionKind, laps: List<Int>): StrategyOption? {
+                val p = RacePlanner.plan(input.copy(previousStops = fuelStops, tyreStopLaps = laps)) ?: return null
+                return option(kind, p, p.stops.map { it.endOfLap }, emptyList())
+            }
+            val total = normal.totalLaps
+            if (currentLap < total) tyreOption(OptionKind.TYRES_NOW, listOf(currentLap))?.let { options += it }
+            if (currentLap + 1 < total) tyreOption(OptionKind.TYRES_NEXT, listOf(currentLap + 1))?.let { options += it }
+            normal.stops.firstOrNull { it.forFuel && !it.changeTyres }?.let { tyreOption(OptionKind.TYRES_WITH_FUEL, listOf(it.endOfLap))?.let { o -> options += o } }
+            // Le meilleur tour pour un arrêt pneus plus tard : on ne rentre pas « maintenant » si attendre rapporte davantage.
+            ((currentLap + 2) until total).mapNotNull { l -> tyreOption(OptionKind.TYRES_PLANNED, listOf(l)) }
+                .filter { it.feasible }
+                .minByOrNull { estimate(it.stopLaps, currentLap, lapsLeft, input.tyreAgeLaps, pace, it.tyreLaps) ?: Long.MAX_VALUE }
+                ?.let { options += it }
+            if (input.tyreStopLaps.isNotEmpty()) tyreOption(OptionKind.STAY_OUT, emptyList())?.let { options += it }
+        }
+        // Une même suite d'arrêts et de changements de pneus n'est comparée qu'une fois.
+        val distinct = options.distinctBy { it.stopLaps to it.tyreLaps }
+        options.clear()
+        options += distinct
+        val serviceMs = tyres.serviceMs ?: TYRE_SERVICE_MARGIN_MS
+        val timed = options.map { o ->
+            val est = if (o.feasible) estimate(o.stopLaps, currentLap, lapsLeft, input.tyreAgeLaps, pace, o.tyreLaps) else null
+            // Pneus changés à un arrêt qui aurait eu lieu de toute façon : le temps du changement s'ajoute.
+            val extraChanges = o.tyreLaps.count { it in normal.stops.map { s -> s.endOfLap } && it !in options.first().tyreLaps }
+            o.copy(estimatedMs = est?.let { it + (serviceMs * extraChanges).toLong() })
+        }
         val base = timed.first().estimatedMs
         val withDelta = timed.map { o -> o.copy(deltaMs = if (base != null && o.estimatedMs != null) o.estimatedMs - base else null) }
 
@@ -100,12 +156,20 @@ object StrategyOptions {
         val feasible = withDelta.filter { it.feasible }
         val differentStopCounts = feasible.map { it.stopLaps.size }.distinct().size > 1
         val comparable = uncertainty != null && feasible.all { it.estimatedMs != null } && !(differentStopCounts && pace.pitLossMs == null)
-        val best = if (comparable) feasible.minByOrNull { it.estimatedMs!! } else null
+        // Un arrêt de plus (ou un changement de pneus de plus) n'est retenu que si son bénéfice dépasse nettement son coût
+        // et l'incertitude : des pneus qui semblent fatigués ne suffisent pas.
+        fun threshold(o: StrategyOption): Long {
+            val u = uncertainty ?: Long.MAX_VALUE
+            val extraStop = o.stopLaps.size > normal.stops.size || o.tyreLaps.size > options.first().tyreLaps.size
+            return if (extraStop) maxOf(2 * u, MIN_EXTRA_STOP_GAIN_MS) else u
+        }
+        val best = if (comparable) feasible.filter { o -> o.kind == OptionKind.NORMAL || -(o.deltaMs ?: 0) > threshold(o) }.minByOrNull { it.estimatedMs!! } else null
         val gain = best?.deltaMs?.let { -it } ?: 0
-        val indistinguishable = best == null || best.kind == OptionKind.NORMAL || gain <= (uncertainty ?: Long.MAX_VALUE)
+        val indistinguishable = best == null || best.kind == OptionKind.NORMAL
         val recommended = if (indistinguishable) OptionKind.NORMAL else best!!.kind
 
-        val reason = reason(withDelta, recommended, indistinguishable, comparable, uncertainty, gain, normalStops.isEmpty())
+        val tyreOptions = feasible.any { it.kind in TYRE_KINDS }
+        val reason = reason(withDelta, recommended, indistinguishable, comparable, uncertainty, gain, normalStops.isEmpty(), tyres.degrading && tyreOptions, normal)
         return StrategyReport(withDelta, recommended, reason, indistinguishable, uncertainty, basis, unverifiedRules)
     }
 
@@ -153,15 +217,16 @@ object StrategyOptions {
      * Temps restant : rythme × tours, plus la dérive mesurée des chronos selon l'âge des pneus dans chaque relais, plus la
      * perte par arrêt. null si le rythme est inconnu.
      */
-    fun estimate(stopLaps: List<Int>, currentLap: Int, lapsLeft: Int, tyreAge: Int, pace: Pace): Long? {
+    fun estimate(stopLaps: List<Int>, currentLap: Int, lapsLeft: Int, tyreAge: Int, pace: Pace, tyreLaps: List<Int> = stopLaps): Long? {
         val lap = pace.lapMs ?: return null
         var total = lap * lapsLeft
         val slope = pace.slopeMsPerLap
         if (slope != null) {
+            // Les pneus ne repartent de zéro qu'aux arrêts où ils sont changés : un ravitaillement seul n'y change rien.
             var age = tyreAge
             for (l in currentLap until currentLap + lapsLeft) {
                 total += slope * age
-                age = if (l in stopLaps) 0 else age + 1
+                age = if (l in tyreLaps) 0 else age + 1
             }
         }
         total += (pace.pitLossMs ?: 0.0) * stopLaps.size
@@ -176,11 +241,35 @@ object StrategyOptions {
         uncertainty: Long?,
         gain: Long,
         noStop: Boolean,
+        tyreDoubt: Boolean,
+        normalPlan: RacePlan,
     ): String {
         val normal = options.first()
         if (!normal.feasible) return "Le plan normal pose problème : ${normal.issues.joinToString(", ")}."
+        val rec = options.first { it.kind == recommended }
+        if (!indistinguishable && recommended in TYRE_KINDS) {
+            val u = seconds(uncertainty ?: 0)
+            val only = rec.tyresOnlyStop
+            val fuelEnough = normalPlan.stops.none { it.forFuel }
+            return when {
+                recommended == OptionKind.STAY_OUT ->
+                    "Je recommande de garder ces pneus jusqu'à l'arrivée : l'arrêt pour les pneus ne nous fait plus gagner de temps " +
+                        "(environ ${seconds(gain)} de mieux sans lui, incertitude $u)."
+                only != null && fuelEnough ->
+                    "Le carburant suffit, mais tes pneus nous coûtent du temps. Je recommande un arrêt pour les pneus uniquement, " +
+                        "fin du tour ${only.endOfLap}. Aucun ravitaillement nécessaire. Gain estimé ${seconds(gain)}, au-delà de notre incertitude ($u)."
+                only != null -> "Je recommande un arrêt pour les pneus uniquement, fin du tour ${only.endOfLap}, en plus du ravitaillement prévu : " +
+                    "gain estimé ${seconds(gain)}, au-delà de notre incertitude ($u)."
+                else -> "Je recommande de changer les pneus au ravitaillement, fin du tour ${rec.tyreLaps.first()} : gain estimé ${seconds(gain)}, " +
+                    "au-delà de notre incertitude ($u)."
+            }
+        }
+        if (tyreDoubt && indistinguishable) {
+            val base = if (noStop) "Aucun arrêt nécessaire pour le carburant. " else ""
+            return base + "Les pneus montrent des signes de dégradation, mais je ne peux pas encore démontrer qu'un arrêt nous ferait gagner du temps."
+        }
         if (noStop) return "Aucun arrêt nécessaire : on reste en piste jusqu'à l'arrivée."
-        val others = options.drop(1).filter { !it.feasible }.map { "${it.kind.label} : ${it.issues.first()}" }
+        val others = options.drop(1).filter { !it.feasible && it.kind !in TYRE_KINDS }.map { "${it.kind.label} : ${it.issues.first()}" }
         val othersText = if (others.isEmpty()) "" else " ${others.joinToString(" ; ").replaceFirstChar { it.uppercase() }}."
         return when {
             !comparable -> "On garde la stratégie normale : les données ne permettent pas de chiffrer un gain ($HOW).$othersText"
@@ -192,6 +281,14 @@ object StrategyOptions {
     }
 
     private const val HOW = "rythme ou perte aux stands inconnus"
+
+    val TYRE_KINDS = setOf(OptionKind.TYRES_NOW, OptionKind.TYRES_NEXT, OptionKind.TYRES_PLANNED, OptionKind.TYRES_WITH_FUEL, OptionKind.STAY_OUT)
+
+    /** Gain minimal exigé d'un arrêt ou d'un changement de pneus supplémentaire, en plus de deux fois l'incertitude. */
+    const val MIN_EXTRA_STOP_GAIN_MS = 2_000L
+
+    /** Temps d'un changement de pneus inconnu : marge prudente comptée (annoncée comme telle), jamais un gain. */
+    const val TYRE_SERVICE_MARGIN_MS = 10_000.0
     private const val MIN_UNCERTAINTY_MS = 500L
 
     private val BLOCKING = setOf(PlanWarning.CANNOT_REACH_PITS, PlanWarning.FUEL_IMPOSSIBLE, PlanWarning.MANDATORY_STOPS_IMPOSSIBLE, PlanWarning.TYRES_IMPOSSIBLE)

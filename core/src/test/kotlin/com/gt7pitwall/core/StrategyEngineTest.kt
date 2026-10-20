@@ -225,17 +225,18 @@ class StrategyEngineTest {
     }
 
     @Test
-    fun aMeasuredPaceDropOnOldTyresMakesTheEarlyStopWorthIt() {
-        // Pneus déjà âgés de 4 tours, chronos qui se dégradent de 1,5 s par tour de relais (mesuré). 10 % par tour :
-        // un plein fait 9 tours, l'arrêt anticipé reste tenable.
+    fun aMeasuredPaceDropOnOldTyresCallsForATyreChangeNotJustAnEarlierRefuel() {
+        // Pneus déjà âgés de 4 tours, chronos qui se dégradent de 1,5 s par tour d'âge des pneus (mesuré). 10 % par tour :
+        // un plein fait 9 tours. Avancer le ravitaillement seul ne change rien aux pneus : aucun gain.
         val pace = StrategyOptions.Pace(100_000.0, slopeMsPerLap = 1_500.0, slopeSpread = 100.0, pitLossMs = 25_000.0, pitLossSpread = 2_000.0)
         val rep = StrategyOptions.compare(input(fuelNow = 50f, perLap = 10f, lap = 2, tyreAge = 4), pace, emptyList(), emptyList())!!
         val early = rep.option(OptionKind.EARLY)!!
         assertTrue(early.feasible, early.issues.toString())
-        assertTrue(early.deltaMs!! < 0, "$early")
-        assertEquals(OptionKind.EARLY, rep.recommended, rep.reason)
+        assertEquals(0L, early.deltaMs, "un ravitaillement ne rajeunit pas les pneus")
+        // Changer les pneus au ravitaillement (ou plus tôt) fait gagner du temps, au-delà de l'incertitude et du temps du changement.
+        assertTrue(rep.recommended in StrategyOptions.TYRE_KINDS, rep.reason)
         assertFalse(rep.indistinguishable)
-        assertTrue("gain estimé" in rep.reason, rep.reason)
+        assertTrue("gain estimé" in rep.reason && "pneus" in rep.reason, rep.reason)
     }
 
     @Test

@@ -50,6 +50,8 @@ import com.gt7pitwall.core.strategy.RaceRules
 import com.gt7pitwall.core.strategy.StopEvidence
 import com.gt7pitwall.core.strategy.TyreCompound
 import com.gt7pitwall.core.strategy.TyreService
+import com.gt7pitwall.core.strategy.TyreInputs
+import com.gt7pitwall.core.tyres.TyreModel
 import com.gt7pitwall.core.telemetry.TelemetryPacket
 import kotlin.math.roundToInt
 
@@ -125,6 +127,14 @@ class RaceController(
 
     /** Ce que l'historique comparable apprend à Pitwall pour cette épreuve, voiture et circuit. */
     var historyModel: HistoryModel = HistoryModel.EMPTY
+        private set
+
+    /** Relais pneus comparables appris (gomme actuelle), indépendants du carburant. */
+    var tyreModel: TyreModel = TyreModel.EMPTY
+        private set
+
+    /** Changements de pneus de performance retenus par la stratégie (fin de ces tours). */
+    var performanceTyreLaps: List<Int> = emptyList()
         private set
     var fuel: FuelReport? = null
         private set
@@ -791,6 +801,9 @@ class RaceController(
         val rec = memoryRecord
         // Historique : sessions comparables archivées d'abord (avec leur niveau de confiance), sinon l'ancienne mémoire.
         val model = HistoryModel.learn(sessionContext, sessions.values, excludeId = sessionId).also { historyModel = it }
+        tyreModel = TyreModel.learn(sessionContext, sessions.values, ledger.currentTyre(rules.startTyre), excludeId = sessionId)
+        // Arrêt pneus retenu déjà passé : il sort de la liste.
+        performanceTyreLaps = performanceTyreLaps.filter { it >= p.currentLap.coerceAtLeast(1) }
         val learnedFuel = model.fuelPerLap?.takeIf { it.confidence != Confidence.INSUFFICIENT }
         val (perLap, fuelSource) = when {
             live?.perLap != null -> live.perLap to DataSource.MEASURED
@@ -825,7 +838,8 @@ class RaceController(
             tyresMissing = missing.toList(),
             tyreAgeLaps = ledger.tyreAge(p.currentLap.coerceAtLeast(1)),
             pitLaneDeltaS = course?.pitLaneDeltaS,
-            previousStops = plan?.stops?.map { it.endOfLap } ?: emptyList(),
+            previousStops = plan?.stops?.filterNot { it.tyresOnly && it.forTyres }?.map { it.endOfLap } ?: emptyList(),
+            tyreStopLaps = performanceTyreLaps.filter { it >= p.currentLap.coerceAtLeast(1) },
         )
         val planning = p.fuelCapacity > 0f || rules.mandatoryStops > 0 || missing.isNotEmpty() || rules.tyreStintLaps != null
         val previous = plan
@@ -836,7 +850,7 @@ class RaceController(
         // nettement l'incertitude : pas de changement de stratégie pour un avantage théorique à chaque tour.
         if (report != null && !report.indistinguishable && report.recommended != OptionKind.NORMAL) {
             val opt = report.recommendedOption
-            val key = "${opt.kind}:${opt.stopLaps}"
+            val key = "${opt.kind}:${opt.stopLaps}:${opt.tyreLaps}"
             if (key != switchKey) {
                 switchKey = key
                 switchSinceLap = p.currentLap
@@ -847,6 +861,8 @@ class RaceController(
                 next = opt.plan
                 reason = report.reason
                 switchKey = null
+                // Changement de pneus de performance adopté (ou abandonné) : il fait désormais partie du plan.
+                if (opt.kind in StrategyOptions.TYRE_KINDS) performanceTyreLaps = opt.plan.stops.filter { it.forTyres }.map { it.endOfLap }
             }
         } else {
             switchKey = null
@@ -932,11 +948,14 @@ class RaceController(
         val laneMs = course?.pitLaneDeltaS?.let { it * 1000.0 }
         // Dérive des chronos : mesurée dans le relais en cours si elle est nette, sinon apprise sur les courses comparables.
         val stint = currentStintSlope()
+        // Dégradation : mesurée sur ce train de pneus d'abord, sinon apprise sur des relais comparables de la même gomme,
+        // sinon sur l'historique de l'épreuve. Jamais déduite d'une déclaration.
+        val learnedTyre = tyreModel.slopeMsPerLap?.takeIf { it.confidence != Confidence.INSUFFICIENT }
         val pace = StrategyOptions.Pace(
             lapMs = measuredAvg?.toDouble() ?: learnedPace?.mean,
             lapSpreadMs = learnedPace?.spread ?: 0.0,
-            slopeMsPerLap = stint?.first ?: model.paceSlopeMsPerLap?.mean,
-            slopeSpread = stint?.second ?: model.paceSlopeMsPerLap?.spread ?: 0.0,
+            slopeMsPerLap = stint?.first ?: learnedTyre?.mean ?: model.paceSlopeMsPerLap?.mean,
+            slopeSpread = stint?.second ?: learnedTyre?.spread ?: model.paceSlopeMsPerLap?.spread ?: 0.0,
             pitLossMs = model.pitLossMs?.mean ?: laneMs,
             // Voie des stands seule : le temps du plein n'y est pas ; marge d'incertitude d'autant.
             pitLossSpread = model.pitLossMs?.spread ?: laneMs?.let { it * 0.5 } ?: 0.0,
@@ -955,7 +974,8 @@ class RaceController(
                 else -> add("rythme inconnu")
             }
             when {
-                stint != null -> add("chronos qui ${if (stint.first > 0) "se dégradent" else "s'améliorent"} de ${StrategyOptions.seconds(stint.first.toLong())} par tour dans ce relais (mesuré)")
+                stint != null -> add("chronos qui ${if (stint.first > 0) "se dégradent" else "s'améliorent"} de ${StrategyOptions.seconds(stint.first.toLong())} par tour avec ces pneus (mesuré)")
+                learnedTyre != null -> add("dégradation apprise de ${StrategyOptions.seconds(learnedTyre.mean.toLong())} par tour d'âge des pneus (estimé, ${learnedTyre.confidence.label} : ${tyreModel.basis()})")
                 model.paceSlopeMsPerLap != null -> add("chronos qui évoluent de ${StrategyOptions.seconds(model.paceSlopeMsPerLap.mean.toLong())} par tour de relais (mesuré, ${model.paceSlopeMsPerLap.sessions} courses)")
             }
             when {
@@ -966,7 +986,9 @@ class RaceController(
             if (model.sessionsExcluded > 0) add("${model.sessionsExcluded} course(s) de cette épreuve écartée(s) car non comparables")
             if (model.relatedUsed > 0) add("dont ${model.relatedUsed} entraînement(s) ou session(s) au type non précisé : BoP et réglages non vérifiés, confiance limitée")
         }
-        return StrategyOptions.compare(input, pace, basis, ruleGaps.map { it.label })
+        val degrading = engineer.grip.degrading || (stint != null && stint.first > 0)
+        val tyreBasis = if (pace.slopeMsPerLap != null && pace.slopeMsPerLap > 0) listOf("temps d'un changement de pneus inconnu : marge prudente de 10 s comptée") else emptyList()
+        return StrategyOptions.compare(input, pace, basis + tyreBasis, ruleGaps.map { it.label }, TyreInputs(degrading = degrading))
     }
 
     /**
@@ -974,8 +996,14 @@ class RaceController(
      * null si elle n'est pas nette (moins de deux fois son incertitude). Jamais déduite d'une déclaration.
      */
     private fun currentStintSlope(): Pair<Double, Double>? {
-        val lastStop = (ledger.stopList.map { it.lap } + ledger.changes.map { it.lap }).maxOrNull() ?: 0
-        val laps = snapshot.laps.filter { it.lapNumber > maxOf(1, lastStop + 1) && !it.refuelled && (it.timeMs ?: 0) > 0 }
+        // Relais pneus (pas depuis le dernier ravitaillement), tours d'arrêt et de sortie écartés. Âge incertain : seulement
+        // les tours depuis le dernier arrêt, faute de mieux.
+        val ctx = tyreStintContext()
+        val lastStop = ledger.stopList.maxOfOrNull { it.lap } ?: 0
+        val start = if (ctx.certain) ctx.startLap else maxOf(ctx.startLap, lastStop + 2)
+        val laps = snapshot.laps.filter {
+            it.lapNumber >= maxOf(2, start) && it.lapNumber !in ctx.excludedLaps && !it.refuelled && (it.timeMs ?: 0) > 0
+        }
         if (laps.size < 4) return null
         val xs = laps.map { it.lapNumber.toDouble() }
         val ys = laps.map { it.timeMs!!.toDouble() }
@@ -1203,7 +1231,9 @@ class RaceController(
     private fun onPitVisit(e: SessionEvent.PitVisitEnded): List<EngineerMessage> {
         val v = e.visit
         // Avec une durée de vie des pneus, un arrêt sans essence compte aussi : il peut s'agir d'un changement de pneus.
-        val hasObligations = rules.mandatoryStops > 0 || rules.requiredTyres.isNotEmpty() || rules.tyreStintLaps != null
+        // Un arrêt prévu par le plan (pneus seuls compris) rend aussi crédible un arrêt sans ravitaillement.
+        val hasObligations = rules.mandatoryStops > 0 || rules.requiredTyres.isNotEmpty() || rules.tyreStintLaps != null ||
+            plan?.stops?.any { v.lap - it.endOfLap in 0..1 } == true
         return when (v.assessment) {
             PitAssessment.REFUEL -> {
                 val rec = ledger.recordRefuel(v.lap, v.refuelAmount)
@@ -1276,6 +1306,7 @@ class RaceController(
     /** Pneus neufs sans gomme précisée : l'âge des pneus repart de zéro. */
     private fun tyresChanged(lap: Int): List<String> {
         ledger.fitTyres(lap.coerceAtLeast(1), null)
+        performanceTyreLaps = emptyList()
         engineer.onTyresChanged(lap.coerceAtLeast(1))
         val out = mutableListOf("Noté : pneus neufs au tour ${lap.coerceAtLeast(1)}.")
         if (rules.requiredTyres.isNotEmpty()) {
@@ -1354,6 +1385,7 @@ class RaceController(
             out += "Noté : départ en ${compound.spoken}."
         } else {
             ledger.fitTyres(lap, compound)
+            performanceTyreLaps = emptyList()
             engineer.onTyresChanged(lap)
             out += "Noté : ${compound.spoken} montés au tour $lap."
         }

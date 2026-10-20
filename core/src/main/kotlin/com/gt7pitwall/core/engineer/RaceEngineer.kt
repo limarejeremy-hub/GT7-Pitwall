@@ -510,7 +510,9 @@ class RaceEngineer {
         val stillAhead = previous?.filter { it.first >= currentLap }
         if (previous == null) {
             announcedStops = stops
-            out += msg(planSentence(newPlan), Priority.HIGH, MessageCategory.FUEL).copy(dedupKey = "plan-full")
+            // Premier plan déjà choisi par la comparaison (arrêt pour les pneus…) : on dit pourquoi.
+            val why = planReason?.let { " $it" } ?: ""
+            out += msg(planSentence(newPlan) + why, Priority.HIGH, MessageCategory.FUEL).copy(dedupKey = "plan-full")
         } else if (stops != stillAhead) {
             announcedStops = stops
             val changed = stops.size != stillAhead?.size || stops.firstOrNull() != stillAhead.firstOrNull()
@@ -548,6 +550,7 @@ class RaceEngineer {
     /** Ce qu'il faut faire des pneus à cet arrêt, ou null. */
     private fun stopTyres(s: com.gt7pitwall.core.strategy.PlannedStop): String? = when {
         s.tyreToFit != null -> "monter les ${s.tyreToFit.spoken}"
+        s.tyresOnly && s.forTyres -> "pour les pneus uniquement"
         s.changeTyres -> "pneus neufs"
         else -> null
     }
@@ -766,6 +769,7 @@ class RaceEngineer {
                 currentLap -> buildString {
                     append("Box, box ! Rentre au stand à la fin de ce tour")
                     when {
+                        next.tyresOnly && next.forTyres -> append(" pour les pneus uniquement, pas besoin d'essence.")
                         next.mandatoryOnly -> append(", arrêt obligatoire, pas besoin d'essence.")
                         next.forFuel -> append(", ajoute environ ${fuelText(next.fuel)}.")
                         next.noFuelNeeded -> append(", pas besoin d'essence.")
@@ -773,6 +777,7 @@ class RaceEngineer {
                     }
                     when {
                         next.tyreToFit != null -> append(" Monte les ${next.tyreToFit.spoken}.")
+                        next.tyresOnly && next.forTyres -> Unit
                         next.changeTyres -> append(" Change les pneus.")
                     }
                     if (isLastStop && missingTyres.size > 1) {

@@ -19,9 +19,23 @@ data class PlannedStop(
     val mandatory: Boolean,
     /** Gomme imposée à monter à cet arrêt (déclarée manquante). */
     val tyreToFit: TyreCompound? = null,
-    /** Changer les pneus à cet arrêt (durée de vie donnée par le pilote, ou gomme imposée). */
+    /** Changer les pneus à cet arrêt (durée de vie donnée par le pilote, gomme imposée, ou performance). */
     val changeTyres: Boolean = false,
+    /** Changement de pneus choisi pour la performance (dégradation mesurée), et non imposé. */
+    val forTyres: Boolean = false,
 ) {
+    /** Arrêt pour les pneus uniquement : ni essence, ni obligation. */
+    val tyresOnly: Boolean get() = changeTyres && !forFuel && !mandatory
+
+    /** Motifs de l'arrêt, dans l'ordre de priorité : règlement, carburant, pneus. */
+    val reasons: List<String>
+        get() = buildList {
+            if (mandatory) add("règlement")
+            if (tyreToFit != null) add("gomme imposée")
+            if (forFuel) add("carburant")
+            if (changeTyres && tyreToFit == null) add("pneus")
+        }
+
     /** Arrêt réglementaire sans besoin d'essence. */
     val mandatoryOnly: Boolean get() = mandatory && !forFuel && fuel != null
 
@@ -96,10 +110,15 @@ object RacePlanner {
         val tyreAgeLaps: Int = 0,
         val pitLaneDeltaS: Float? = null,
         /**
-         * Tours d'arrêt du plan déjà annoncé. Ils sont conservés tant qu'ils restent faisables : un plan qui
-         * glisse d'un tour à chaque tour ne déclencherait jamais l'appel au stand.
+         * Tours d'arrêt du plan déjà annoncé (sans les arrêts pour les pneus seuls, voir [tyreStopLaps]). Ils sont conservés
+         * tant qu'ils restent faisables : un plan qui glisse d'un tour à chaque tour ne déclencherait jamais l'appel au stand.
          */
         val previousStops: List<Int> = emptyList(),
+        /**
+         * Changements de pneus retenus pour la performance (fin de ces tours) : s'il y a déjà un arrêt à ce tour, les pneus y
+         * sont changés ; sinon un arrêt pour les pneus seuls est ajouté, sans essence. Le carburant n'en dépend pas.
+         */
+        val tyreStopLaps: List<Int> = emptyList(),
     )
 
     fun plan(i: Input): RacePlan? {
@@ -148,7 +167,7 @@ object RacePlanner {
             if (fuelStops > maxStops) warnings += PlanWarning.FUEL_IMPOSSIBLE
             k = maxStops
         }
-        if (k == 0) return result(emptyList())
+        if (k == 0) return result(withTyreStops(emptyList(), i, lapIndex, total, perLap))
 
         // Relais en tours entiers (le premier inclut le tour en cours), au moins un tour chacun.
         val stints = IntArray(k + 1) { idx -> units / (k + 1) + if (idx < units % (k + 1)) 1 else 0 }
@@ -201,7 +220,18 @@ object RacePlanner {
             )
         }
         // Un arrêt sans essence, sans obligation ni pneus n'a aucune raison d'être (arrondi du carburant).
-        return result(stops.filter { it.forFuel || it.mandatory || it.changeTyres || it.fuel == null })
+        return result(withTyreStops(stops.filter { it.forFuel || it.mandatory || it.changeTyres || it.fuel == null }, i, lapIndex, total, perLap))
+    }
+
+    /** Ajoute les changements de pneus de performance : sur l'arrêt déjà prévu à ce tour, sinon un arrêt pour les pneus seuls. */
+    private fun withTyreStops(stops: List<PlannedStop>, i: Input, lapIndex: Int, total: Int, perLap: Float?): List<PlannedStop> {
+        val laps = i.tyreStopLaps.filter { it in lapIndex until total }.distinct()
+        if (laps.isEmpty()) return stops
+        val out = stops.map { s -> if (s.endOfLap in laps) s.copy(changeTyres = true, forTyres = true) else s }.toMutableList()
+        for (l in laps) if (out.none { it.endOfLap == l }) {
+            out += PlannedStop(l, fuel = if (perLap != null) 0 else null, forFuel = false, mandatory = false, changeTyres = true, forTyres = true)
+        }
+        return out.sortedBy { it.endOfLap }
     }
 
     private fun keptStints(i: Input, lapIndex: Int, total: Int, k: Int, r: Float, perLap: Float?): IntArray? {
