@@ -117,6 +117,38 @@ Ces informations ont été vérifiées dans les sources de MacManley/gt7-udp :
 **Ces tests prouvent le fonctionnement du code, pas le comportement de GT7.** Le seul paquet réel est un paquet A ;
 aucun paquet B, ~ ou C réel n'a encore été publié ni capturé pour servir de référence.
 
+## Résultats PS5 (21 octobre 2026, course hors ligne, 20 voitures, Gr.3)
+
+Premier export réel : 49 851 paquets en 14 minutes, 7 tours d'une course de 12 tours, départ P20, un arrêt au stand.
+Aucun repère du pilote n'a été posé.
+
+| Point | Constat | Statut |
+|---|---|---|
+| Format C | 49 851 paquets de 368 octets, aucun illisible, aucun repli | **confirmé sur PS5** |
+| Chrono du tour (0x15C) | au passage de la ligne, il vaut le temps du tour à 2–10 ms près (119 566 contre 119 564 ; 122 257 contre 122 247), puis repart de 0 ; il avance de 1 000 ms par seconde | **confirmé** |
+| Chrono en pause | figé (12 093 ms avant et après la pause) | **confirmé** |
+| Chrono au stand | continue pendant l'arrêt | **confirmé** |
+| Surfaces (0x158) | 447 changements ; dernier « TTTT » (asphalte) | à confirmer avec un passage volontaire sur un vibreur |
+| Catégorie (0x16C) | « GR3 » | **confirmé** |
+| Mots réservés 0xD4–0xF3 | toujours 0 | confirmé : rien de caché |
+| Couple par roue, récupération d'énergie | toujours 0 (voiture thermique) | attendu |
+| 0x12C (B) | flottant variable, −31,4 à 101,3 | inconnu (vitesse du volant ?) |
+| 0x154 (~) | flottant de −0,71 à 1,66 | compatible avec un couple moteur normalisé |
+| Drapeau « en piste » | levé en course (`0x0009`) | confirmé sur notre PS5 |
+| Drapeau « chargement » | levé quelques instants **pendant l'arrêt au stand** | constat nouveau |
+| 0x84 | −1, puis 1, puis 20 (grille P20/20) ; 20 → 19 → 18 en dépassant ; 18 → 19 → 20 pendant l'arrêt au stand | cohérent avec les essais précédents |
+| Après le dernier événement | pendant environ 100 s, les valeurs restent figées, alors que les numéros de paquet avancent et qu'aucun drapeau de pause n'est levé | constat nouveau : sortie de course probable |
+| Écarts adverses | **aucun mot inconnu ou incertain ne change autour des 4 changements de 0x84** | **aucune source trouvée** |
+
+**Conclusion de l'essai** :
+- le format C et son chrono sont fiables ;
+- les paquets ne contiennent aucune trace des autres voitures.
+
+**Pour le prochain essai** :
+- poser des repères (« J'ai doublé », « Doublé ») ;
+- passer exprès sur un vibreur et dans l'herbe : les surfaces sont maintenant dans le journal ;
+- lancer la sonde des formats dans les menus.
+
 ## Protocole PS5 (environ 15 minutes)
 
 1. **Format C** (menus) : lancer la télémétrie.

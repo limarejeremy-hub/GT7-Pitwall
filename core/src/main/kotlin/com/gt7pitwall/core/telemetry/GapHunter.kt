@@ -177,7 +177,7 @@ class GapHunter(
     @Synchronized
     fun mark(label: String, nowMs: Long) {
         if (firstAt < 0) firstAt = nowMs
-        addLine("${stamp(nowMs)};${lastLap ?: ""};${last84 ?: ""};;${lastState ?: "aucun paquet"};repère : ${label.take(60)};;;;;;")
+        addLine("${stamp(nowMs)};${lastLap ?: ""};${last84 ?: ""};;${lastState ?: "aucun paquet"};repère : ${label.take(60)};;;;;;;")
     }
 
     @Synchronized
@@ -269,7 +269,7 @@ class GapHunter(
         }
         appendLine()
         if (dropped > 0) appendLine("Lignes anciennes retirées : $dropped")
-        appendLine("heure;tour;0x84;0x86;état;motif;X;Z;km/h;carburant;chrono C (ms);mots inconnus et incertains (offset=hex)")
+        appendLine("heure;tour;0x84;0x86;état;motif;X;Z;km/h;carburant;chrono C (ms);surfaces C;mots inconnus et incertains (offset=hex)")
         lines.forEach { appendLine(it) }
     }
 
@@ -327,7 +327,14 @@ class GapHunter(
         val unknown = (0 until n).filter { fieldAt(it * 4).status != Status.KNOWN }
             .joinToString(" ") { "%03X=%s".format(it * 4, hex(b.getInt(it * 4))) }
         val chrono = if (b.capacity() >= PacketFormat.C.size) b.getInt(0x15C).toString() else ""
-        val where = "%.1f;%.1f;%.1f;%.1f;%s".format(b.getFloat(0x04), b.getFloat(0x0C), b.getFloat(0x4C) * 3.6f, b.getFloat(0x44), chrono)
+        val surfaces = if (b.capacity() >= PacketFormat.C.size) {
+            String(CharArray(4) { (b.get(0x158 + it).toInt() and 0xFF).toChar().takeIf { c -> c in ' '..'~' && c != ';' } ?: '.' })
+        } else {
+            ""
+        }
+        val where = "%.1f;%.1f;%.1f;%.1f;%s;%s".format(
+            b.getFloat(0x04), b.getFloat(0x0C), b.getFloat(0x4C) * 3.6f, b.getFloat(0x44), chrono, surfaces,
+        )
         addLine("${stamp(nowMs)};$lap;$raw84;$raw86;$state;$reason;$where;$unknown")
     }
 

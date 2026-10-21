@@ -246,10 +246,10 @@ blanche **ou** jeu moddé ».
 | | | — notre vecteur de test : −1/−1 pendant le tour 4 (mode inconnu) ; | §3.4 |
 | | | — nos essais PS5 du 20/10/2026 : 0x84 suit le HUD en course hors ligne et en Sport A ; il compte les voitures pendant le matchmaking. | [DIAGNOSTIC_POSITION_UDP.md](DIAGNOSTIC_POSITION_UDP.md) |
 | | | **Conclusion** : la position est mise à jour en direct au moins en course. La valeur vaut −1 dans certains modes (contre-la-montre ou essais : **hypothèse**). On ne sait pas si elle est recalculée en continu ou à des lignes de chronométrage. | |
-| 0x8E bit 0 | A+ | CarOnTrack n'est pas levé en vraie course : drapeaux « 0x0418 while driving » (denwilliams README 121). Notre vecteur donne aussi `0x0008` en roulant. Les bits 12–15 sont inconnus (gt-telemetry `.ksy` flag13–16). | |
+| 0x8E bit 0 | A+ | CarOnTrack n'est pas levé dans deux captures d'autres projets (denwilliams README 121 : « 0x0418 while driving » ; notre vecteur : `0x0008`). **Mais sur notre PS5 (21/10/2026, course hors ligne), il est levé en course : drapeaux `0x0009`.** Le bit dépend donc peut-être du mode ou de la version. Les bits 12–15 sont inconnus (gt-telemetry `.ksy` flag13–16). | |
 | 0xD4–0xF3 | A+ | 8 flottants inconnus. PDTools : « Seems to be reserved - server does not set that » (ligne 407). Ils valent 0 dans le vecteur. | |
 | 0x120 | A+ | Huitième rapport de boîte, ou vide. Peut écraser carCode sur les boîtes de plus de 8 rapports (PDTools 419–421). | |
-| 0x12C | B+ | PDTools : FillerFloatFB. gt7-udp : steeringAngularVelocity. | |
+| 0x12C | B+ | PDTools : FillerFloatFB. gt7-udp : steeringAngularVelocity. Sur notre PS5 : flottant de −31,4 à 101,3, souvent 0, compatible avec une vitesse de rotation du volant (non prouvé). | |
 | 0x13E–0x13F, 0x140–0x14F, 0x154 | ~ | Voir §3.2. | |
 | 0x15C | C | currentLap signé ou non. Comportement en pause, au départ et au passage de la ligne non documenté. | issue #18 |
 | 0x168 | C | Empattement « gauche » dynamique, ou valeur liée à l'Ackermann. | issue #18 |
@@ -428,8 +428,9 @@ Toutes ces expériences se font sur la PS5 du joueur, en lecture seule, sans rie
 - **Gap Hunter** couvre les expériences 1 à 4. Son journal note chaque changement de 0x84 avec la position XYZ, la
   vitesse et le chrono du tour (format C).
 - **La sonde des heartbeats** (A à Z, ~) vérifie l'affirmation « pas d'autre mode » sur notre propre console.
-- **Drapeau CarOnTrack** : Gap Hunter ne s'en sert pas. `TyreCoach` et `RadioPacer` l'utilisent encore : à vérifier
-  sur PS5 dans un journal réel avant de les modifier.
+- **Drapeau CarOnTrack** : Gap Hunter ne s'en sert pas. Sur notre PS5, il est bien levé en course hors ligne
+  (`0x0009`), donc `TyreCoach` et `RadioPacer` restent tels quels.
+- **Premier essai réel (21/10/2026)** : voir [GAP_HUNTER.md](GAP_HUNTER.md), « Résultats PS5 ».
 
 ## 12. Conclusion
 
