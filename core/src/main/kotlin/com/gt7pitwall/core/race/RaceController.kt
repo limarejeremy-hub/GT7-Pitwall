@@ -75,6 +75,11 @@ interface RaceStorage {
     /** Sessions archivées, entre les lancements de l'application. */
     fun loadSessions(): List<SessionRecord> = emptyList()
     fun saveSession(record: SessionRecord) {}
+
+    /** Journal de course ([SessionJournal]) : une ligne ajoutée aussitôt, sous l'identifiant de la session archivée. */
+    fun appendJournal(sessionId: String, line: String) {}
+    fun loadJournal(sessionId: String): List<String> = emptyList()
+    fun journalSessionIds(): List<String> = emptyList()
 }
 
 /**
@@ -184,6 +189,31 @@ class RaceController(
     /** Position en course transmise par GT7 (0x84 filtré). */
     val positionTracker = PositionTracker()
 
+    /** Journal de course intégral, enregistré au fil de l'eau sous l'identifiant de la session archivée. */
+    val journal = SessionJournal(storage, clock) { journalTelemetry() }
+
+    /** Origine de la commande en cours d'application (écran par défaut ; voix ou Gemini via [voiceCommand]). */
+    private var commandOrigin = "écran"
+
+    private fun journalTelemetry(): JournalTelemetry? {
+        val p = snapshot.packet ?: return null
+        val m = engineer.measured
+        return JournalTelemetry(
+            lap = p.currentLap,
+            totalLaps = p.totalLaps.takeIf { it > 0 },
+            speedKmh = p.speedKmh,
+            fuel = p.fuelLevel,
+            fuelCapacity = p.fuelCapacity.takeIf { it > 0f },
+            // Position mesurée seulement (0x84) : une place déclarée n'est pas une mesure.
+            position = m.finalPosition ?: m.position,
+            cars = m.finalCars ?: m.cars,
+            lapTimeMs = p.currentLapTimeMs?.takeIf { it > 0 },
+            tyreTemps = p.tyreTemps.toList(),
+            gear = p.currentGear,
+            inPit = tracker.pitVisitOpen,
+        )
+    }
+
     val snapshot: SessionSnapshot get() = tracker.snapshot
     val course: Course? get() = rules.trackId?.let(database::course)
     val carName: String? get() = snapshot.packet?.let { database.car(it.carCode)?.fullName }
@@ -236,6 +266,7 @@ class RaceController(
             schedule?.let { pendingSchedule = it }
         }
         if (events.any { it is SessionEvent.SessionReset || it is SessionEvent.FirstData }) startSession()
+        journalPositions(positionChanges)
         val out = mutableListOf<EngineerMessage>()
         val windowWasOpen = pitWindowPackets > 0
         if (pitWindowPackets > 0) pitWindowPackets--
@@ -266,6 +297,7 @@ class RaceController(
                 tyreLifeAsked = false
             }
             out += learn(events)
+            journalEvents(events)
             if (events.any { it is SessionEvent.RaceFinished }) sessionFinished = true
             if (events.any { it is SessionEvent.LapCompleted }) out += rulesReminder()
             for (e in events) {
@@ -315,6 +347,13 @@ class RaceController(
 
     /** Même traitement pour les boutons de l'écran et les commandes vocales. */
     fun command(command: DriverCommand): List<EngineerMessage> {
+        // Les questions ne changent rien : seules les commandes qui modifient l'état sont notées comme décisions.
+        if (command !is DriverCommand.Ask && command != DriverCommand.Repeat) {
+            journal.record(
+                JournalType.DECISION, JournalSource.ENGINE, "Commande appliquée : $command",
+                decision = "appliquée", details = mapOf("origine" to commandOrigin),
+            )
+        }
         val out = mutableListOf<EngineerMessage>()
         val lap = snapshot.packet?.currentLap ?: 0
         when (command) {
@@ -436,7 +475,33 @@ class RaceController(
     fun voiceCommand(command: DriverCommand, text: String, source: CommandSource): List<EngineerMessage> {
         // Une autre phrase que « oui » / « non » abandonne la confirmation en attente : rien n'est appliqué.
         if (command != DriverCommand.Yes && command != DriverCommand.No) pendingConfirmation = null
-        return when (val v = vet(command, text, source)) {
+        val v = vet(command, text, source)
+        journal.record(
+            JournalType.DECISION, JournalSource.ENGINE, "« ${text.trim()} » compris comme ${commandName(command)}",
+            decision = when (v) {
+                is Vetting.Execute -> if (v.command is DriverCommand.Ask || v.command == DriverCommand.Repeat) {
+                    "question : réponse calculée par le moteur, rien modifié"
+                } else {
+                    "appliquée"
+                }
+                is Vetting.Redirect -> "redirigée vers ${commandName(v.command)}"
+                is Vetting.Confirm -> "confirmation demandée : ${v.question}"
+                is Vetting.Discuss -> "rien modifié (${v.mode.name.lowercase()}) : ${v.reply}"
+            },
+            details = mapOf("origine" to source.name.lowercase()),
+        )
+        commandOrigin = source.name.lowercase()
+        try {
+            return voiceDecision(v)
+        } finally {
+            commandOrigin = "écran"
+        }
+    }
+
+    private fun commandName(c: DriverCommand): String = c.toString().substringBefore('(').substringAfterLast('.').substringAfterLast('$')
+
+    private fun voiceDecision(v: Vetting): List<EngineerMessage> {
+        return when (v) {
             is Vetting.Execute -> command(v.command)
             is Vetting.Redirect -> command(v.command)
             is Vetting.Confirm -> {
@@ -699,6 +764,21 @@ class RaceController(
         sessionFinished = false
         planLog.clear()
         driverNotes.clear()
+        val p = snapshot.packet
+        journal.begin(
+            sessionId!!,
+            "Début de session : ${carName ?: "voiture ${p?.carCode ?: "?"}"} — ${course?.name ?: "circuit non choisi"} — ${profile.id.label}",
+            details = listOfNotNull(
+                p?.carCode?.let { "voiture" to it.toString() },
+                rules.trackId?.let { "circuit" to it.toString() },
+                "epreuve" to profile.id.label,
+                (rules.totalLaps ?: p?.totalLaps?.takeIf { it > 0 })?.let { "tours" to it.toString() },
+                rules.durationMin?.let { "duree_min" to it.toString() },
+                "multiplicateur_carburant" to rules.fuelMultiplier.toString(),
+                "multiplicateur_pneus" to rules.tyreMultiplier.toString(),
+                "arrets_obligatoires" to rules.mandatoryStops.toString(),
+            ).toMap(),
+        )
     }
 
     /** Session en cours, telle qu'elle serait archivée maintenant ; null tant qu'aucun tour n'est bouclé. */
@@ -756,6 +836,14 @@ class RaceController(
      */
     private fun closeSession(outcome: SessionOutcome) {
         val final = if (sessionFinished) SessionOutcome.FINISHED else outcome
+        journal.end(
+            when (final) {
+                SessionOutcome.FINISHED -> "Fin de session : course terminée"
+                SessionOutcome.INTERRUPTED -> "Fin de session : interrompue (télémétrie arrêtée ou nouvelle session)"
+                SessionOutcome.IN_PROGRESS -> "Fin de session"
+            },
+            details = mapOf("issue" to final.name.lowercase(), "tours_mesures" to snapshot.laps.size.toString()),
+        )
         val r = currentRecord(final) ?: sessions[sessionId]?.copy(
             outcome = final,
             updatedAtMs = clock(),
@@ -766,6 +854,61 @@ class RaceController(
         ) ?: return
         sessions[r.id] = r
         storage?.saveSession(r)
+    }
+
+    /** Événements mesurés du tracker inscrits au journal (tours, stands, arrivée, grille). */
+    private fun journalEvents(events: List<SessionEvent>) {
+        for (e in events) when (e) {
+            is SessionEvent.LapCompleted -> {
+                val l = lapEntry(e.lap)
+                journal.record(
+                    JournalType.LAP, JournalSource.TELEMETRY,
+                    "Tour ${l.lap} : ${l.timeMs?.let(JournalExport::lapTime) ?: "temps non lu"}" +
+                        (e.previousBestMs?.let { b -> l.timeMs?.let { " (meilleur précédent ${JournalExport.lapTime(b)})" } } ?: ""),
+                    lap = l.lap,
+                    details = listOfNotNull(
+                        l.timeMs?.let { "temps_ms" to it.toString() },
+                        l.fuelUsed?.let { "carburant_consomme" to "%.2f".format(java.util.Locale.ROOT, it) },
+                        l.fuelAfter?.let { "carburant_restant" to "%.1f".format(java.util.Locale.ROOT, it) },
+                        "ravitaillement" to if (l.refuelled) "oui" else "non",
+                        e.lap.maxSpeedKmh?.let { "vitesse_max" to Math.round(it).toString() },
+                        e.lap.sectorsMs?.let { "secteurs_ms" to it.joinToString("/") },
+                        l.tcsShare?.let { "tcs_pourcent" to Math.round(it * 100).toString() },
+                        l.lockups?.let { "blocages" to it.toString() },
+                        l.wheelspins?.let { "patinages" to it.toString() },
+                        l.frontEvents?.let { "evenements_avant" to it.toString() },
+                        l.rearEvents?.let { "evenements_arriere" to it.toString() },
+                        l.wheelTemps?.let { t -> "temperatures_pneus" to t.joinToString("/") { Math.round(it).toString() } },
+                        l.tyreCompound?.let { "pneus" to it.name },
+                        l.tyreAge?.let { "age_pneus_tours" to it.toString() },
+                        "pneus_certains" to if (l.tyreCertain) "oui" else "non",
+                    ).toMap(),
+                )
+            }
+            is SessionEvent.PitVisitEnded -> journal.record(
+                JournalType.PIT, JournalSource.TELEMETRY,
+                "Passage au stand détecté (tour ${e.visit.lap})" +
+                    (if (e.visit.refuelAmount > 0f) " : +%.1f de carburant".format(e.visit.refuelAmount) else "") +
+                    ", immobile %.1f s".format(e.visit.stoppedSeconds),
+                lap = e.visit.lap,
+                details = mapOf("analyse" to e.visit.assessment.name.lowercase(), "lieu_connu" to if (e.visit.locationKnown) "oui" else "non"),
+            )
+            is SessionEvent.RaceFinished -> journal.record(JournalType.SESSION, JournalSource.TELEMETRY, "Arrivée : ${e.totalLaps} tours")
+            is SessionEvent.GridPosition -> journal.record(JournalType.POSITION, JournalSource.TELEMETRY, "Grille : P${e.position} sur ${e.cars}")
+            else -> {}
+        }
+    }
+
+    private fun journalPositions(changes: List<PositionTracker.Change>) {
+        for (c in changes) {
+            val text = when (c) {
+                is PositionTracker.Change.Moved -> "Position P${c.from ?: "?"} → P${c.to} sur ${c.cars}"
+                is PositionTracker.Change.CarsChanged -> "Participants : ${c.from ?: "?"} → ${c.to}"
+                is PositionTracker.Change.Finished -> "Classement final : P${c.position} sur ${c.cars}"
+                PositionTracker.Change.Lost -> "Position plus transmise par GT7"
+            }
+            journal.record(JournalType.POSITION, JournalSource.TELEMETRY, text)
+        }
     }
 
     /** Une fois par session, au premier tour : règlement non confirmé pour l'épreuve choisie. */
@@ -893,6 +1036,16 @@ class RaceController(
         val stopLaps = plan?.stops?.map { it.endOfLap } ?: emptyList()
         if (plan != null && planLog.lastOrNull()?.stopLaps != stopLaps) {
             planLog += PlanEntry(p.currentLap, stopLaps, reason, fuelPerLap = plan?.perLap, fuelSource = plan?.fuelSource?.name)
+            journal.record(
+                JournalType.STRATEGY, JournalSource.ENGINE,
+                if (stopLaps.isEmpty()) "Plan : aucun arrêt prévu" else "Plan : arrêts à la fin des tours ${stopLaps.joinToString(", ")}",
+                decision = reason ?: "plan calculé",
+                details = listOfNotNull(
+                    plan?.perLap?.let { "consommation_par_tour" to "%.2f".format(java.util.Locale.ROOT, it) },
+                    plan?.fuelSource?.let { "source_consommation" to it.name },
+                    plan?.totalLaps?.let { "tours_prevus" to it.toString() },
+                ).toMap(),
+            )
             while (planLog.size > MAX_PLANS) planLog.removeAt(0)
         }
         return engineer.onPlan(plan, p.currentLap)

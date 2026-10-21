@@ -42,6 +42,14 @@ class FakeStorage(
         rules = r
         saves++
     }
+    /** Journal de course : une liste de lignes JSON par session, ajoutées comme sur le téléphone. */
+    val journals: MutableMap<String, MutableList<String>> = linkedMapOf()
+    override fun appendJournal(sessionId: String, line: String) {
+        journals.getOrPut(sessionId) { mutableListOf() } += line
+    }
+    override fun loadJournal(sessionId: String): List<String> = journals[sessionId].orEmpty()
+    override fun journalSessionIds(): List<String> = journals.keys.toList()
+
     override fun loadMemory(): Map<String, CarTrackRecord> = memory
     override fun saveMemory(records: Collection<CarTrackRecord>) {
         memory.clear()
