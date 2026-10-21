@@ -271,7 +271,9 @@ class TelemetryClient(
                         run.probing = false
                         run.phaseSince = now
                         _scan.value = FormatScan(true, null, run.index, run.list.size, run.results.toList())
-                    } else if (now - run.lastHeartbeat >= config.scanHeartbeatMs) {
+                    }
+                    // Heartbeat de la lettre sondée, dès le début de son écoute puis à intervalle régulier.
+                    if (run.probing && now - run.lastHeartbeat >= config.scanHeartbeatMs) {
                         sendRaw(sock, target, run.list[run.index].code.toByte())
                         run.lastHeartbeat = now
                     }

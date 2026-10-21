@@ -194,7 +194,7 @@ class TelemetryClientTest {
             withTimeout(5_000) { client.status.first { it is ConnectionStatus.Receiving } }
             client.startFormatScan(listOf('A', 'B', 'D', 'E'))
             withTimeout(5_000) { client.scan.first { it.current == 'A' } }
-            kotlinx.coroutines.delay(500) // la PS5 répond en format A pendant la sonde
+            kotlinx.coroutines.delay(1_500) // la PS5 répond en format A pendant la sonde (écoute de 5 s)
             client.cancelFormatScan()
             val done = withTimeout(10_000) { client.scan.first { !it.running } }
             assertTrue(done.results.size < 4) // arrêtée avant la fin
