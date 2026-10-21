@@ -214,7 +214,9 @@ class RaceEngineer {
             }
         }
         if (!raceOver) {
-            fuelAlert(fuel)?.let { out += it }
+            // Pendant un ravitaillement, le niveau bas est en train d'être corrigé : pas d'alerte (course réelle du 21/10,
+            // « moins de deux tours » répété au stand pendant le plein).
+            if (!snapshot.refuelledThisLap) fuelAlert(fuel)?.let { out += it }
             snapshot.packet?.let { p -> tyres.onPacket(p)?.let { out += msg(it.text, it.priority, MessageCategory.LAP) } }
         }
         val result = RadioFilter.criticalFirst(out.filter { RadioFilter.allowed(radioLevel, it) })
@@ -362,6 +364,7 @@ class RaceEngineer {
 
             DriverQuery.OBLIGATIONS -> "Je n'ai pas de registre de course."
             DriverQuery.TYRE_CHANGE -> "Je n'ai pas de registre de course."
+            DriverQuery.NEXT_TYRE -> "Je n'ai pas de registre de course."
 
             DriverQuery.TYRES -> p?.let {
                 val t = it.tyreTemps

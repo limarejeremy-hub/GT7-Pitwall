@@ -19,7 +19,8 @@ object TestPackets {
         carCode: Int = 1000,
         packetId: Int = 1,
         flags: Int = TelemetryPacket.FLAG_ON_TRACK,
-        posX: Float = 0f,
+        // Une voiture qui roule avance : un paquet « en mouvement » immobile est une télémétrie figée (voir RaceController).
+        posX: Float = if (speedMps > 1f) packetId * speedMps / 60f else 0f,
         posZ: Float = 0f,
         size: Int = GT7Crypto.PACKET_SIZE_A,
     ): ByteArray {

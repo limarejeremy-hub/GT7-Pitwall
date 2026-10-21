@@ -94,9 +94,10 @@ data class HistoryModel(
                 val stopLaps = s.stops.map { it.lap }.toSet()
                 val incidents = s.notes.filter { INCIDENT.containsMatchIn(it.text) }.map { it.lap }.toSet()
                 val excluded = { lap: Int -> lap == 1 || lap in stopLaps || (lap - 1) in stopLaps || lap in incidents }
-                val clean = s.laps.filter { !it.refuelled && !excluded(it.lap) }
+                val clean = s.laps.filter { !it.refuelled && !it.pitLane && !excluded(it.lap) }
                 clean.mapNotNull { it.fuelUsed?.toDouble() }.filter { it > 0.01 }.forEach { fuel += s.id to it }
-                clean.mapNotNull { it.timeMs?.toDouble() }.forEach { pace += s.id to it }
+                // Une sortie de piste mesurée (format C) fausse le rythme, pas la consommation.
+                clean.filter { (it.offTrackEvents ?: 0) == 0 }.mapNotNull { it.timeMs?.toDouble() }.forEach { pace += s.id to it }
                 // Âge des pneus : depuis le départ ou le dernier changement de pneus déclaré, jamais depuis un simple
                 // ravitaillement. Tours au relais pneus incertain (arrêt sans réponse sur les pneus) écartés.
                 for (l in clean) {
@@ -151,7 +152,7 @@ data class HistoryModel(
          * changement déclaré ; null si un arrêt sans réponse sur les pneus le rend incertain.
          */
         fun tyreAge(s: SessionRecord, l: com.gt7pitwall.core.race.LapEntry): Int? {
-            l.tyreAge?.let { return if (l.tyreCertain) it else null }
+            l.tyreAge?.let { return if (l.tyreAgeCertain) it else null }
             val since = s.tyres.filter { it.lap <= l.lap }.maxOfOrNull { it.lap } ?: 1
             val unknown = s.stops.any { it.tyres == TyreService.UNKNOWN && it.lap >= since - 1 && it.lap < l.lap }
             return if (unknown) null else l.lap - since

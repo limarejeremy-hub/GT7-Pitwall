@@ -34,6 +34,16 @@ data class LapEntry(
     val tyreAge: Int? = null,
     val tyreCompound: TyreCompound? = null,
     val tyreCertain: Boolean = true,
+    /**
+     * Certitude de l'âge des pneus seule (changement déclaré ou départ), indépendante de la gomme. [tyreCertain] exige
+     * en plus une gomme connue : une gomme inconnue n'est jamais « certaine ».
+     */
+    val tyreAgeCertain: Boolean = tyreCertain,
+    /** Tour commencé dans la voie des stands (consommation atypique, exclue des moyennes). */
+    val pitLane: Boolean = false,
+    /** Format C : part du tour sur un vibreur (0..1) et sorties de piste mesurées. */
+    val kerbShare: Float? = null,
+    val offTrackEvents: Int? = null,
     /** Mesures GT7 du tour (null si le tour n'a pas été suivi en entier). */
     val tcsShare: Float? = null,
     val lockups: Int? = null,

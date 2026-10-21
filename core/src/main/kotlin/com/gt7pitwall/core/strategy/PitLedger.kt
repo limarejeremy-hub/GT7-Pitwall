@@ -107,13 +107,39 @@ class PitLedger {
         return stops.removeLastOrNull()
     }
 
-    fun fitTyres(lap: Int, compound: TyreCompound?) {
-        tyreChanges += TyreChange(lap, compound)
+    /**
+     * Pneus changés au tour [lap]. Un passage aux stands peut chevaucher la ligne (déclaré au tour 6, détecté au tour 7) :
+     * un changement déjà noté pour ce passage est enrichi (gomme précisée ou corrigée), jamais doublé, et une gomme
+     * connue n'est jamais effacée par une confirmation sans gomme. Renvoie la gomme remplacée, s'il y en avait une
+     * différente (correction, pour la traçabilité).
+     */
+    fun fitTyres(lap: Int, compound: TyreCompound?): TyreCompound? {
         awaitingTyreDeclaration = false
         awaitingTyreChangeAnswer = false
         // L'arrêt de ce passage (fin du tour précédent ou ce tour-ci) a servi aux pneus.
         markTyres(lap, TyreService.CHANGED)
+        val i = samePassageChange(lap)
+        if (i < 0) {
+            tyreChanges += TyreChange(lap, compound)
+            return null
+        }
+        val existing = tyreChanges[i]
+        if (compound == null || compound == existing.compound) return null
+        tyreChanges[i] = existing.copy(compound = compound)
+        return existing.compound
     }
+
+    /** Changement de pneus déjà noté pour le passage aux stands en cours (même tour ou tour précédent), sinon -1. */
+    private fun samePassageChange(lap: Int): Int {
+        val i = tyreChanges.indexOfLast { lap - it.lap in 0..1 }
+        if (i < 0) return -1
+        // Un autre arrêt enregistré après ce changement, et après son passage, en fait un passage différent.
+        val c = tyreChanges[i]
+        return if (stops.any { it.lap > c.lap + 1 }) -1 else i
+    }
+
+    /** Changement déjà noté pour ce passage (gomme comprise, éventuellement inconnue). */
+    fun changeForPassage(lap: Int): TyreChange? = samePassageChange(lap).takeIf { it >= 0 }?.let { tyreChanges[it] }
 
     /** « Mêmes pneus » : l'arrêt récent n'a pas touché aux pneus, le relais pneus continue avec certitude. */
     fun keepTyres(lap: Int) {

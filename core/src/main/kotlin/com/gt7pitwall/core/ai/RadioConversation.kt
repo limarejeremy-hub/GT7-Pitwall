@@ -71,13 +71,15 @@ class RadioConversation(
                 // Commande vocale : sa forme (négation, intention, question…) décide si elle s'applique. Une intention
                 // ou une hypothèse sur la stratégie devient une discussion avec Gemini quand il est prêt.
                 val original = freeText?.takeIf { it.isNotBlank() } ?: text
-                val cmd = DriverCommandParser.parse(text)
+                // L'analyseur peut avoir retenu la phrase libre plutôt que le vocabulaire radio.
+                val heard = (route as? RadioAi.Route.Parser)?.text ?: text
+                val cmd = DriverCommandParser.parse(heard)
                 val discuss = cmd?.let { mutex.withLock { race.vet(it, original, source) } } as? Vetting.Discuss
                 if (discuss != null && discuss.mode in DISCUSSED_WITH_AI && model != null && model.ready) {
                     mutex.withLock { discuss.intention?.let(race::noteIntention) }
                     ask(model, original, onThinking)
                 } else {
-                    mutex.withLock { race.utterance(text, original, source) }
+                    mutex.withLock { race.utterance(heard, original, source) }
                 }
             }
         }

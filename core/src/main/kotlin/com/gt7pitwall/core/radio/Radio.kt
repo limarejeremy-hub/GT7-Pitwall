@@ -32,6 +32,9 @@ enum class DriverQuery {
 
     /** « Quand dois-je changer mes pneus ? » : âge des pneus, durée de vie et changement prévu. */
     TYRE_CHANGE,
+
+    /** « Au prochain arrêt, je mets quoi comme pneus ? » : choix de la prochaine gomme (jamais un rappel du carburant). */
+    NEXT_TYRE,
 }
 
 /** Événements de l'entrée vocale (mot de réveil puis phrase du pilote). */

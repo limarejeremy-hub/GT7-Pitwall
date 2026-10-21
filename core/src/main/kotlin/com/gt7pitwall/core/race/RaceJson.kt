@@ -105,7 +105,9 @@ object RaceJson {
                     .put("tyreAge", l.tyreAge ?: -1).put("tyreCompound", l.tyreCompound?.name ?: "").put("tyreCertain", l.tyreCertain)
                     .put("tcs", l.tcsShare?.toDouble() ?: -1.0).put("lockups", l.lockups ?: -1).put("wheelspins", l.wheelspins ?: -1)
                     .put("frontEvents", l.frontEvents ?: -1).put("rearEvents", l.rearEvents ?: -1)
-                    .put("wheelTemps", l.wheelTemps?.let { w -> JSONArray(w.map { it.toDouble() }) } ?: JSONArray()),
+                    .put("wheelTemps", l.wheelTemps?.let { w -> JSONArray(w.map { it.toDouble() }) } ?: JSONArray())
+                    .put("tyreAgeCertain", l.tyreAgeCertain).put("pitLane", l.pitLane)
+                    .put("kerbShare", l.kerbShare?.toDouble() ?: -1.0).put("offTrack", l.offTrackEvents ?: -1),
             )
         }
         val stops = JSONArray()
@@ -168,6 +170,10 @@ object RaceJson {
                     tyreAge = l.optInt("tyreAge", -1).takeIf { it >= 0 },
                     tyreCompound = TyreCompound.parseCodes(l.optString("tyreCompound", "")).firstOrNull(),
                     tyreCertain = l.optBoolean("tyreCertain", true),
+                    tyreAgeCertain = l.optBoolean("tyreAgeCertain", l.optBoolean("tyreCertain", true)),
+                    pitLane = l.optBoolean("pitLane", false),
+                    kerbShare = floatOrNull(l, "kerbShare"),
+                    offTrackEvents = l.optInt("offTrack", -1).takeIf { it >= 0 },
                     tcsShare = floatOrNull(l, "tcs"),
                     lockups = l.optInt("lockups", -1).takeIf { it >= 0 },
                     wheelspins = l.optInt("wheelspins", -1).takeIf { it >= 0 },

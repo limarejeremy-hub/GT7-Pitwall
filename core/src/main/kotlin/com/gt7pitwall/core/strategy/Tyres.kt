@@ -19,8 +19,8 @@ enum class TyreCompound(val family: Family, val hardness: Hardness?, val spoken:
     D(Family.OTHER, null, "terre"),
     ;
 
-    enum class Family { COMFORT, SPORT, RACING, WET, OTHER }
-    enum class Hardness { HARD, MEDIUM, SOFT }
+    enum class Family(val spoken: String) { COMFORT("confort"), SPORT("sport"), RACING("course"), WET("pluie"), OTHER("autre") }
+    enum class Hardness(val spoken: String) { HARD("durs"), MEDIUM("mediums"), SOFT("tendres") }
 
     companion object {
         /** "RH|RM", "RH, RM", "rh rm" → {RH, RM}. Les codes inconnus sont ignorés. */
@@ -36,28 +36,46 @@ enum class TyreCompound(val family: Family, val hardness: Hardness?, val spoken:
          * "tendres course", "intermediaires". Sans famille précisée, on ne choisit que si le
          * règlement ne laisse qu'une possibilité ; sinon null (l'ingénieur demande de préciser).
          */
-        fun fromSpeech(t: String, allowed: Set<TyreCompound>, required: Set<TyreCompound>): TyreCompound? {
+        fun fromSpeech(
+            t: String,
+            allowed: Set<TyreCompound>,
+            required: Set<TyreCompound>,
+            /**
+             * Le règlement a été confirmé par le pilote. Sinon il ne lève jamais l'ambiguïté : course réelle du 21/10,
+             * « pneus tendres » compris « confort tendres » parce qu'un règlement non confirmé n'autorisait que CS en
+             * tendres, alors que le pilote avait monté des course tendres.
+             */
+            rulesConfirmed: Boolean = true,
+        ): TyreCompound? {
             entries.firstOrNull { Regex("(^|\\s)${it.name.lowercase()}($|\\s)").containsMatchIn(t) && it != D }?.let { return it }
             if (Regex("intermediaire").containsMatchIn(t)) return IM
             if (Regex("(pneus? |gommes? )(pluie|wet|mouille)").containsMatchIn(t) || Regex("(^|\\s)wet($|\\s)").containsMatchIn(t)) return W
-            val hardness = when {
-                Regex("(^|\\s)(durs?|dures?|hard)($|\\s)").containsMatchIn(t) -> Hardness.HARD
-                Regex("(^|\\s)(mediums?|moyens?|moyennes?)($|\\s)").containsMatchIn(t) -> Hardness.MEDIUM
-                Regex("(^|\\s)(tendres?|softs?)($|\\s)").containsMatchIn(t) -> Hardness.SOFT
-                else -> return null
-            }
-            val family = when {
-                // « cause » : erreur réelle de reconnaissance de « course » (« je suis en cause dur »).
-                Regex("(^|\\s)(course|cause|racing|competition)($|\\s)").containsMatchIn(t) -> Family.RACING
-                Regex("(^|\\s)sports?($|\\s)").containsMatchIn(t) -> Family.SPORT
-                Regex("(^|\\s)confort($|\\s)").containsMatchIn(t) -> Family.COMFORT
-                else -> null
-            }
+            val hardness = hardnessIn(t) ?: return null
+            val family = familyIn(t)
             val matching = entries.filter { it.hardness == hardness && (family == null || it.family == family) }
             if (matching.size == 1) return matching[0]
-            // Famille non dite : le règlement doit lever l'ambiguïté.
+            if (!rulesConfirmed) return null
+            // Famille non dite : seul un règlement confirmé peut lever l'ambiguïté.
             val pool = (allowed + required).filter { it in matching }.distinct()
             return pool.singleOrNull()
         }
+
+        fun hardnessIn(t: String): Hardness? = when {
+            Regex("(^|\\s)(durs?|dures?|hard)($|\\s)").containsMatchIn(t) -> Hardness.HARD
+            Regex("(^|\\s)(mediums?|moyens?|moyennes?)($|\\s)").containsMatchIn(t) -> Hardness.MEDIUM
+            Regex("(^|\\s)(tendres?|softs?)($|\\s)").containsMatchIn(t) -> Hardness.SOFT
+            else -> null
+        }
+
+        fun familyIn(t: String): Family? = when {
+            // « cause » : erreur réelle de reconnaissance de « course » (« je suis en cause dur »).
+            Regex("(^|\\s)(course|cause|racing|competition)($|\\s)").containsMatchIn(t) -> Family.RACING
+            Regex("(^|\\s)sports?($|\\s)").containsMatchIn(t) -> Family.SPORT
+            Regex("(^|\\s)confort($|\\s)").containsMatchIn(t) -> Family.COMFORT
+            else -> null
+        }
+
+        /** Gomme d'une famille et d'une dureté, s'il en existe une. */
+        fun of(family: Family, hardness: Hardness): TyreCompound? = entries.firstOrNull { it.family == family && it.hardness == hardness }
     }
 }

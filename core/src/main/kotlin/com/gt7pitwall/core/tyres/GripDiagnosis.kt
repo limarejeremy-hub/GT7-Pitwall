@@ -69,7 +69,8 @@ object GripDiagnosis {
             return GripReport(GripLevel.INSUFFICIENT, declared = declared, alternatives = listOf("piste mouillée : comparaison suspendue"))
         }
         val clean = laps.filter {
-            it.lapNumber >= ctx.startLap && it.lapNumber > 1 && it.lapNumber !in ctx.excludedLaps && !it.refuelled &&
+            it.lapNumber >= ctx.startLap && it.lapNumber > 1 && it.lapNumber !in ctx.excludedLaps && !it.refuelled && !it.pitLane &&
+                (it.offTrackEvents ?: 0) == 0 &&
                 (it.timeMs ?: 0) > 0 && it.tcsShare != null && it.lockups != null && it.wheelspins != null
         }.sortedBy { it.lapNumber }
         if (clean.size < MIN_LAPS) {

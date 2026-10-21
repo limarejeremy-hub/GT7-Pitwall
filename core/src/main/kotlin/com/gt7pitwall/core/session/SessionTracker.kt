@@ -36,6 +36,16 @@ data class LapRecord(
     val rearLockups: Int? = null,
     val frontWheelspins: Int? = null,
     val rearWheelspins: Int? = null,
+    /** Carburant à bord au passage de la ligne qui termine le tour (mesuré). */
+    val fuelAfter: Float? = null,
+    /**
+     * Le tour a commencé dans la voie des stands (sortie après un arrêt à cheval sur la ligne) : sa consommation est
+     * mesurée mais atypique, elle est exclue des moyennes.
+     */
+    val pitLane: Boolean = false,
+    /** Format C : part du tour sur un vibreur et sorties de piste mesurées, null sans donnée de surface. */
+    val kerbShare: Float? = null,
+    val offTrackEvents: Int? = null,
 )
 
 sealed interface SessionEvent {
@@ -81,7 +91,7 @@ data class SessionSnapshot(
     val bestRecordedLapMs: Int? get() = laps.mapNotNull { it.timeMs }.filter { it > 0 }.minOrNull()
 
     /** Consommations mesurées sur des tours complets sans ravitaillement. */
-    val fuelSamples: List<Float> get() = laps.mapNotNull { it.fuelUsed }.filter { it > ZERO_FUEL }
+    val fuelSamples: List<Float> get() = laps.filter { !it.pitLane }.mapNotNull { it.fuelUsed }.filter { it > ZERO_FUEL }
 
     /** Tours complets mesurés où le niveau n'a pas baissé (épreuve sans consommation). */
     val zeroFuelLaps: Int get() = laps.count { it.fuelUsed != null && it.fuelUsed <= ZERO_FUEL }
@@ -106,6 +116,7 @@ class SessionTracker(
     private val laps = mutableListOf<LapRecord>()
     private var fuelAtLapStart: Float? = null
     private var refuelledThisLap = false
+    private var lapStartedInPit = false
     private var pending: PendingLap? = null
     private var gridAnnounced = false
     private var trace = SectorTrace()
@@ -126,6 +137,8 @@ class SessionTracker(
         val finalLapStarts: Int?,
         val finishesRace: Int?,
         val trace: SectorTrace,
+        val fuelAfter: Float? = null,
+        val pitLane: Boolean = false,
         var waited: Int = 0,
     )
 
@@ -148,8 +161,11 @@ class SessionTracker(
         // Après une remise à zéro, le paquet précédent appartient à l'ancienne session : on ne compare pas.
         val before = if (resetNow) null else prev
         if (before != null) {
-            // Hausse cumulée : un ravitaillement lent peut monter de moins de [refuelThreshold] par paquet.
-            if (fuelRise.update(p.fuelLevel - before.fuelLevel) > refuelThreshold) {
+            // Hausse cumulée : un ravitaillement lent peut monter de moins de [refuelThreshold] par paquet. Seule une hausse
+            // en cours compte : après le plein, le niveau reste stable au stand, et le cumul ne doit pas marquer le tour
+            // suivant comme ravitaillé (course réelle du 21/10 : plein au tour 6, tour 7 compté « ravitaillé » à tort).
+            val delta = p.fuelLevel - before.fuelLevel
+            if (fuelRise.update(delta) > refuelThreshold && delta > FuelRise.NOISE) {
                 if (!refuelledThisLap) events += SessionEvent.RefuelDetected
                 refuelledThisLap = true
             }
@@ -177,6 +193,8 @@ class SessionTracker(
                         lastLapMsBefore = before.lastLapMs,
                         fuelUsed = used?.takeIf { it >= 0f },
                         refuelled = refuelledThisLap,
+                        fuelAfter = p.fuelLevel,
+                        pitLane = lapStartedInPit,
                         finalLapStarts = p.currentLap.takeIf { p.totalLaps > 0 && it == p.totalLaps },
                         finishesRace = p.totalLaps.takeIf { it > 0 && completed == it },
                     )
@@ -185,6 +203,7 @@ class SessionTracker(
                 }
                 fuelAtLapStart = p.fuelLevel
                 refuelledThisLap = false
+                lapStartedInPit = pitDetector.inVisit
                 trace = SectorTrace().also { it.startLap(p) }
             }
         }
@@ -237,6 +256,10 @@ class SessionTracker(
             frontWheelspins = if (complete) pl.trace.wheelspinsByAxle[0] else null,
             rearWheelspins = if (complete) pl.trace.wheelspinsByAxle[1] else null,
             distanceM = if (complete) pl.trace.lapDistance else null,
+            fuelAfter = pl.fuelAfter,
+            pitLane = pl.pitLane,
+            kerbShare = if (complete) pl.trace.kerbShare else null,
+            offTrackEvents = if (complete) pl.trace.offTracks else null,
         )
         // La carte suit le meilleur tour complet (ou le premier disponible).
         if (complete && timeMs != null && (outlineLapMs == null || timeMs < outlineLapMs!!)) {
@@ -256,6 +279,7 @@ class SessionTracker(
         laps.clear()
         fuelAtLapStart = null
         refuelledThisLap = false
+        lapStartedInPit = false
         pending = null
         gridAnnounced = false
         trace = SectorTrace()

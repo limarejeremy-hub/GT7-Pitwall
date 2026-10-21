@@ -148,6 +148,10 @@ object DriverCommandParser {
         val changeWords = has(t, "changer", "change", "changement", "remplacer", "neufs")
         val asking = has(t, "quand", "dois", "doit", "faut", "est ce", "est-ce", "prochain", "combien", "tiennent encore", "?")
         val declared = has(t, "j'ai change", "jai change", "ai change", "pneus changes", "j'ai mis", "j'ai monte")
+        // Course réelle du 21/10 : « au prochain arrêt je mets quoi comme type de pneus ? » recevait le plan carburant.
+        val choosing = has(t, "prochain", "mettre", "mets", "monter", "monte", "choisir", "choix", "conseil")
+        val which = has(t, "quoi", "quel", "quelle", "lesquel", "conseil", "type de", "?")
+        if (tyreWords && choosing && which && !declared) return DriverCommand.Ask(DriverQuery.NEXT_TYRE)
         if (tyreWords && changeWords && asking && !declared) return DriverCommand.Ask(DriverQuery.TYRE_CHANGE)
         tyresIn(t)?.let { tyres ->
             val stop = if (has(t, "annule", "pas fait", "pas d'arret")) null else stopIn(t)
@@ -260,7 +264,10 @@ object DriverCommandParser {
         }
         // « Je suis en durs », « je roule en mediums », « je commence en course dure » : les pneus montés en ce moment.
         val current = has(t, "je suis en ", "je roule en ", "je roule avec", "je commence en ", "je commence avec", "on commence en ", "j'ai les ")
-        val context = current || has(t, "mis ", "monte", "chausse", "pneus", "pneu ", "gomme", "depart", "je pars", "change")
+        // « Course tendres », « confort durs » : famille et dureté ensemble désignent une gomme (course réelle du 21/10,
+        // où « course tendres » était compris comme une question sur la course).
+        val named = Regex("(^|\\s)(course|racing|sport|confort)s? (durs?|dures?|mediums?|moyens?|moyennes?|tendres?)($|\\s)").containsMatchIn(t)
+        val context = current || named || has(t, "mis ", "monte", "chausse", "pneus", "pneu ", "gomme", "depart", "je pars", "change")
         if (!context) return null
         return DriverCommand.Tyres(t, atStart = has(t, "depart", "je pars", "on part", "je commence", "on commence"), current = current)
     }
