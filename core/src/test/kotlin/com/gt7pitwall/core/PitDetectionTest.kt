@@ -147,7 +147,11 @@ class PitDetectionTest {
         assertTrue("il manque course durs" in status, status)
         assertFalse("respect" in status)
 
-        s.say("j'ai mis les durs") // famille déduite : seules les gommes course sont autorisées
+        // Règlement non confirmé : il ne choisit jamais la famille. Hypothèse : celle des pneus actuels (course).
+        s.say("j'ai mis les durs")
+        assertTrue("course, sport ou confort ? Course durs, comme tes pneus actuels ?" in s.lastAnswer, s.lastAnswer)
+        assertEquals(setOf(TyreCompound.RH), s.controller.missingTyres)
+        s.say("oui")
         assertTrue(s.controller.missingTyres.isEmpty())
         assertTrue(s.lastAnswer.contains("Gommes imposées : toutes déclarées"), s.lastAnswer)
         assertFalse(s.controller.obligationsSentence().contains("respect"))
@@ -157,7 +161,8 @@ class PitDetectionTest {
     fun ambiguousTyreNameIsNotGuessed() {
         val s = sim(RaceRules(requiredTyres = setOf(TyreCompound.RH, TyreCompound.SH)))
         s.say("j'ai mis les durs")
-        assertTrue(s.lastAnswer.startsWith("Précise la gomme"), s.lastAnswer)
+        // Famille inconnue et pas de pneus actuels pour hypothèse : l'ingénieur demande, rien n'est noté.
+        assertEquals("Durs : course, sport ou confort ?", s.lastAnswer)
         assertTrue(s.controller.ledger.changes.isEmpty())
     }
 

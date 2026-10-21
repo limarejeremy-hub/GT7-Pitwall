@@ -63,6 +63,23 @@ class SectorTrace(private val sectorCount: Int = DEFAULT_SECTORS) {
 
     /** Vrai si le tour a été suivi depuis la ligne sans interruption. */
     val isComplete: Boolean get() = valid
+
+    /**
+     * Format C : paquets où la surface est connue, dont avec au moins une roue sur un vibreur, et sorties de piste
+     * (au moins deux roues hors asphalte et hors vibreur pendant [OFF_TRACK_MIN_PACKETS] paquets de suite). Un simple
+     * contact avec un vibreur n'est jamais une sortie ; un échantillon isolé non plus.
+     */
+    private var surfacePackets = 0
+    private var kerbPackets = 0
+    private var offState = 0
+    var offTrackEvents = 0
+        private set
+
+    /** Part du tour avec une roue sur un vibreur (0..1), null sans donnée de surface (formats A, B, ~). */
+    val kerbShare: Float? get() = if (surfacePackets > 0) kerbPackets.toFloat() / surfacePackets else null
+
+    /** Sorties de piste mesurées, null sans donnée de surface. */
+    val offTracks: Int? get() = if (surfacePackets > 0) offTrackEvents else null
     private var distance = 0f
     private var tick = 0
     private var last: TelemetryPacket? = null
@@ -92,6 +109,10 @@ class SectorTrace(private val sectorCount: Int = DEFAULT_SECTORS) {
         axleSpin.fill(0)
         lockupsByAxle.fill(0)
         wheelspinsByAxle.fill(0)
+        surfacePackets = 0
+        kerbPackets = 0
+        offState = 0
+        offTrackEvents = 0
         record(p)
     }
 
@@ -129,6 +150,15 @@ class SectorTrace(private val sectorCount: Int = DEFAULT_SECTORS) {
         tyreTempSum += p.tyreTemps.toList().average()
         p.tyreTemps.toList().forEachIndexed { i, t -> wheelTempSum[i] += t }
         countSlip(p)
+        countSurface(p)
+    }
+
+    private fun countSurface(p: TelemetryPacket) {
+        val s = p.surfaces ?: return
+        surfacePackets++
+        if (s.count(com.gt7pitwall.core.telemetry.Surface.KERB) > 0) kerbPackets++
+        offState = if (s.wheelsOff >= 2) offState + 1 else 0
+        if (offState == OFF_TRACK_MIN_PACKETS) offTrackEvents++
     }
 
     /** Compte les épisodes de blocage / patinage (vitesse des roues comparée à celle de la voiture). */
@@ -203,6 +233,9 @@ class SectorTrace(private val sectorCount: Int = DEFAULT_SECTORS) {
     }
 
     companion object {
+        /** 0,25 s à au moins deux roues hors piste : en dessous, c'est un échantillon isolé ou un vibreur large. */
+        const val OFF_TRACK_MIN_PACKETS = 15
+
         const val DEFAULT_SECTORS = 3
 
         /** ~600 km/h à 60 paquets/s. */

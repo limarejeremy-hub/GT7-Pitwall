@@ -255,7 +255,7 @@ class TyreStrategyTest {
     fun aStintWithUnknownTyresAfterAStopIsNotLearned() {
         val h = history(1).let { r ->
             r.copy(
-                laps = r.laps.map { if (it.lap > 10) it.copy(tyreCertain = false) else it },
+                laps = r.laps.map { if (it.lap > 10) it.copy(tyreCertain = false, tyreAgeCertain = false) else it },
                 stops = listOf(StopEntry(10, StopEvidence.REFUEL, 30f, TyreService.UNKNOWN)),
                 tyres = emptyList(),
             )

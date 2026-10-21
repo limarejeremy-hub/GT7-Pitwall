@@ -183,6 +183,9 @@ class RaceControllerTest {
         s.stand(1f)
         assertTrue(s.controller.plan!!.startTyreUnknown)
         s.say("je pars en mediums")
+        // Règlement non confirmé et aucun pneu connu : la famille est demandée, puis donnée d'un seul mot.
+        assertEquals(null, store.rules.startTyre)
+        s.say("course")
         assertEquals(TyreCompound.RM, store.rules.startTyre)
         s.start()
         s.driveLaps(1)

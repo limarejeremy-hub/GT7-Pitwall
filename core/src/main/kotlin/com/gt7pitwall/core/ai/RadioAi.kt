@@ -97,6 +97,10 @@ object RadioAi {
         }
         val cmd = DriverCommandParser.parse(clean)
         // « oui » / « non » : réponse à l'ingénieur s'il a posé une question, sinon à Gemini pendant la conversation.
+        // Choix de la prochaine gomme : le moteur répond avec les faits de la course (vocabulaire radio ou phrase libre).
+        fun nextTyre(c: DriverCommand?) = c is DriverCommand.Ask && c.query == com.gt7pitwall.core.radio.DriverQuery.NEXT_TYRE
+        if (nextTyre(cmd)) return Route.Parser(clean)
+        if (nextTyre(DriverCommandParser.parse(question))) return Route.Parser(question)
         val yesNo = cmd == DriverCommand.Yes || cmd == DriverCommand.No
         if (yesNo && inConversation && !engineerAwaitsAnswer) return Route.Ai(question)
         val statefulCommand = cmd != null && cmd !is DriverCommand.Ask && cmd != DriverCommand.Repeat

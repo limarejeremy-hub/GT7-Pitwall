@@ -117,6 +117,8 @@ data class GateContext(
     val noStopYet: Boolean = true,
     /** Position actuellement retenue. */
     val position: Int? = null,
+    /** Course finie : classement final (mesuré par GT7 ou dernière place connue). Plus aucune position n'est déclarable. */
+    val finalPosition: Int? = null,
 )
 
 /** Décision avant d'appliquer une commande vocale. */
@@ -176,6 +178,15 @@ object CommandGate {
             return Vetting.Execute(command)
         }
         if (!sensitive(command)) return Vetting.Execute(command)
+        // Course réelle du 21/10 : arrivée P1 mesurée, puis « douzième » mal reconnu devenait « Tu es P12, je le note ? ».
+        if (ctx.finalPosition != null && (command is DriverCommand.ReportPosition || command == DriverCommand.ReportLast ||
+                command == DriverCommand.Overtook || command == DriverCommand.Overtaken || command is DriverCommand.SeveralPlaces)
+        ) {
+            return Vetting.Discuss(
+                StatementGuard.mode(text),
+                "Course terminée : tu as fini P${ctx.finalPosition}. Je ne change plus le classement.",
+            )
+        }
         val mode = StatementGuard.mode(text, ignoreRuleNegations = command is DriverCommand.Rule || command == DriverCommand.CancelStop)
         val t = DriverCommandParser.normalize(text)
         val garbled = "[unk]" in t

@@ -103,9 +103,12 @@ class SessionJournal(
         seq = 0
         live.clear()
         record(JournalType.SESSION, JournalSource.SYSTEM, text, details = details)
-        // La radio des menus rejoint la course qui commence, dans l'ordre et marquée comme antérieure.
+        // La radio des menus rejoint la course qui commence, dans l'ordre et marquée comme antérieure. Au-delà de
+        // [PENDING_MAX_AGE_MS], elle appartient à un autre moment (menus, session abandonnée) et n'est pas rattachée.
+        val now = clock()
         while (pending.isNotEmpty()) {
             val e = pending.removeFirst()
+            if (now - e.timeMs > PENDING_MAX_AGE_MS) continue
             write(e.copy(seq = ++seq, sessionId = id, details = e.details + ("avant_session" to "oui")))
         }
     }
@@ -160,6 +163,7 @@ class SessionJournal(
 
     companion object {
         const val MAX_PENDING = 200
+        const val PENDING_MAX_AGE_MS = 10 * 60_000L
         const val MAX_LIVE = 2_000
         const val MAX_TEXT = 2_000
 
