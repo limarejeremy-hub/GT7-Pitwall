@@ -117,8 +117,9 @@ class TelemetryClient(
 
     /**
      * Essaie chaque octet de [heartbeats] tour à tour : silence jusqu'à l'arrêt du flux, puis heartbeat pendant
-     * [Config.scanProbeMs]. La télémétrie normale est interrompue pendant la sonde (à lancer dans les menus) puis
-     * reprend avec le format préféré. N'utilise que l'interface publique de GT7 (un octet UDP vers le port 33739).
+     * [Config.scanProbeMs]. La télémétrie normale est interrompue pendant la sonde (à lancer dans les menus) : les
+     * paquets reçus ne servent qu'au diagnostic et ne sont publiés nulle part. Ensuite, ou après [cancelFormatScan],
+     * la télémétrie reprend avec le format préféré, après l'arrêt du dernier flux sondé. N'utilise que l'interface publique de GT7 (un octet UDP vers le port 33739).
      */
     fun startFormatScan(heartbeats: List<Char> = DEFAULT_SCAN) {
         scanCancel = false
@@ -177,6 +178,10 @@ class TelemetryClient(
     }
 
     fun stop() {
+        // Une sonde en cours est abandonnée avec le client : son état ne doit pas rester « en cours ».
+        scanRequest = null
+        scanCancel = false
+        if (_scan.value.running) _scan.value = _scan.value.copy(running = false, current = null)
         job?.cancel()
         job = null
         socket?.close()
@@ -301,11 +306,17 @@ class TelemetryClient(
                 }
 
                 lastDatagramAt = clock()
-                scanRun?.takeIf { it.probing }?.let { r ->
-                    r.count++
-                    val seen = (r.sizes[datagram.length] ?: 0) + 1
-                    r.sizes[datagram.length] = seen
-                    if (seen <= 3) r.keys += GT7Crypto.keysThatDecrypt(buffer, datagram.length)
+                val probing = scanRun
+                if (probing != null) {
+                    // Pendant la sonde, les paquets ne servent qu'à son diagnostic : rien n'est publié vers le moteur de
+                    // course, la stratégie, la radio ni Gap Hunter, et le statut de connexion n'est pas modifié.
+                    if (probing.probing) {
+                        probing.count++
+                        val seen = (probing.sizes[datagram.length] ?: 0) + 1
+                        probing.sizes[datagram.length] = seen
+                        if (seen <= 3) probing.keys += GT7Crypto.keysThatDecrypt(buffer, datagram.length)
+                    }
+                    continue
                 }
                 val plain = GT7Crypto.decrypt(buffer, datagram.length)
                 val packet = plain?.let(TelemetryParser::parseDecrypted)

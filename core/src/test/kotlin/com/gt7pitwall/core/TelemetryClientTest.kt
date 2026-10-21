@@ -10,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
@@ -149,6 +150,10 @@ class TelemetryClientTest {
             config(ps5, fallbackMs = 300).copy(scanSilenceMs = 300, scanMaxSilenceMs = 1_500, scanProbeMs = 600, scanHeartbeatMs = 200),
         )
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val emitted = java.util.Collections.synchronizedList(mutableListOf<PacketFormat>())
+        val tapped = java.util.Collections.synchronizedList(mutableListOf<Int>())
+        client.rawTap = TelemetryClient.RawTap { _, size, _ -> tapped += size }
+        scope.launch(start = CoroutineStart.UNDISPATCHED) { client.packets.collect { emitted += it.format } }
         try {
             client.start(scope, "127.0.0.1")
             withTimeout(5_000) { client.status.first { it is ConnectionStatus.Receiving } }
@@ -161,8 +166,64 @@ class TelemetryClientTest {
             assertTrue(d.packets >= 6 && d.sizes.keys == setOf(400) && PacketFormat.C in d.keys)
             assertEquals(0, q.packets)
             assertEquals(emptyList(), q.keys)
+            // Isolation : les paquets A et « D » reçus pendant la sonde n'ont été publiés ni au moteur ni à Gap Hunter.
+            val before = emitted.size
+            assertEquals(setOf(PacketFormat.TILDE), synchronized(emitted) { emitted.toSet() })
+            assertEquals(setOf(344), synchronized(tapped) { tapped.toSet() })
             // Après la sonde, la télémétrie normale reprend.
-            withTimeout(10_000) { client.status.first { it is ConnectionStatus.Receiving && it.format == PacketFormat.TILDE } }
+            withTimeout(10_000) { while (emitted.size <= before) kotlinx.coroutines.delay(50) }
+            assertEquals(setOf(PacketFormat.TILDE), synchronized(emitted) { emitted.toSet() })
+        } finally {
+            client.stop()
+            scope.cancel()
+            ps5.close()
+        }
+    }
+
+    @Test
+    fun cancelledScanStopsAndNormalTelemetryResumes() = runBlocking<Unit> {
+        val ps5 = FakePs5(setOf(PacketFormat.A, PacketFormat.TILDE))
+        val client = TelemetryClient(
+            config(ps5, fallbackMs = 300).copy(scanSilenceMs = 300, scanMaxSilenceMs = 1_500, scanProbeMs = 5_000, scanHeartbeatMs = 200),
+        )
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val emitted = java.util.Collections.synchronizedList(mutableListOf<PacketFormat>())
+        scope.launch(start = CoroutineStart.UNDISPATCHED) { client.packets.collect { emitted += it.format } }
+        try {
+            client.start(scope, "127.0.0.1")
+            withTimeout(5_000) { client.status.first { it is ConnectionStatus.Receiving } }
+            client.startFormatScan(listOf('A', 'B', 'D', 'E'))
+            withTimeout(5_000) { client.scan.first { it.current == 'A' } }
+            kotlinx.coroutines.delay(500) // la PS5 répond en format A pendant la sonde
+            client.cancelFormatScan()
+            val done = withTimeout(10_000) { client.scan.first { !it.running } }
+            assertTrue(done.results.size < 4) // arrêtée avant la fin
+            assertTrue(done.results.first().packets > 0)
+            val before = emitted.size
+            withTimeout(10_000) { while (emitted.size <= before) kotlinx.coroutines.delay(50) }
+            assertEquals(setOf(PacketFormat.TILDE), synchronized(emitted) { emitted.toSet() })
+            // Une nouvelle sonde reste possible après une annulation.
+            client.startFormatScan(listOf('Q'))
+            withTimeout(10_000) { client.scan.first { !it.running && it.results.size == 1 && it.results.single().heartbeat == 'Q' } }
+        } finally {
+            client.stop()
+            scope.cancel()
+            ps5.close()
+        }
+    }
+
+    @Test
+    fun stoppingTheClientEndsAPendingScan() = runBlocking<Unit> {
+        val ps5 = FakePs5(setOf(PacketFormat.TILDE))
+        val client = TelemetryClient(config(ps5, fallbackMs = 300).copy(scanSilenceMs = 300, scanProbeMs = 5_000))
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            client.start(scope, "127.0.0.1")
+            withTimeout(5_000) { client.status.first { it is ConnectionStatus.Receiving } }
+            client.startFormatScan(listOf('A', 'B'))
+            withTimeout(5_000) { client.scan.first { it.running } }
+            client.stop()
+            assertTrue(!client.scan.value.running)
         } finally {
             client.stop()
             scope.cancel()

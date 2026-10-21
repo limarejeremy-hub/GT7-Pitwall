@@ -1569,10 +1569,15 @@ private fun GapHunterCard(engine: PitwallEngine) {
         if (s.invalidBySize.isNotEmpty()) {
             DiagLine("Tailles illisibles", s.invalidBySize.entries.joinToString { "${it.key} o × ${it.value}" }, PitColors.Yellow)
         }
-        DiagLine("Événements", s.events.entries.joinToString { "${it.key.label} ${it.value}" })
-        if (s.candidates.isEmpty()) {
-            DiagLine("Pistes", "aucune")
-        } else {
+        s.events.forEach { (kind, n) ->
+            val verdict = s.verdicts[kind]
+            DiagLine(
+                "${kind.label} ($n)",
+                verdict?.label ?: "—",
+                if (verdict == com.gt7pitwall.core.telemetry.GapHunter.Verdict.CANDIDATE) PitColors.Yellow else PitColors.Muted,
+            )
+        }
+        if (s.candidates.isNotEmpty()) {
             s.candidates.forEach { c ->
                 DiagLine(
                     "Piste 0x%03X".format(c.field.offset),
@@ -1581,10 +1586,16 @@ private fun GapHunterCard(engine: PitwallEngine) {
                 )
             }
         }
+        s.hudMarks.takeLast(3).forEach { m ->
+            DiagLine("« ${m.label} »", m.coincidences.ifEmpty { listOf("aucun mot proche") }.joinToString(), PitColors.Muted)
+        }
         DiagLine("Journal", "${s.lines} lignes" + if (s.dropped > 0) ", ${s.dropped} retirées" else "")
+        if (!s.enabled) {
+            Text("Active l'exploration pour poser des repères.", style = MaterialTheme.typography.bodySmall, color = PitColors.Muted)
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = { mark("dépassement fait") }, modifier = Modifier.weight(1f)) { Text("J'ai doublé") }
-            OutlinedButton(onClick = { mark("je me suis fait doubler") }, modifier = Modifier.weight(1f)) { Text("Doublé") }
+            OutlinedButton(onClick = { mark("dépassement fait") }, enabled = s.enabled, modifier = Modifier.weight(1f)) { Text("J'ai doublé") }
+            OutlinedButton(onClick = { mark("je me suis fait doubler") }, enabled = s.enabled, modifier = Modifier.weight(1f)) { Text("Doublé") }
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedTextField(
@@ -1595,7 +1606,7 @@ private fun GapHunterCard(engine: PitwallEngine) {
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                 modifier = Modifier.weight(1f),
             )
-            Button(onClick = { mark("HUD $note"); note = "" }, enabled = note.isNotBlank()) { Text("Noter") }
+            Button(onClick = { mark("HUD $note"); note = "" }, enabled = s.enabled && note.isNotBlank()) { Text("Noter") }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = { shareExport(context, engine.gapHunter.export()) }, modifier = Modifier.weight(1f)) { Text("Exporter") }

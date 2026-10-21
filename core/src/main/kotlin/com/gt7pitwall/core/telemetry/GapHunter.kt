@@ -66,6 +66,19 @@ class GapHunter(
         val chance: Double,
     )
 
+    /** Ce que permettent de dire les événements d'un type : jamais plus que les données. */
+    enum class Verdict(val label: String) {
+        INSUFFICIENT("événements insuffisants pour conclure"),
+        NO_CORRELATION("aucune corrélation détectée (ce n'est pas une preuve d'absence)"),
+        CANDIDATE("corrélation potentielle, non validée"),
+    }
+
+    /**
+     * Repère « écart lu sur le HUD » : la valeur notée par le pilote, et les mots inconnus ou incertains (non constants)
+     * dont la valeur à cet instant lui ressemble numériquement. Une coïncidence n'est pas une preuve.
+     */
+    data class HudMark(val timeMs: Long, val label: String, val value: Double?, val coincidences: List<String>)
+
     data class Summary(
         val enabled: Boolean,
         val frames: Long,
@@ -74,6 +87,8 @@ class GapHunter(
         val invalidBySize: Map<Int, Long>,
         val events: Map<EventKind, Int>,
         val candidates: List<Candidate>,
+        val verdicts: Map<EventKind, Verdict>,
+        val hudMarks: List<HudMark>,
         val lines: Int,
         val dropped: Int,
         val recent: List<String>,
@@ -173,11 +188,49 @@ class GapHunter(
         else if (nowMs - lastSampleAt >= sampleEveryMs) log(nowMs, lap, raw84, raw86, state, "échantillon", b)
     }
 
-    /** Repère posé par le pilote (dépassement, écart lu sur le HUD…), pour comparer avec le journal. */
+    private val hudMarks = ArrayDeque<HudMark>()
+
+    /**
+     * Repère posé par le pilote (dépassement, écart lu sur le HUD…), pour comparer avec le journal. Ignoré (renvoie
+     * false) quand l'exploration est désactivée : un repère sans paquets autour ne peut rien comparer. Le texte est
+     * nettoyé (séparateurs, retours à la ligne, caractères de contrôle) pour ne jamais corrompre l'export.
+     */
     @Synchronized
-    fun mark(label: String, nowMs: Long) {
+    fun mark(label: String, nowMs: Long): Boolean {
+        if (!enabled) return false
+        val clean = sanitize(label)
+        if (clean.isEmpty()) return false
         if (firstAt < 0) firstAt = nowMs
-        addLine("${stamp(nowMs)};${lastLap ?: ""};${last84 ?: ""};;${lastState ?: "aucun paquet"};repère : ${label.take(60)};;;;;;;")
+        addLine("${stamp(nowMs)};${lastLap ?: ""};${last84 ?: ""};;${lastState ?: "aucun paquet"};repère : $clean;;;;;;;")
+        val value = NUMBER.findAll(clean).lastOrNull()?.value?.replace(',', '.')?.toDoubleOrNull()
+        if (value != null && clean.contains("HUD", ignoreCase = true)) {
+            hudMarks.addLast(HudMark(nowMs, clean, value, coincidences(value)))
+            while (hudMarks.size > MAX_HUD_MARKS) hudMarks.removeFirst()
+        }
+        return true
+    }
+
+    /** Mots non constants, inconnus ou incertains, dont la valeur actuelle ressemble à [x] (flottant, ou entier en ms). */
+    private fun coincidences(x: Double): List<String> {
+        if (x == 0.0) return emptyList()
+        val tol = maxOf(kotlin.math.abs(x) * 0.05, 0.05)
+        val n = minOf(lastSize / 4, words)
+        return (0 until n).filter { has[it] && changes[it] > 0 && fieldAt(it * 4).status != Status.KNOWN }.mapNotNull { w ->
+            val f = java.lang.Float.intBitsToFloat(last[w]).toDouble()
+            val ms = last[w] / 1000.0
+            when {
+                f.isFinite() && kotlin.math.abs(kotlin.math.abs(f) - kotlin.math.abs(x)) <= tol -> "0x%03X flottant %.3f".format(w * 4, f)
+                kotlin.math.abs(kotlin.math.abs(ms) - kotlin.math.abs(x)) <= tol -> "0x%03X entier %d (÷1000 = %.3f)".format(w * 4, last[w], ms)
+                else -> null
+            }
+        }
+    }
+
+    @Synchronized
+    fun verdict(kind: EventKind): Verdict = when {
+        eventCount[kind.ordinal] < MIN_EVENTS -> Verdict.INSUFFICIENT
+        candidates().any { it.kind == kind } -> Verdict.CANDIDATE
+        else -> Verdict.NO_CORRELATION
     }
 
     @Synchronized
@@ -192,6 +245,7 @@ class GapHunter(
         firstAt = -1; firstFrameAt = -1; lastFrameAt = 0; lastSampleAt = Long.MIN_VALUE / 2
         last84 = null; lastLap = null; lastState = null; lastSize = 0
         lines.clear(); dropped = 0
+        hudMarks.clear()
     }
 
     @Synchronized
@@ -235,7 +289,8 @@ class GapHunter(
     @Synchronized
     fun summary(recent: Int = 8): Summary = Summary(
         enabled, frames, invalid, bySize.toMap(), invalidBySize.toMap(),
-        EventKind.entries.associateWith { eventCount[it.ordinal] }, candidates(), lines.size, dropped, lines.toList().takeLast(recent),
+        EventKind.entries.associateWith { eventCount[it.ordinal] }, candidates(),
+        EventKind.entries.associateWith { verdict(it) }, hudMarks.toList(), lines.size, dropped, lines.toList().takeLast(recent),
     )
 
     /** Export texte pour une analyse ultérieure (aucune adresse IP, aucun identifiant, aucun son). */
@@ -249,12 +304,23 @@ class GapHunter(
         appendLine("Événements : " + EventKind.entries.joinToString(", ") { "${it.label} ${eventCount[it.ordinal]}" })
         appendLine()
         appendLine("Pistes (mots inconnus ou incertains qui changent autour des événements) :")
+        for (kind in EventKind.entries) {
+            val n = eventCount[kind.ordinal]
+            val v = verdict(kind)
+            val need = if (v == Verdict.INSUFFICIENT) " (il en faut au moins $MIN_EVENTS)" else ""
+            appendLine("  ${kind.label} : $n événement(s) — ${v.label}$need")
+        }
         val cands = candidates()
-        if (cands.isEmpty()) appendLine("  aucune (il faut au moins $MIN_EVENTS événements du même type)")
         for (c in cands) {
             appendLine("  0x%03X %s — %s : %d/%d événements, hasard %.0f %%".format(
                 c.field.offset, c.field.label, c.kind.label, c.eventsWithChange, c.events, c.chance * 100,
             ))
+        }
+        appendLine()
+        appendLine("Repères « écart HUD » et valeurs numériquement proches (coïncidences, pas des preuves) :")
+        if (hudMarks.isEmpty()) appendLine("  aucun repère HUD chiffré")
+        for (m in hudMarks) {
+            appendLine("  ${stamp(m.timeMs)} « ${m.label} » : " + m.coincidences.ifEmpty { listOf("aucun mot proche") }.joinToString(", "))
         }
         appendLine()
         appendLine("offset;statut;champ;forme;échantillons;changements;distincts;min entier;max entier;min flottant;max flottant;dernier (hex)")
@@ -355,6 +421,14 @@ class GapHunter(
         const val MAX_SIZE = GT7Crypto.MAX_LENGTH
         const val DISTINCT_CAP = 32
         const val MIN_EVENTS = 3
+        const val MAX_HUD_MARKS = 50
+        const val MAX_LABEL = 60
+        private val NUMBER = Regex("[-+]?\\d+(?:[.,]\\d+)?")
+
+        /** Texte du pilote sans séparateur « ; », retour à la ligne ni caractère de contrôle, borné. */
+        fun sanitize(label: String): String =
+            label.map { if (it == ';' || it.isISOControl() || it == '\u2028' || it == '\u2029') ' ' else it }.joinToString("")
+                .replace(Regex("\\s+"), " ").trim().take(MAX_LABEL)
         private const val STATE_RACE = "en course"
 
         private fun hex(v: Int) = "%08X".format(v)

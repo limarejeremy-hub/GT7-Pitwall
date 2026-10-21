@@ -254,7 +254,7 @@ blanche **ou** jeu moddé ».
 | 0x15C | C | currentLap signé ou non. Comportement en pause, au départ et au passage de la ligne non documenté. | issue #18 |
 | 0x168 | C | Empattement « gauche » dynamique, ou valeur liée à l'Ackermann. | issue #18 |
 
-**Aucun champ, dans aucun format, ne contient de données sur une autre voiture.** Seule exception de fait : en replay,
+**Aucun champ documenté, dans aucun format, ne décrit une autre voiture**, et notre premier essai PS5 n'en a relié aucun aux dépassements. Ce n'est pas une preuve d'inexistence. Seule exception de fait : en replay,
 le flux décrit la voiture regardée (voir §7).
 
 ---
@@ -431,6 +431,11 @@ Toutes ces expériences se font sur la PS5 du joueur, en lecture seule, sans rie
 - **Drapeau CarOnTrack** : Gap Hunter ne s'en sert pas. Sur notre PS5, il est bien levé en course hors ligne
   (`0x0009`), donc `TyreCoach` et `RadioPacer` restent tels quels.
 - **Premier essai réel (21/10/2026)** : voir [GAP_HUNTER.md](GAP_HUNTER.md), « Résultats PS5 ».
+- **Audit (21/10/2026)** :
+  - la sonde est isolée : aucun paquet sondé ne va au moteur ni à Gap Hunter ;
+  - le rapport distingue « événements insuffisants », « aucune corrélation » et « corrélation potentielle » ;
+  - `announceable()` refuse les horodatages absents ou futurs ;
+  - les repères sont nettoyés, et les écarts lus sur le HUD sont comparés aux mots inconnus (coïncidences seulement).
 
 ## 12. Conclusion
 

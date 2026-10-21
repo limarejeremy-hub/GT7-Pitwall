@@ -31,14 +31,14 @@ class GapHunterTest {
     }
 
     /** 80 s de course synthétique à 60 Hz ; la place change à 10, 25, 40 et 55 s. */
-    private fun race(hunter: GapHunter) {
+    private fun race(hunter: GapHunter, plant: Boolean = true) {
         var pos = 8
         var planted = 0
         val changes = listOf(10_000L, 25_000L, 40_000L, 55_000L)
         var t = 0L
         while (t < 80_000) {
             if (changes.any { t >= it && t - 16 < it }) pos--
-            if (changes.any { t >= it + 200 && t - 16 < it + 200 }) planted++
+            if (plant && changes.any { t >= it + 200 && t - 16 < it + 200 }) planted++
             hunter.onFrame(frame(pos, planted, noise = (t / 16).toInt()), PacketFormat.C.size, 1_000_000 + t)
             t += 16
         }
@@ -54,6 +54,57 @@ class GapHunterTest {
         assertEquals(0, s.frames)
         assertEquals(0, s.invalid)
         assertEquals(0, s.lines)
+        assertFalse(hunter.mark("dépassement fait", 3)) // repère ignoré : rien à comparer
+        assertEquals(0, hunter.summary().lines)
+    }
+
+    @Test
+    fun reportSeparatesTooFewEventsFromNoCorrelationAndCandidates() {
+        val empty = GapHunter().apply { setEnabled(true) }
+        empty.onFrame(frame(5, 0, 0), PacketFormat.C.size, 1)
+        assertEquals(GapHunter.Verdict.INSUFFICIENT, empty.verdict(GapHunter.EventKind.POSITION))
+        assertTrue("événements insuffisants pour conclure (il en faut au moins 3)" in empty.export())
+
+        // Cas du premier essai PS5 : assez d'événements, mais rien ne bouge avec eux.
+        val quiet = GapHunter().apply { setEnabled(true) }
+        race(quiet, plant = false)
+        assertEquals(GapHunter.Verdict.NO_CORRELATION, quiet.verdict(GapHunter.EventKind.POSITION))
+        val text = quiet.export()
+        assertTrue("changement de 0x84 : 4 événement(s) — aucune corrélation détectée (ce n'est pas une preuve d'absence)" in text)
+        assertFalse("il en faut au moins" in text.lines().first { it.contains("changement de 0x84 :") })
+
+        val planted = GapHunter().apply { setEnabled(true) }
+        race(planted)
+        assertEquals(GapHunter.Verdict.CANDIDATE, planted.verdict(GapHunter.EventKind.POSITION))
+        assertTrue("corrélation potentielle, non validée" in planted.export())
+    }
+
+    @Test
+    fun markTextCannotCorruptTheExport() {
+        val hunter = GapHunter().apply { setEnabled(true) }
+        hunter.onFrame(frame(5, 0, 0), PacketFormat.C.size, 1)
+        assertTrue(hunter.mark("HUD devant;1,2\nfaux\r;0x84;", 2))
+        assertFalse(hunter.mark(" \n ; ", 3)) // vide après nettoyage
+        val line = hunter.export().lines().single { "repère" in it }
+        assertTrue("repère : HUD devant 1,2 faux 0x84" in line)
+        assertEquals(12, line.count { it == ';' }) // même nombre de colonnes que l'en-tête
+        assertEquals(60, GapHunter.sanitize("x".repeat(500)).length)
+    }
+
+    @Test
+    fun hudGapMarksListNumericCoincidencesOnly() {
+        val hunter = GapHunter().apply { setEnabled(true) }
+        fun f(v: Float) = frame(5, java.lang.Float.floatToIntBits(v), 7)
+        hunter.onFrame(f(0.4f), PacketFormat.C.size, 1)
+        hunter.onFrame(f(1.21f), PacketFormat.C.size, 2) // mot 0xD4 non constant, proche de 1,2
+        hunter.mark("HUD devant 1,2", 3)
+        hunter.mark("HUD derrière 9,5", 4)
+        val marks = hunter.summary().hudMarks
+        assertEquals(2, marks.size)
+        assertEquals(1.2, marks[0].value)
+        assertEquals(listOf("0x0D4"), marks[0].coincidences.map { it.substringBefore(' ') })
+        assertEquals(emptyList(), marks[1].coincidences)
+        assertTrue("coïncidences, pas des preuves" in hunter.export())
     }
 
     @Test
@@ -117,6 +168,15 @@ class GapHunterTest {
         assertFalse(measured.copy(measuredAtMs = now - 10_000).announceable(now)) // trop ancienne
         assertFalse(measured.copy(kind = OpponentInfo.Kind.ESTIMATED).announceable(now))
         assertFalse(measured.copy(reliability = 0.5).announceable(now))
+        assertFalse(measured.copy(reliability = Double.NaN).announceable(now))
+        assertFalse(measured.copy(reliability = 1.5).announceable(now)) // fiabilité invalide
+        assertFalse(measured.copy(measuredAtMs = 0).announceable(now)) // horodatage absent
+        assertFalse(measured.copy(measuredAtMs = -5).announceable(now))
+        assertFalse(measured.copy(measuredAtMs = now + 2_000).announceable(now)) // daté dans le futur
+        assertFalse(measured.copy(gapMs = null).announceable(now))
+        assertFalse(measured.copy(kind = OpponentInfo.Kind.UNAVAILABLE).announceable(now))
+        assertTrue(measured.copy(measuredAtMs = now).announceable(now))
+        assertEquals(null, measured.copy(measuredAtMs = now + 1).ageMs(now))
         assertEquals(OpponentInfo.Kind.UNAVAILABLE, OpponentInfo(7, null, "test").kind)
     }
 }

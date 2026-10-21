@@ -29,12 +29,19 @@ data class OpponentInfo(
 
     enum class Relation { AHEAD, BEHIND, LEADER, OTHER }
 
-    /** Âge de la valeur. */
-    fun ageMs(nowMs: Long): Long = (nowMs - measuredAtMs).coerceAtLeast(0)
+    /** Âge de la valeur, null si l'horodatage est absent (≤ 0) ou dans le futur : la valeur n'est alors pas datée. */
+    fun ageMs(nowMs: Long): Long? = if (measuredAtMs <= 0 || measuredAtMs > nowMs) null else nowMs - measuredAtMs
 
-    /** Seule une mesure directe, fiable et récente peut être dite à la radio. */
-    fun announceable(nowMs: Long, maxAgeMs: Long = 5_000, minReliability: Double = 0.9): Boolean =
-        kind == Kind.MEASURED && gapMs != null && reliability >= minReliability && ageMs(nowMs) <= maxAgeMs
+    /**
+     * Seule une mesure directe, fiable et récente peut être dite à la radio. Refusé si : estimation ou indisponibilité,
+     * écart absent, horodatage absent, invalide ou futur, valeur trop ancienne, fiabilité hors de 0..1 ou insuffisante.
+     */
+    fun announceable(nowMs: Long, maxAgeMs: Long = 5_000, minReliability: Double = 0.9): Boolean {
+        if (kind != Kind.MEASURED || gapMs == null) return false
+        if (reliability.isNaN() || reliability !in 0.0..1.0 || reliability < minReliability) return false
+        val age = ageMs(nowMs) ?: return false
+        return age <= maxAgeMs
+    }
 }
 
 interface OpponentsSource {
