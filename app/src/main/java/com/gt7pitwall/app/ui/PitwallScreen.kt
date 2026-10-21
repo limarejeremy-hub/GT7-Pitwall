@@ -260,12 +260,21 @@ fun PitwallScreen(
         )
     }
 
+    var showHistory by rememberSaveable { mutableStateOf(false) }
+    if (showHistory) {
+        HistoryScreen(engine, onBack = { showHistory = false })
+        return
+    }
+
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
                 title = { Text("GT7 Pitwall", fontWeight = FontWeight.Bold) },
-                actions = { StatusPill(connection) },
+                actions = {
+                    TextButton(onClick = { showHistory = true }) { Text("Historique") }
+                    StatusPill(connection)
+                },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
             )
         },
@@ -1644,17 +1653,23 @@ private fun GapHunterCard(engine: PitwallEngine) {
 }
 
 /** Partage un export texte sous forme de fichier (le texte peut dépasser la taille admise par un Intent). */
-private fun shareExport(context: android.content.Context, text: String) {
+internal fun shareExport(
+    context: android.content.Context,
+    text: String,
+    fileName: String = "gt7-pitwall-gap-hunter.txt",
+    subject: String = "GT7 Pitwall — Gap Hunter",
+    mime: String = "text/plain",
+) {
     runCatching {
         val dir = java.io.File(context.cacheDir, "exports").apply { mkdirs() }
-        val file = java.io.File(dir, "gt7-pitwall-gap-hunter.txt").apply { writeText(text) }
+        val file = java.io.File(dir, fileName).apply { writeText(text) }
         val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.exports", file)
         val send = Intent(Intent.ACTION_SEND).apply {
-            type = "text/plain"
-            putExtra(Intent.EXTRA_SUBJECT, "GT7 Pitwall — Gap Hunter")
+            type = mime
+            putExtra(Intent.EXTRA_SUBJECT, subject)
             putExtra(Intent.EXTRA_STREAM, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        context.startActivity(Intent.createChooser(send, "Exporter le journal Gap Hunter"))
+        context.startActivity(Intent.createChooser(send, subject))
     }
 }

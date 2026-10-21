@@ -54,6 +54,8 @@ sealed interface VoiceInputEvent {
         val freeText: String? = null,
         /** Faux : phrase entendue pendant la conversation continue sans « Radio » devant (modifications à confirmer). */
         val addressed: Boolean = true,
+        /** Reconnaissance qui a transcrit la phrase (journal de course). */
+        val recognizer: String = "Vosk",
     ) : VoiceInputEvent
 
     /** Message de la radio elle-même (« Je n'ai pas reçu ta demande… ») : dit au pilote, jamais silencieux. */

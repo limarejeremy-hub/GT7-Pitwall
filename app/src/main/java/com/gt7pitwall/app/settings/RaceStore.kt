@@ -19,6 +19,9 @@ class RaceStore(context: Context) : RaceStorage {
     private val prefs = context.getSharedPreferences("race", Context.MODE_PRIVATE)
     private val sessionDir = File(context.filesDir, "sessions").apply { mkdirs() }
 
+    /** Journaux de course : un fichier par session (même identifiant que l'archive), une ligne JSON par événement. */
+    private val journalDir = File(context.filesDir, "journal").apply { mkdirs() }
+
     override fun loadRules(): RaceRules = try {
         prefs.getString(KEY_RULES, null)?.let { RaceJson.rules(JSONObject(it)) } ?: RaceRules()
     } catch (e: Exception) {
@@ -88,7 +91,41 @@ class RaceStore(context: Context) : RaceStorage {
         }
     }
 
+    private fun journalFile(sessionId: String) = File(journalDir, sessionId.filter { it.isLetterOrDigit() || it == '-' } + ".jsonl")
+
+    /**
+     * Ajout immédiat d'une ligne, vidée sur le disque : si Android ferme l'application, seule la ligne en cours
+     * d'écriture peut manquer (elle est ignorée à la lecture). Au-delà de [MAX_JOURNALS], les plus anciens sont retirés.
+     */
+    @Synchronized
+    override fun appendJournal(sessionId: String, line: String) {
+        if (sessionId.isBlank()) return
+        runCatching {
+            val f = journalFile(sessionId)
+            val fresh = !f.exists()
+            java.io.FileOutputStream(f, true).use { out ->
+                out.write((line.replace('\n', ' ') + "\n").toByteArray(Charsets.UTF_8))
+                out.fd.sync()
+            }
+            if (fresh) prune()
+        }
+    }
+
+    @Synchronized
+    override fun loadJournal(sessionId: String): List<String> =
+        runCatching { journalFile(sessionId).takeIf { it.exists() }?.readLines(Charsets.UTF_8).orEmpty().filter { it.isNotBlank() } }
+            .getOrDefault(emptyList())
+
+    override fun journalSessionIds(): List<String> =
+        journalDir.listFiles { f -> f.name.endsWith(".jsonl") }.orEmpty().map { it.name.removeSuffix(".jsonl") }
+
+    private fun prune() {
+        val files = journalDir.listFiles { f -> f.name.endsWith(".jsonl") }.orEmpty().sortedByDescending { it.lastModified() }
+        files.drop(MAX_JOURNALS).forEach { it.delete() }
+    }
+
     private companion object {
+        const val MAX_JOURNALS = 200
         const val KEY_RULES = "rules"
         const val KEY_PROFILES = "profiles"
         const val KEY_MEMORY = "memory"

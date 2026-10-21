@@ -658,7 +658,7 @@ class VoskVoiceInput(
                 is RequestPick.Google -> {
                     _heard.value = result.text ?: pick.text
                     log(googleBy, result.text, proof)
-                    deliverUtterance(pick.text, pick.text, pick.text)
+                    deliverUtterance(pick.text, pick.text, pick.text, recognizer = googleBy)
                 }
                 is RequestPick.Vosk -> {
                     // Même phrase, entendue par Vosk en parallèle : le pilote n'a rien à répéter.
@@ -666,7 +666,7 @@ class VoskVoiceInput(
                     refreshFallbackInfo()
                     _heard.value = free.ifBlank { command }
                     log("Vosk, même phrase ($source)", free.ifBlank { command }, "$googleBy : ${result.outcome.label}" + (proof?.let { " — $it" } ?: ""))
-                    deliverUtterance(pick.command, pick.free, pick.free ?: pick.command)
+                    deliverUtterance(pick.command, pick.free, pick.free ?: pick.command, recognizer = "Vosk ($source)")
                 }
                 RequestPick.Repeat -> if (decision.fallbackToVosk) {
                     log("aucun", null, "$googleBy : ${result.outcome.label}" + (if (parallel != null) ", Vosk : rien entendu" else "") +
@@ -684,7 +684,7 @@ class VoskVoiceInput(
      * et une phrase entendue sans « radio » devant ([VoiceInputEvent.Utterance.addressed] faux) ne peut modifier la course
      * qu'après confirmation.
      */
-    private fun deliverUtterance(command: String, free: String?, heard: String, addressed: Boolean = true) {
+    private fun deliverUtterance(command: String, free: String?, heard: String, addressed: Boolean = true, recognizer: String = "Vosk") {
         if (conversation.open) {
             if (ConversationWindow.isClosing(heard)) {
                 closeConversation(byDriver = true)
@@ -692,11 +692,11 @@ class VoskVoiceInput(
             }
             val first = conversation.addressedByWake
             conversation.utterance(heard, SystemClock.elapsedRealtime())
-            _events.tryEmit(VoiceInputEvent.Utterance(command, free, addressed = addressed && first))
+            _events.tryEmit(VoiceInputEvent.Utterance(command, free, addressed = addressed && first, recognizer = recognizer))
             keepListeningIfSilent()
             return
         }
-        _events.tryEmit(VoiceInputEvent.Utterance(command, free, addressed = addressed))
+        _events.tryEmit(VoiceInputEvent.Utterance(command, free, addressed = addressed, recognizer = recognizer))
     }
 
     /** Fenêtre d'écoute Vosk sans mot de réveil (conversation ouverte, après un échec de Google, ou sans Google). */

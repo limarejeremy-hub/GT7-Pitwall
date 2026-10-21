@@ -1,5 +1,12 @@
 package com.gt7pitwall.app.engine
 
+import com.gt7pitwall.core.race.JournalEvent
+import com.gt7pitwall.core.race.JournalExport
+import com.gt7pitwall.core.race.JournalSessionInfo
+import com.gt7pitwall.core.race.JournalSource
+import com.gt7pitwall.core.race.JournalType
+import com.gt7pitwall.core.race.SessionJournal
+import kotlinx.coroutines.withContext
 import com.gt7pitwall.core.ai.AiTrace
 import com.gt7pitwall.core.ai.IntentClassifier
 import com.gt7pitwall.core.ai.RadioConversation
@@ -117,7 +124,7 @@ class PitwallEngine(
     private val voice: VoiceOutput,
     private val voiceInput: VoiceInput? = null,
     val database: Gt7Database = Gt7Database.EMPTY,
-    storage: RaceStorage? = null,
+    private val storage: RaceStorage? = null,
 ) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -316,11 +323,12 @@ class PitwallEngine(
             )
             is VoiceInputEvent.Notice -> deliver(EngineerMessage(event.text, Priority.HIGH, MessageCategory.ANSWER))
             is VoiceInputEvent.Utterance -> {
+                journalUtterance(event)
                 // Commandes et questions simples : analyseur (immédiat, testé). Questions ouvertes : IA. Fragments : ignorés.
                 // Phrase de la conversation continue sans « radio » devant : modifications de course à confirmer.
                 val messages = conversation.onUtterance(event.text, event.freeText, languageModel, ::deliver, addressed = event.addressed)
                 mutex.withLock { publish(force = true) }
-                conversation.lastTrace?.let { _aiTrace.value = it }
+                conversation.lastTrace?.let { _aiTrace.value = it; journalAi(it) }
                 messages.forEach(::deliver)
             }
         }
@@ -330,7 +338,7 @@ class PitwallEngine(
     private suspend fun askAi(ai: LanguageModel, question: String): List<EngineerMessage> {
         val messages = conversation.ask(ai, question, ::deliver)
         mutex.withLock { publish(force = true) }
-        conversation.lastTrace?.let { _aiTrace.value = it }
+        conversation.lastTrace?.let { _aiTrace.value = it; journalAi(it) }
         return messages
     }
 
@@ -343,6 +351,7 @@ class PitwallEngine(
 
     /** Question posée à Gemini depuis l'écran (sans micro). */
     fun askAiFromScreen(question: String) {
+        race.journal.record(JournalType.DRIVER, JournalSource.SCREEN, question, details = mapOf("canal" to "question tapée à l'écran"))
         val lm = languageModel
         scope.launch {
             val messages = if (lm != null && lm.ready) {
@@ -426,10 +435,90 @@ class PitwallEngine(
     }
 
     private fun deliver(message: EngineerMessage) {
+        journalMessage(message)
         _radio.update { (listOf(message) + it).take(MAX_RADIO_LOG) }
         // Les paroles du pilote sont seulement affichées.
         if (voiceEnabled && message.category != MessageCategory.DRIVER) voice.speak(message)
         if (message.expectsReply) voiceInput?.expectReply()
+    }
+
+    // ------------------------------------------------------------------ Journal de course
+
+    /** Phrase du pilote : seule sa transcription est connue (aucun son n'est enregistré). */
+    private fun journalUtterance(event: VoiceInputEvent.Utterance) {
+        val free = event.freeText?.takeIf { it.isNotBlank() }
+        race.journal.record(
+            JournalType.DRIVER, JournalSource.TRANSCRIPT, free ?: event.text,
+            details = listOfNotNull(
+                "transcription_vocabulaire_radio" to event.text,
+                free?.let { "transcription_libre" to it },
+                "reconnaissance" to event.recognizer,
+                "adressee" to if (event.addressed) "oui (après « radio » ou réponse attendue)" else "non (conversation continue, modifications à confirmer)",
+                "phrase_prononcee" to "inconnue : aucun son enregistré",
+            ).toMap(),
+        )
+    }
+
+    private var lastJournaledTrace: AiTrace? = null
+
+    /** Appel à Gemini : question, réponse brute, verdict du contrôle et délai. */
+    private fun journalAi(trace: AiTrace) {
+        if (trace === lastJournaledTrace) return
+        lastJournaledTrace = trace
+        race.journal.record(
+            JournalType.DECISION, JournalSource.GEMINI, "Gemini interrogé : « ${trace.question} »",
+            decision = trace.verdict,
+            details = listOfNotNull(
+                "delai_ms" to trace.latencyMs.toString(),
+                trace.raw?.let { "reponse_brute" to it },
+            ).toMap(),
+        )
+    }
+
+    /** Message de la radio : dit ou affiché, calculé par le moteur ou rédigé par Gemini. L'écho « Toi : » est ignoré. */
+    private fun journalMessage(m: EngineerMessage) {
+        if (m.category == MessageCategory.DRIVER && m.text.startsWith("Toi :")) return
+        val type = when {
+            m.category == MessageCategory.DRIVER -> JournalType.RADIO
+            m.category == MessageCategory.ALERT || m.priority == Priority.CRITICAL -> JournalType.ALERT
+            else -> JournalType.ENGINEER
+        }
+        val source = when {
+            m.fromAi -> JournalSource.GEMINI
+            m.category == MessageCategory.DRIVER -> JournalSource.SYSTEM
+            else -> JournalSource.ENGINE
+        }
+        race.journal.record(
+            type, source, m.text,
+            details = listOfNotNull(
+                "priorite" to m.priority.name.lowercase(),
+                "categorie" to m.category.name.lowercase(),
+                "dit_a_la_radio" to if (voiceEnabled && m.category != MessageCategory.DRIVER) "oui" else "non (affiché)",
+                if (m.expectsReply) "attend_une_reponse" to "oui" else null,
+            ).toMap(),
+        )
+    }
+
+    /** Sessions du journal (archive + radio), la plus récente d'abord. */
+    suspend fun historySessions(): List<JournalSessionInfo> = withContext(Dispatchers.IO) {
+        storage?.let { runCatching { SessionJournal.sessions(it) }.getOrNull() } ?: emptyList()
+    }
+
+    suspend fun historyEvents(id: String): List<JournalEvent> = withContext(Dispatchers.IO) {
+        storage?.let { runCatching { SessionJournal.load(it, id) }.getOrNull() } ?: emptyList()
+    }
+
+    /** Identifiant de la session en cours d'enregistrement, null hors course. */
+    val liveSessionId: String? get() = race.journal.sessionId
+
+    suspend fun exportJson(id: String): String = withContext(Dispatchers.IO) {
+        val s = storage ?: return@withContext "{}"
+        JournalExport.json(id, s.loadSessions().firstOrNull { it.id == id }, SessionJournal.load(s, id), System.currentTimeMillis())
+    }
+
+    suspend fun exportText(id: String): String = withContext(Dispatchers.IO) {
+        val s = storage ?: return@withContext ""
+        JournalExport.text(id, s.loadSessions().firstOrNull { it.id == id }, SessionJournal.load(s, id))
     }
 
     private companion object {
