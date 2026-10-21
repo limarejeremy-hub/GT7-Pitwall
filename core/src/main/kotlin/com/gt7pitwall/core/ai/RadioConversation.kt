@@ -14,8 +14,21 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 
-/** Dernière question envoyée à l'IA, sa réponse brute et ce qu'on en a fait (diagnostic à l'écran). */
-data class AiTrace(val question: String, val raw: String?, val verdict: String, val latencyMs: Long)
+/** Dernière question envoyée à l'IA, sa réponse brute et ce qu'on en a fait (diagnostic à l'écran et journal). */
+data class AiTrace(
+    val question: String,
+    val raw: String?,
+    val verdict: String,
+    val latencyMs: Long,
+    /** Qui a répondu au pilote : un modèle, ou le moteur local (repli). */
+    val backend: AiBackend = AiBackend.NANO,
+    /** Modèle réellement interrogé, s'il y en a un. */
+    val modelId: String? = null,
+    /** Essais successifs (modèle, erreur, délai). */
+    val attempts: List<AiRouter.Attempt> = emptyList(),
+    /** La réponse dite vient du moteur local, pas de l'IA. */
+    val fallback: Boolean = false,
+)
 
 /**
  * Un tour de radio : comprendre l'intention, puis répondre par le bon chemin — l'ingénieur lui-même pour les
@@ -32,6 +45,10 @@ class RadioConversation(
     var lastTrace: AiTrace? = null
         private set
 
+    /** Modèles cloud (Flash-Lite, Flash 3.8) ; null ou non configurés : la radio fonctionne comme avant, sans cloud. */
+    @Volatile
+    var cloud: AiRouter? = null
+
     /** Phrase entendue à la radio. [onThinking] reçoit « Gemini réfléchit… » avant l'appel au modèle. */
     suspend fun onUtterance(
         text: String,
@@ -42,6 +59,44 @@ class RadioConversation(
         addressed: Boolean = true,
     ): List<EngineerMessage> {
         val source = if (addressed) CommandSource.VOICE else CommandSource.CONVERSATION
+        val heardFree = freeText?.takeIf { it.isNotBlank() } ?: text
+        // « D'accord, on fait comme ça » juste après une discussion de stratégie : décision prise ensemble, sans IA.
+        mutex.withLock { race.agreement(heardFree) }?.let { return it }
+        // Conversation : questions ouvertes, conseils, analyses et relances vont au modèle cloud s'il est disponible,
+        // avec le calcul du moteur sur le sujet. Sinon (non configuré, quota, panne), tout continue comme avant.
+        var notice: EngineerMessage? = null
+        cloud?.takeIf { it.mode.cloudOrder(false).isNotEmpty() }?.let { router ->
+            val turn = mutex.withLock {
+                val now = clock()
+                ConversationRouter.decide(
+                    text, freeText, race.inConversation(now), race.conversationTopic(now), race.awaitingDriverAnswer, race.afterStrategyAnswer(now),
+                )
+            }
+            if (turn != null) {
+                if (router.available(turn.complex)) {
+                    when (val r = converse(router, turn, onThinking)) {
+                        is Converse.Done -> return r.messages
+                        is Converse.Failed -> notice = r.notice
+                    }
+                } else {
+                    val why = router.mode.cloudOrder(turn.complex).joinToString(" ; ") { b ->
+                        "${b.label} : " + (router.provider(b)?.takeIf { !it.ready }?.status ?: router.usage.blockedReason(b) ?: "indisponible")
+                    }
+                    lastTrace = AiTrace(turn.question, null, "moteur local ($why)", 0, AiBackend.ENGINE, fallback = true)
+                }
+            }
+        }
+        return (listOfNotNull(notice) + legacy(text, freeText, model, onThinking, source))
+    }
+
+    /** Chemin sans modèle cloud : moteur, analyseur, garde des commandes et Gemini Nano (inchangé). */
+    private suspend fun legacy(
+        text: String,
+        freeText: String?,
+        model: LanguageModel?,
+        onThinking: (EngineerMessage) -> Unit,
+        source: CommandSource,
+    ): List<EngineerMessage> {
         // Question stratégique ou observation : le moteur répond lui-même (plan, comparaison, carburant), jamais Gemini,
         // et rien n'est enregistré (ni arrêt, ni pneus). Les commandes qui changent l'état gardent leur chemin.
         strategyDialogue(text, freeText)?.let { return it }
@@ -75,12 +130,74 @@ class RadioConversation(
                 val heard = (route as? RadioAi.Route.Parser)?.text ?: text
                 val cmd = DriverCommandParser.parse(heard)
                 val discuss = cmd?.let { mutex.withLock { race.vet(it, original, source) } } as? Vetting.Discuss
-                if (discuss != null && discuss.mode in DISCUSSED_WITH_AI && model != null && model.ready) {
+                val router = cloud?.takeIf { discuss != null && discuss.mode in DISCUSSED_WITH_AI && it.available(complex = true) }
+                val discussed = router?.let {
+                    mutex.withLock { discuss?.intention?.let(race::noteIntention) }
+                    val turn = ConversationRouter.Turn(original, Topic.PLAN, complex = true, ask = StrategyDialogue.Ask.Best)
+                    (converse(it, turn, onThinking) as? Converse.Done)?.messages
+                }
+                if (discussed != null) {
+                    discussed
+                } else if (discuss != null && discuss.mode in DISCUSSED_WITH_AI && model != null && model.ready) {
                     mutex.withLock { discuss.intention?.let(race::noteIntention) }
                     ask(model, original, onThinking)
                 } else {
                     mutex.withLock { race.utterance(heard, original, source) }
                 }
+            }
+        }
+    }
+
+    private sealed interface Converse {
+        data class Done(val messages: List<EngineerMessage>) : Converse
+
+        /** Aucun modèle n'a répondu et le moteur n'a pas de calcul sur ce sujet : le chemin habituel répond. */
+        data class Failed(val notice: EngineerMessage) : Converse
+    }
+
+    /**
+     * Une intervention du pilote, formulée par le modèle cloud à partir des faits, du calcul du moteur et de la
+     * mémoire. La réponse est vérifiée (chiffres, autres voitures, conseils) ; une commande passe par le garde. Si le
+     * modèle ne répond pas, le calcul du moteur est dit tel quel.
+     */
+    private suspend fun converse(router: AiRouter, turn: ConversationRouter.Turn, onThinking: (EngineerMessage) -> Unit): Converse {
+        val (analysis, ctx) = mutex.withLock {
+            val a = race.engineAnalysis(turn)
+            a to race.conversationContext(turn, a)
+        }
+        router.candidates(turn.complex).firstOrNull()?.let { p ->
+            onThinking(EngineerMessage("${p.backend.label} réfléchit : « ${turn.question} »", Priority.INFO, MessageCategory.DRIVER))
+        }
+        val outcome = router.complete(EngineerPrompt.system, EngineerPrompt.build(turn.question, ctx), turn.complex)
+        val history = ctx.recent.map { RadioAi.Exchange(it.question, it.answer) }
+        val reply = outcome.text?.let {
+            RadioAi.parse(
+                it, turn.question, ctx.facts, history, previousAnswers = emptyList(), extraSource = EngineerPrompt.source(ctx),
+                maxSentences = CLOUD_SENTENCES, maxChars = CLOUD_CHARS,
+            )
+        }
+        val latency = outcome.attempts.sumOf { it.latencyMs }
+        val failure = outcome.failure
+        val verdict = when {
+            reply != null -> verdict(reply, outcome.text)
+            failure != null -> "échec : ${failure.kind.label}"
+            else -> "aucun modèle disponible"
+        }
+        val answered = reply is AiReply.Answer || reply is AiReply.Command
+        lastTrace = AiTrace(
+            turn.question, outcome.text, verdict, latency, outcome.backend ?: AiBackend.ENGINE, outcome.modelId, outcome.attempts, fallback = !answered,
+        )
+        val why = if (reply == null) "IA cloud : ${failure?.kind?.label ?: "pas de réponse"}" else "IA cloud : réponse écartée ($verdict)"
+        return mutex.withLock {
+            when {
+                reply is AiReply.Answer -> Converse.Done(race.conversationReply(turn, reply.text, outcome.modelId ?: "IA", analysis, fromAi = true))
+                // Gemini ne modifie rien : sa commande passe par le même garde que la voix, avec confirmation au besoin.
+                reply is AiReply.Command -> Converse.Done(race.aiReply(turn.question, reply, clock()))
+                analysis != null -> Converse.Done(
+                    race.conversationReply(turn, analysis, RaceMemory.ENGINE, analysis, fromAi = false, notice = "$why → réponse du moteur local."),
+                )
+                reply is AiReply.Rejected -> Converse.Done(race.aiReply(turn.question, reply, clock()))
+                else -> Converse.Failed(EngineerMessage("$why → moteur local.", Priority.INFO, MessageCategory.DRIVER))
             }
         }
     }
@@ -152,6 +269,9 @@ class RadioConversation(
     }
 
     private companion object {
+        /** En course, une réponse courte : la conclusion puis l'explication utile. */
+        const val CLOUD_SENTENCES = 4
+        const val CLOUD_CHARS = 520
         val INTENTION_MODES = setOf(StatementGuard.Mode.FUTURE, StatementGuard.Mode.WISH)
         val DISCUSSED_WITH_AI = setOf(
             StatementGuard.Mode.FUTURE, StatementGuard.Mode.WISH, StatementGuard.Mode.HYPOTHETICAL, StatementGuard.Mode.ABOUT_OTHERS,

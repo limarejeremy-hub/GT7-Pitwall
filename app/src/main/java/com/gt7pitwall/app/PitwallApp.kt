@@ -41,6 +41,10 @@ class PitwallApp : Application() {
         private set
     val gemini = GeminiNano()
 
+    /** Gemini dans le cloud (Firebase AI Logic), inactif tant que le projet Firebase n'est pas saisi. */
+    lateinit var cloudAi: com.gt7pitwall.app.ai.CloudAi
+        private set
+
     /** Banc d'essai de reconnaissance locale (sherpa-onnx) : compare avec Vosk, n'agit jamais sur la radio. */
     lateinit var bench: SherpaBench
         private set
@@ -95,6 +99,10 @@ class PitwallApp : Application() {
             it.askPositionEachLap = { settings.askPositionEachLap && voiceInput.isRunning }
             it.languageModel = gemini
         }
+        cloudAi = com.gt7pitwall.app.ai.CloudAi(this)
+        engine.cloudRouter = cloudAi.router
+        engine.onAiTrace = cloudAi::onTrace
+        if (cloudAi.mode == com.gt7pitwall.core.ai.AiMode.LOCAL) engine.languageModel = null
         if (settings.aiEnabled) gemini.enable()
         sport = SportScheduleRepository(this, engine.database)
         CoroutineScope(SupervisorJob() + Dispatchers.Main).launch {
@@ -107,6 +115,13 @@ class PitwallApp : Application() {
     fun setAi(enabled: Boolean) {
         settings.aiEnabled = enabled
         if (enabled) gemini.enable() else gemini.disable()
+    }
+
+    /** Modèle de l'ingénieur : cloud (Flash-Lite, Flash 3.8), Gemini Nano, ou moteur local seul. */
+    fun setAiMode(mode: com.gt7pitwall.core.ai.AiMode) {
+        cloudAi.setMode(mode)
+        // Moteur local uniquement : aucune IA, même sur le téléphone.
+        engine.languageModel = if (mode == com.gt7pitwall.core.ai.AiMode.LOCAL) null else gemini
     }
 
     /** Expérimental : Google sur le flux du casque PS5. */

@@ -58,6 +58,18 @@ object StrategyDialogue {
         /** Observation du pilote (déclarée, jamais une mesure). [negated] : « je ne perds pas l'avant ». */
         data class Observe(val kind: ObservationKind, val negated: Boolean) : Ask
 
+        /** « On garde la même stratégie ? », « on reste sur notre plan ? » : comparé au plan décidé ou annoncé. */
+        data object SamePlan : Ask
+
+        /** « On avait décidé quoi tout à l'heure ? » : la mémoire de la course répond. */
+        data object Recall : Ask
+
+        /** « Je pilote mieux depuis le changement de pneus ? » : relais comparés sur les chronos mesurés. */
+        data object CompareStints : Ask
+
+        /** « Qu'est-ce qu'on risque si j'attaque davantage ? » */
+        data object AttackRisk : Ask
+
         /** Sujet stratégique reconnu mais phrase incomplète ou mal reconnue : on demande de préciser. */
         data object Unclear : Ask
     }
@@ -136,6 +148,29 @@ object StrategyDialogue {
             if (mode == StatementGuard.Mode.QUESTION && kind != ObservationKind.TRAFFIC) return Ask.GripQuestion(kind)
         }
 
+        // Mémoire de la course : le plan décidé ensemble, ce qu'on s'est dit.
+        if (has(t, "(\\s|qu')on (garde|reste sur|continue (avec|sur)|maintient|conserve) (la meme|notre|le meme|le|la|ce) (strategie|plan)",
+                " (toujours|encore) (le meme|notre|ce) plan", " le plan (tient|est) toujours", " (meme|notre) strategie ", " on change rien ",
+            )
+        ) {
+            return Ask.SamePlan
+        }
+        if (has(t, " on avait (decide|dit|prevu|convenu|choisi)", " qu'est ce qu'on (avait|a) (dit|decide|prevu|convenu)",
+                " rappelle( moi)? (le plan|ce qu'on|la strategie|notre)", " c'etait quoi (le plan|la strategie|ce qu'on)",
+            )
+        ) {
+            return Ask.Recall
+        }
+        if (has(t, " (je )?pilote mieux", " (je roule|je suis|je tourne) (plus|moins) (vite|rapide) depuis",
+                " (mieux|moins bien|progresse|plus vite|plus rapide) depuis (le|les|mon|l') ?(changement|arret|pneus|stand|relais)",
+                " depuis (le )?changement de (pneus|gommes)",
+            )
+        ) {
+            return Ask.CompareStints
+        }
+        if (has(t, " risqu\\w* .*(attaqu|pousse|accelere|plus fort)", " (si|quand) j'attaque", " (attaquer|pousser|attaque) (plus|davantage|a fond)")) {
+            return Ask.AttackRisk
+        }
         if (has(t, " qu'est ce qui (a|as) change", " (quoi|qu'est ce qui) de neuf ", " depuis (le|notre) plan", " plan initial ",
                 " pourquoi (tu changes|tu as change|t'as change|on change|on a change|ca change)", " change(r|s)? (la|notre) strategie ",
             ) && (asking || has(t, " pourquoi "))
@@ -158,9 +193,12 @@ object StrategyDialogue {
         }
         if (has(t, " prolong", " rester (dehors )?(un|1|deux|2) tours? de plus", " un tour de plus ", " retarder (l'|mon |notre )?arret",
                 " repousser (l'|mon |notre )?arret", " rentrer plus tard ", " rester dehors ",
+                // « Et si je garde les durs deux tours de plus ? », « et si on décale l'arrêt de deux tours ? »
+                " (garde|garder|gardais|laisse|laisser|reste|rester|roule|rouler) .*(un|1|deux|2|trois|3) tours? de plus",
+                " decal\\w* (l'|mon |notre |cet )?arret",
             ) && !negated && (asking || has(t, " prolong"))
         ) {
-            val n = Regex(" (de |d')(deux|2|trois|3) tours").find(t)?.groupValues?.get(2)?.let { if (it == "deux" || it == "2") 2 else 3 } ?: 1
+            val n = Regex(" (de |d')?(deux|2|trois|3) tours").find(t)?.groupValues?.get(2)?.let { if (it == "deux" || it == "2") 2 else 3 } ?: 1
             return Ask.Extend(n)
         }
         if (has(t, " avancer (l'|mon |notre )?arret", " anticip", " rentrer plus tot ", " rentrer (maintenant|tout de suite|ce tour)",

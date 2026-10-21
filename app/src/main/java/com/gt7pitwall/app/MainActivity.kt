@@ -53,6 +53,8 @@ class MainActivity : ComponentActivity() {
                     voiceModels = app.voiceModels,
                     voiceInput = app.voiceInput,
                     gemini = app.gemini,
+                    cloudAi = app.cloudAi,
+                    onAiMode = app::setAiMode,
                     discord = app.discord,
                     bench = app.bench,
                     onDiscordMirror = app::setDiscordMirror,

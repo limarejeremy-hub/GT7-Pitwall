@@ -154,6 +154,17 @@ class PitwallEngine(
     @Volatile
     var languageModel: LanguageModel? = null
 
+    /** Modèles cloud (Gemini Flash-Lite, Flash 3.8) ; null ou non configurés : la radio fonctionne sans cloud. */
+    var cloudRouter: com.gt7pitwall.core.ai.AiRouter?
+        get() = conversation.cloud
+        set(value) {
+            conversation.cloud = value
+        }
+
+    /** Chaque intervention traitée par l'IA (ou son repli) : compteurs et état affichés dans les réglages. */
+    @Volatile
+    var onAiTrace: (AiTrace) -> Unit = {}
+
     private val _aiTrace = MutableStateFlow<AiTrace?>(null)
     /** Dernier échange avec l'IA (diagnostic affiché dans la carte « Ingénieur IA »). */
     val aiTrace: StateFlow<AiTrace?> = _aiTrace.asStateFlow()
@@ -326,9 +337,10 @@ class PitwallEngine(
                 journalUtterance(event)
                 // Commandes et questions simples : analyseur (immédiat, testé). Questions ouvertes : IA. Fragments : ignorés.
                 // Phrase de la conversation continue sans « radio » devant : modifications de course à confirmer.
+                val before = conversation.lastTrace
                 val messages = conversation.onUtterance(event.text, event.freeText, languageModel, ::deliver, addressed = event.addressed)
                 mutex.withLock { publish(force = true) }
-                conversation.lastTrace?.let { _aiTrace.value = it; journalAi(it) }
+                conversation.lastTrace?.takeIf { it !== before }?.let { _aiTrace.value = it; journalAi(it); onAiTrace(it) }
                 messages.forEach(::deliver)
             }
         }
@@ -336,9 +348,10 @@ class PitwallEngine(
 
     /** Question libre : l'IA ne voit que les faits de la course ; sa réponse est vérifiée avant d'être dite. */
     private suspend fun askAi(ai: LanguageModel, question: String): List<EngineerMessage> {
+        val before = conversation.lastTrace
         val messages = conversation.ask(ai, question, ::deliver)
         mutex.withLock { publish(force = true) }
-        conversation.lastTrace?.let { _aiTrace.value = it; journalAi(it) }
+        conversation.lastTrace?.takeIf { it !== before }?.let { _aiTrace.value = it; journalAi(it); onAiTrace(it) }
         return messages
     }
 
@@ -354,7 +367,14 @@ class PitwallEngine(
         race.journal.record(JournalType.DRIVER, JournalSource.SCREEN, question, details = mapOf("canal" to "question tapée à l'écran"))
         val lm = languageModel
         scope.launch {
-            val messages = if (lm != null && lm.ready) {
+            val messages = if (conversation.cloud?.available(complex = true) == true || conversation.cloud?.available() == true) {
+                // Même chemin que la radio : modèle cloud avec le calcul du moteur et la mémoire, replis compris.
+                val before = conversation.lastTrace
+                conversation.onUtterance(question, question, lm, ::deliver).also {
+                    mutex.withLock { publish(force = true) }
+                    conversation.lastTrace?.takeIf { t -> t !== before }?.let { t -> _aiTrace.value = t; journalAi(t); onAiTrace(t) }
+                }
+            } else if (lm != null && lm.ready) {
                 askAi(lm, question)
             } else if (IntentClassifier.classify(question) in IntentClassifier.LOCAL || DriverCommandParser.parse(question) != null) {
                 // Sans Gemini, l'ingénieur répond quand même aux messages simples et aux questions qu'il calcule.
@@ -465,11 +485,23 @@ class PitwallEngine(
     private fun journalAi(trace: AiTrace) {
         if (trace === lastJournaledTrace) return
         lastJournaledTrace = trace
+        val who = trace.modelId ?: trace.backend.label
         race.journal.record(
-            JournalType.DECISION, JournalSource.GEMINI, "Gemini interrogé : « ${trace.question} »",
+            JournalType.DECISION,
+            if (trace.fallback) JournalSource.ENGINE else JournalSource.GEMINI,
+            if (trace.fallback) "IA non utilisée, réponse du moteur local : « ${trace.question} »" else "IA interrogée ($who) : « ${trace.question} »",
             decision = trace.verdict,
             details = listOfNotNull(
+                "modele" to who,
+                "source" to when {
+                    trace.fallback -> "moteur local (repli)"
+                    trace.backend.cloud -> "cloud (Firebase AI Logic)"
+                    else -> "téléphone (Gemini Nano)"
+                },
                 "delai_ms" to trace.latencyMs.toString(),
+                trace.attempts.takeIf { it.isNotEmpty() }?.let { a ->
+                    "essais" to a.joinToString(" ; ") { "${it.modelId} : ${it.failure?.kind?.label ?: "réponse"} en ${it.latencyMs} ms" }
+                },
                 trace.raw?.let { "reponse_brute" to it },
             ).toMap(),
         )

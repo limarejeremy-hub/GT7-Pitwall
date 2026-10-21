@@ -288,6 +288,10 @@ object RadioAi {
         history: List<Exchange> = emptyList(),
         /** Réponses déjà dites (toute la conversation) : un conseil n'est pas répété. */
         previousAnswers: List<String> = history.map { it.answer },
+        /** Autres données fournies au modèle (calcul du moteur, mémoire) : leurs chiffres sont autorisés. */
+        extraSource: String = "",
+        maxSentences: Int = MAX_SENTENCES,
+        maxChars: Int = MAX_ANSWER_CHARS,
     ): AiReply {
         val text = raw?.trim()?.trim('"', '«', '»', ' ')?.takeIf { it.isNotEmpty() } ?: return AiReply.Rejected(AiReply.Reason.EMPTY)
         if (text.uppercase().startsWith(UNKNOWN)) return AiReply.Rejected(AiReply.Reason.UNKNOWN)
@@ -303,7 +307,7 @@ object RadioAi {
 
         // Contrôle phrase par phrase : une phrase fautive est retirée, le reste est gardé.
         val source = facts.text + "\n" + facts.observations.joinToString("\n") { it.text } + "\n" + question + "\n" +
-            history.joinToString("\n") { it.answer }
+            history.joinToString("\n") { it.answer } + "\n" + extraSource
         val evidence = facts.evidence
         // Seules les affirmations du pilote valent preuve (« l'avant glisse »), pas ses questions (« je bloque ? »).
         val driverSaid = (history.map { it.question } + question).filterNot(::isQuestion).joinToString(" ")
@@ -327,7 +331,7 @@ object RadioAi {
             problem == null
         }
         if (kept.isEmpty()) return AiReply.Rejected(firstProblem ?: AiReply.Reason.EMPTY)
-        return AiReply.Answer(shorten(kept))
+        return AiReply.Answer(shorten(kept, maxSentences, maxChars))
     }
 
     /**
@@ -430,9 +434,9 @@ object RadioAi {
     private fun sentences(s: String): List<String> = Regex("(?<=[.!?])\\s+").split(s).map { it.trim() }.filter { it.isNotBlank() }
 
     /** Trois phrases au plus, pour la radio. */
-    private fun shorten(sentences: List<String>): String {
-        var out = sentences.take(MAX_SENTENCES).joinToString(" ")
-        if (out.length > MAX_ANSWER_CHARS) out = out.take(MAX_ANSWER_CHARS).substringBeforeLast(' ') + "…"
+    private fun shorten(sentences: List<String>, maxSentences: Int, maxChars: Int): String {
+        var out = sentences.take(maxSentences).joinToString(" ")
+        if (out.length > maxChars) out = out.take(maxChars).substringBeforeLast(' ') + "…"
         return out
     }
 }

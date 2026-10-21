@@ -99,6 +99,8 @@ fun PitwallScreen(
     voiceModels: VoiceModelManager,
     voiceInput: VoskVoiceInput,
     gemini: GeminiNano,
+    cloudAi: com.gt7pitwall.app.ai.CloudAi,
+    onAiMode: (com.gt7pitwall.core.ai.AiMode) -> Unit,
     discord: DiscordRadio,
     bench: SherpaBench,
     onDiscordMirror: (Boolean) -> Unit,
@@ -222,6 +224,7 @@ fun PitwallScreen(
             },
             listeningOn = micLabel,
         )
+        CloudAiCard(cloudAi, onAiMode)
         AiCard(
             on = aiOn,
             state = aiState,
@@ -1671,5 +1674,102 @@ internal fun shareExport(
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         context.startActivity(Intent.createChooser(send, subject))
+    }
+}
+
+/**
+ * Réglage IA, volontairement minimal : modèle choisi, état de la connexion, délai, requêtes réellement envoyées,
+ * dernière erreur et retour au moteur local. Configuration Firebase saisie ici, gardée chiffrée sur le téléphone.
+ */
+@Composable
+private fun CloudAiCard(cloud: com.gt7pitwall.app.ai.CloudAi, onMode: (com.gt7pitwall.core.ai.AiMode) -> Unit) {
+    val status by cloud.status.collectAsStateWithLifecycle()
+    val trace by cloud.trace.collectAsStateWithLifecycle()
+    val tick by cloud.tick.collectAsStateWithLifecycle()
+    val test by cloud.testResult.collectAsStateWithLifecycle()
+    var mode by rememberSaveable { mutableStateOf(cloud.mode) }
+    var showConfig by rememberSaveable { mutableStateOf(!cloud.store.configured) }
+    var projectId by rememberSaveable { mutableStateOf(cloud.store.projectId) }
+    var appId by rememberSaveable { mutableStateOf(cloud.store.appId) }
+    var apiKey by remember { mutableStateOf("") }
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    PitCard("IA de l'ingénieur") {
+        com.gt7pitwall.core.ai.AiMode.entries.forEach { m ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                RadioButton(selected = mode == m, onClick = { mode = m; onMode(m) })
+                Text(m.label, style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+        val (label, color) = when (status.link) {
+            com.gt7pitwall.app.ai.CloudAi.Link.NOT_CONFIGURED -> "Cloud : non configuré (moteur local et Gemini Nano seulement)" to PitColors.Muted
+            com.gt7pitwall.app.ai.CloudAi.Link.CONFIGURED -> "Cloud : configuré, pas encore vérifié" to PitColors.Yellow
+            com.gt7pitwall.app.ai.CloudAi.Link.CONNECTED -> "Cloud : connecté" to PitColors.Green
+            com.gt7pitwall.app.ai.CloudAi.Link.ERROR -> "Cloud : erreur" to PitColors.Red
+        }
+        Text(label, color = color, fontWeight = FontWeight.Bold)
+        status.detail?.let { Text(it, color = PitColors.Muted, style = MaterialTheme.typography.bodySmall) }
+        // Relu à chaque requête (tick) : compteurs réels, jamais un quota supposé.
+        tick.let {
+            listOf(cloud.lite, cloud.flash).forEach { m ->
+                val st = cloud.usage.stats(m.backend)
+                Text(
+                    "${m.backend.label} (${m.modelId}) : ${st.requestsToday} requête${if (st.requestsToday > 1) "s" else ""} aujourd'hui " +
+                        "(${st.successesToday} réussie${if (st.successesToday > 1) "s" else ""}, ${st.failuresToday} échec${if (st.failuresToday > 1) "s" else ""})" +
+                        (st.lastLatencyMs?.let { " · dernier délai $it ms" } ?: "") +
+                        (cloud.usage.blockedReason(m.backend)?.let { " · $it" } ?: "") +
+                        (st.lastError?.let { " · dernière erreur : ${it.kind.label}" } ?: ""),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+        trace?.let { t ->
+            Text(
+                "Dernière question : « ${t.question.take(80)} » → " +
+                    (if (t.fallback) "moteur local" else (t.modelId ?: t.backend.label)) + " en ${t.latencyMs} ms : ${t.verdict}",
+                color = if (t.fallback) PitColors.Yellow else PitColors.Muted,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { cloud.test(com.gt7pitwall.core.ai.AiBackend.FLASH_LITE) }, modifier = Modifier.weight(1f)) { Text("Tester Flash-Lite") }
+            OutlinedButton(onClick = { cloud.test(com.gt7pitwall.core.ai.AiBackend.FLASH) }, modifier = Modifier.weight(1f)) { Text("Tester Flash 3.8") }
+        }
+        Text("Chaque test envoie exactement une requête.", color = PitColors.Muted, style = MaterialTheme.typography.bodySmall)
+        test?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+        TextButton(onClick = { showConfig = !showConfig }) { Text(if (showConfig) "Masquer la configuration Firebase" else "Configurer Firebase") }
+        if (showConfig) {
+            Text(
+                "Projet Firebase sans facturation (plan Spark) : Paramètres du projet → Vos applications → application Android " +
+                    "com.gt7pitwall.app. Ces valeurs restent sur le téléphone ; la clé est chiffrée.",
+                color = PitColors.Muted,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            OutlinedTextField(projectId, { projectId = it }, singleLine = true, label = { Text("ID du projet") }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(appId, { appId = it }, singleLine = true, label = { Text("ID de l'application (1:…:android:…)") }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(
+                apiKey, { apiKey = it }, singleLine = true,
+                label = { Text(if (cloud.store.hasApiKey) "Clé API Web (enregistrée, laisser vide pour la garder)" else "Clé API Web") },
+                visualTransformation = PasswordVisualTransformation(),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { cloud.saveConfig(projectId, appId, apiKey); apiKey = "" }, modifier = Modifier.weight(1f)) { Text("Enregistrer") }
+                OutlinedButton(onClick = { cloud.clearConfig(); projectId = ""; appId = "" }, modifier = Modifier.weight(1f)) { Text("Effacer") }
+            }
+            Text("App Check : ${status.appCheckMode}", style = MaterialTheme.typography.bodySmall)
+            status.debugSecret?.let { secret ->
+                Text(
+                    "Jeton de débogage de CE téléphone, à ajouter dans la console Firebase (App Check → Applications → ⋮ → " +
+                        "Gérer les jetons de débogage). Ne le partage pas.",
+                    color = PitColors.Muted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Text(secret, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { clipboard.setText(androidx.compose.ui.text.AnnotatedString(secret)) }, modifier = Modifier.weight(1f)) { Text("Copier le jeton") }
+                    OutlinedButton(onClick = { cloud.renewDebugSecret() }, modifier = Modifier.weight(1f)) { Text("Nouveau jeton") }
+                }
+            }
+        }
     }
 }

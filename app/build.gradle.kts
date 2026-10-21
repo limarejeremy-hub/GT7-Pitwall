@@ -173,6 +173,15 @@ dependencies {
     // Ingénieur IA : Gemini Nano sur le téléphone (ML Kit GenAI Prompt API, gratuit, hors ligne via AICore).
     implementation("com.google.mlkit:genai-prompt:1.0.0-beta4")
 
+    // Ingénieur IA dans le cloud : Gemini (Flash-Lite, Flash 3.8) via le SDK officiel Firebase AI Logic et la Gemini
+    // Developer API, niveau gratuit. Inactif sans la configuration du projet, saisie sur le téléphone (rien dans l'APK).
+    // App Check : fournisseur de débogage dans l'APK debug (installée hors Play Store), Play Integrity en release.
+    implementation(platform("com.google.firebase:firebase-bom:34.11.0"))
+    implementation("com.google.firebase:firebase-ai")
+    implementation("com.google.firebase:firebase-appcheck")
+    debugImplementation("com.google.firebase:firebase-appcheck-debug")
+    releaseImplementation("com.google.firebase:firebase-appcheck-playintegrity")
+
     // Radio Discord (prototype) : bot JDA 6 + chiffrement de bout en bout DAVE (libdave-jvm). La bibliothèque native
     // libdave-jvm.so est compilée par la CI depuis les sources (scripts/build-dave-android.sh), jamais téléchargée.
     // JDA est utilisé via une copie corrigée pour Android (voir patchJdaForAndroid) ; ses dépendances sont déclarées

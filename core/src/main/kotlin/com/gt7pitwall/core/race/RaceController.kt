@@ -5,6 +5,11 @@ import com.gt7pitwall.core.ai.AiReply
 import com.gt7pitwall.core.ai.Intent
 import com.gt7pitwall.core.ai.CoachingObservations
 import com.gt7pitwall.core.ai.RadioAi
+import com.gt7pitwall.core.ai.ConversationRouter
+import com.gt7pitwall.core.ai.EngineerPrompt
+import com.gt7pitwall.core.ai.Provenance
+import com.gt7pitwall.core.ai.RaceMemory
+import com.gt7pitwall.core.ai.Topic
 import com.gt7pitwall.core.analysis.GForce
 import com.gt7pitwall.core.analysis.GForceMeter
 import com.gt7pitwall.core.analysis.LapAnalyzer
@@ -169,6 +174,9 @@ class RaceController(
 
     val aiHistory: List<RadioAi.Exchange> get() = aiExchanges.toList()
 
+    /** Mémoire de la course (intentions, plans, décisions, faits confirmés, échanges) pour la conversation. */
+    val raceMemory = RaceMemory()
+
     /** Sujet du dernier échange avec l'IA (une relance courte le garde). */
     val lastAiIntent: Intent? get() = aiExchanges.lastOrNull()?.intent
 
@@ -316,6 +324,7 @@ class RaceController(
                 candidatesAnnounced = false
                 pitWindowPackets = 0
                 aiExchanges.clear()
+                raceMemory.clear()
                 intentions.clear()
                 observations.clear()
                 lastStrategyAnswerMs = null
@@ -553,6 +562,7 @@ class RaceController(
 
     /** Intention ou préférence du pilote, gardée pour la discussion stratégique (jamais un événement de course). */
     fun noteIntention(text: String) {
+        raceMemory.intention(snapshot.packet?.currentLap ?: 0, clock(), text)
         intentions.addLast(text)
         while (intentions.size > MAX_INTENTIONS) intentions.removeFirst()
         driverNotes += DriverNote(snapshot.packet?.currentLap ?: 0, text)
@@ -577,6 +587,12 @@ class RaceController(
             is AiReply.Command -> voiceCommand(reply.command, question, CommandSource.GEMINI)
             is AiReply.Answer -> {
                 aiExchanges.addLast(RadioAi.Exchange(question, reply.text, intent))
+                raceMemory.exchange(
+                    RaceMemory.Exchange(
+                        currentLap(), nowMs, question, reply.text, "Gemini Nano",
+                        when (intent) { Intent.COACHING -> Topic.COACHING; Intent.STRATEGY -> Topic.PLAN; else -> Topic.OTHER },
+                    ),
+                )
                 while (aiExchanges.size > AI_HISTORY) aiExchanges.removeFirst()
                 // La radio écoute la relance sans mot de réveil : c'est une conversation.
                 deliver(listOf(EngineerMessage(reply.text, Priority.HIGH, MessageCategory.ANSWER, expectsReply = true, fromAi = true)))
@@ -762,6 +778,7 @@ class RaceController(
     /** Le pilote confirme le règlement de l'épreuve active ([today] : aaaa-mm-jj). */
     fun confirmRules(today: String) {
         profiles.confirm(today)
+        raceMemory.fact(snapshot.packet?.currentLap ?: 0, clock(), "règlement de l'épreuve confirmé", Provenance.DRIVER)
         storage?.saveProfiles(profiles)
         saveSession()
     }
@@ -800,6 +817,7 @@ class RaceController(
         sessionId = "$sessionStartMs-${snapshot.packet?.carCode ?: 0}"
         sessionFinished = false
         planLog.clear()
+        raceMemory.clear()
         driverNotes.clear()
     }
 
@@ -1086,6 +1104,7 @@ class RaceController(
         val stopLaps = plan?.stops?.map { it.endOfLap } ?: emptyList()
         if (plan != null && planLog.lastOrNull()?.stopLaps != stopLaps) {
             planLog += PlanEntry(p.currentLap, stopLaps, reason, fuelPerLap = plan?.perLap, fuelSource = plan?.fuelSource?.name)
+            raceMemory.planProposed(p.currentLap, clock(), stopLaps, reason)
             journal.record(
                 JournalType.STRATEGY, JournalSource.ENGINE,
                 if (stopLaps.isEmpty()) "Plan : aucun arrêt prévu" else "Plan : arrêts à la fin des tours ${stopLaps.joinToString(", ")}",
@@ -1287,8 +1306,22 @@ class RaceController(
         pendingConfirmation = null
         val echo = EngineerMessage("Toi : $question", Priority.INFO, MessageCategory.DRIVER)
         val extra = mutableListOf<EngineerMessage>()
-        val text = if (!telemetryLive() && ask !is StrategyDialogue.Ask.Observe && ask !is StrategyDialogue.Ask.Unclear &&
-            ask !is StrategyDialogue.Ask.TyresOnlyIntent
+        val text = strategyText(ask, question, extra)
+        val said = if (intention) "Noté comme intention, je n'enregistre rien tant que ce n'est pas fait. $text" else text
+        if (ask !is StrategyDialogue.Ask.Unclear) lastStrategyAnswerMs = nowMs
+        if (ask !is StrategyDialogue.Ask.FollowUp && ask !is StrategyDialogue.Ask.Unclear) lastStrategyAsk = ask
+        if (ask !is StrategyDialogue.Ask.Unclear && ask !is StrategyDialogue.Ask.Observe) {
+            raceMemory.exchange(RaceMemory.Exchange(currentLap(), nowMs, question, said, RaceMemory.ENGINE, ConversationRouter.topicOf(ask), analysis = text))
+        }
+        val answer = EngineerMessage(said, Priority.HIGH, MessageCategory.ANSWER, expectsReply = ask is StrategyDialogue.Ask.Unclear || awaitingAnswer)
+        return listOf(echo) + deliver(listOf(answer) + extra)
+    }
+
+    /** Réponse du moteur à une question stratégique, sans la dire (la conversation choisit qui la formule). */
+    private fun strategyText(ask: StrategyDialogue.Ask, question: String, extra: MutableList<EngineerMessage>): String {
+        val memoryAsk = ask == StrategyDialogue.Ask.Recall || ask == StrategyDialogue.Ask.SamePlan
+        return if (!telemetryLive() && ask !is StrategyDialogue.Ask.Observe && ask !is StrategyDialogue.Ask.Unclear &&
+            ask !is StrategyDialogue.Ask.TyresOnlyIntent && !memoryAsk
         ) {
             generalAdvice(ask)
         } else {
@@ -1312,14 +1345,13 @@ class RaceController(
                 StrategyDialogue.Ask.WhatChanged -> answerWhatChanged()
                 StrategyDialogue.Ask.FollowUp -> answerFollowUp()
                 is StrategyDialogue.Ask.Observe -> answerObservation(ask, question, extra)
+                StrategyDialogue.Ask.SamePlan -> answerSamePlan()
+                StrategyDialogue.Ask.Recall -> answerRecall()
+                StrategyDialogue.Ask.CompareStints -> answerCompareStints()
+                StrategyDialogue.Ask.AttackRisk -> answerAttackRisk()
                 StrategyDialogue.Ask.Unclear -> "Je n'ai pas bien compris. Tu me demandes la stratégie, le carburant ou l'arrêt ?"
             }
         }
-        val said = if (intention) "Noté comme intention, je n'enregistre rien tant que ce n'est pas fait. $text" else text
-        if (ask !is StrategyDialogue.Ask.Unclear) lastStrategyAnswerMs = nowMs
-        if (ask !is StrategyDialogue.Ask.FollowUp && ask !is StrategyDialogue.Ask.Unclear) lastStrategyAsk = ask
-        val answer = EngineerMessage(said, Priority.HIGH, MessageCategory.ANSWER, expectsReply = ask is StrategyDialogue.Ask.Unclear || awaitingAnswer)
-        return listOf(echo) + deliver(listOf(answer) + extra)
     }
 
     /** Sans télémétrie : conseils de principe, annoncés comme tels, sans aucun chiffre de course. */
@@ -1606,6 +1638,200 @@ class RaceController(
         }
     }
 
+    // ------------------------------------------------------------------ Mémoire de la course et conversation
+
+    private fun currentLap(): Int = snapshot.packet?.currentLap ?: 0
+
+    /** Arrêts encore à venir dans un plan (un arrêt déjà fait n'est pas un changement de plan). */
+    private fun ahead(stops: List<Int>): List<Int> {
+        val lap = currentLap().coerceAtLeast(1)
+        return stops.filter { it >= lap }
+    }
+
+    /** « On garde la même stratégie ? » : le plan actuel comparé à celui décidé ensemble, sinon au plan annoncé avant. */
+    private fun answerSamePlan(): String {
+        val now = plan?.stops?.map { it.endOfLap } ?: return noPlan
+        val agreed = raceMemory.agreedPlan
+        val history = raceMemory.planHistory
+        val reference = agreed ?: history.dropLast(1).lastOrNull() ?: history.firstOrNull()
+        val label = if (agreed != null) "ce qu'on a décidé au tour ${agreed.lap}" else "le plan annoncé au tour ${reference?.lap ?: currentLap()}"
+        if (reference == null || ahead(reference.stops) == ahead(now)) {
+            val why = strategyBrief?.reason?.let { " ${firstSentence(it)}" } ?: ""
+            return "Oui, on reste sur $label : ${RaceMemory.stopsText(ahead(now))}.$why"
+        }
+        val reason = lastPlanChange?.reason?.let { " Raison : ${it.trimEnd('.')}." } ?: ""
+        return "Non, le plan a changé depuis $label : c'était ${RaceMemory.stopsText(ahead(reference.stops))}, maintenant ${RaceMemory.stopsText(ahead(now))}.$reason"
+    }
+
+    /** « On avait décidé quoi ? » : décisions validées, intentions, plan actuel. Rien d'autre que la mémoire. */
+    private fun answerRecall(): String = buildString {
+        val decisions = raceMemory.decisionList
+        if (decisions.isEmpty()) {
+            append("On n'a rien validé ensemble pour l'instant.")
+        } else {
+            append(decisions.takeLast(2).joinToString(" ") { "Au tour ${it.lap} : ${it.text.trimEnd('.')}." })
+        }
+        raceMemory.intentionList.lastOrNull()?.let { append(" Tu m'avais dit au tour ${it.lap} : ${it.text.trimEnd('.')}.") }
+        plan?.let { append(" Plan actuel : ${RaceMemory.stopsText(ahead(it.stops.map { s -> s.endOfLap }))}.") }
+    }
+
+    private data class Stint(val number: Int, val firstLap: Int, val lastLap: Int, val compound: TyreCompound?, val cleanMs: List<Int>)
+
+    /** Relais par train de pneus, avec leurs tours propres (ni départ, ni arrêt, ni sortie des stands, ni sortie de piste). */
+    private fun stints(): List<Stint> {
+        val laps = snapshot.laps
+        if (laps.isEmpty()) return emptyList()
+        val changes = ledger.changes
+        val stopLaps = ledger.stopList.flatMap { listOf(it.lap, it.lap + 1) }.toSet()
+        val bounds = listOf(0) + changes.map { it.lap }
+        return bounds.mapIndexedNotNull { i, from ->
+            val to = bounds.getOrNull(i + 1) ?: Int.MAX_VALUE
+            val inStint = laps.filter { it.lapNumber in (from + 1)..to }
+            if (inStint.isEmpty()) return@mapIndexedNotNull null
+            val clean = inStint.filter { l ->
+                (l.timeMs ?: 0) > 0 && !l.refuelled && !l.pitLane && (l.offTrackEvents ?: 0) == 0 && l.lapNumber != 1 && l.lapNumber !in stopLaps
+            }.mapNotNull { it.timeMs }
+            val compound = if (i == 0) rules.startTyre else changes[i - 1].compound
+            Stint(i + 1, inStint.first().lapNumber, inStint.last().lapNumber, compound, clean)
+        }
+    }
+
+    private fun stintLine(s: Stint): String {
+        val tyres = s.compound?.spoken ?: "gomme non déclarée"
+        val laps = if (s.firstLap == s.lastLap) "tour ${s.firstLap}" else "tours ${s.firstLap} à ${s.lastLap}"
+        if (s.cleanMs.isEmpty()) return "relais ${s.number} ($tyres, $laps) : aucun tour propre"
+        return "relais ${s.number} ($tyres, $laps) : moyenne ${FrenchFormat.lapTimeSpeech(s.cleanMs.average().roundToInt())} sur ${s.cleanMs.size} " +
+            "tour${if (s.cleanMs.size > 1) "s" else ""} propre${if (s.cleanMs.size > 1) "s" else ""}, meilleur ${FrenchFormat.lapTimeSpeech(s.cleanMs.min())}"
+    }
+
+    /** « Je pilote mieux depuis le changement de pneus ? » : les deux derniers relais, sur les chronos mesurés. */
+    private fun answerCompareStints(): String {
+        val s = stints()
+        if (s.size < 2) return "Pas encore de comparaison : tu n'as pas changé de pneus pendant cette course."
+        val (a, b) = s[s.size - 2] to s.last()
+        if (a.cleanMs.isEmpty() || b.cleanMs.isEmpty()) {
+            return "Pas encore de comparaison fiable : il me faut au moins un tour propre sur chaque relais. ${stintLine(a).replaceFirstChar { it.uppercase() }} ; ${stintLine(b)}."
+        }
+        val diff = (a.cleanMs.average() - b.cleanMs.average()).roundToInt()
+        val verdict = when {
+            diff >= 300 -> "Oui, tu tournes ${StrategyOptions.seconds(diff.toLong())} plus vite en moyenne depuis le changement."
+            diff <= -300 -> "Non, tu tournes ${StrategyOptions.seconds((-diff).toLong())} moins vite en moyenne depuis le changement."
+            else -> "Ton rythme est quasiment le même qu'avant le changement."
+        }
+        return "$verdict ${stintLine(a).replaceFirstChar { it.uppercase() }} ; ${stintLine(b)}. Ça ne mesure pas que le pilotage : " +
+            "les pneus neufs et le carburant plus léger comptent aussi."
+    }
+
+    /** « Qu'est-ce qu'on risque si j'attaque ? » : la marge de carburant mesurée, et ce qu'on ne sait pas des pneus. */
+    private fun answerAttackRisk(): String {
+        val fuelText = engineer.answer(DriverQuery.FUEL, snapshot, fuel).text
+        val tyres = if (engineer.grip.degrading) " Tes pneus montrent déjà des signes de dégradation sur les chronos." else ""
+        return "Attaquer fait consommer plus d'essence et use plus les pneus. Carburant : $fuelText Pneus : GT7 ne transmet pas " +
+            "l'usure, je ne la juge que sur tes chronos et la glisse.$tyres"
+    }
+
+    /** Évolution du rythme et du carburant, pour la mémoire donnée à l'IA (mesures GT7 et calculs du moteur). */
+    private fun raceTrend(): List<String> = buildList {
+        stints().forEach { add("[mesure GT7] ${stintLine(it)}") }
+        val cap = snapshot.packet?.fuelCapacity
+        val samples = snapshot.fuelSamples
+        if (samples.isNotEmpty()) {
+            add(
+                "[mesure GT7] consommation : ${samples.takeLast(3).joinToString(", ") { FuelUnits.amount(it, cap) }} sur les derniers tours" +
+                    (fuel?.perLap?.let { ", moyenne ${FuelUnits.amount(it, cap)} par tour" } ?: ""),
+            )
+        }
+        fuel?.lapsOfFuel?.let { add("[calcul du moteur] autonomie : ${FrenchFormat.decimal(it)} tours") }
+    }
+
+    /** Questions de l'ingénieur encore sans réponse. */
+    private fun pendingQuestions(): List<String> = buildList {
+        pendingConfirmation?.let { add("confirmation demandée au pilote (${commandName(it)})") }
+        if (ledger.awaitingTyreDeclaration) add("Quels pneus as-tu montés ?")
+        if (ledger.awaitingTyreChangeAnswer) add("As-tu changé les pneus ?")
+        pendingTyreFamily?.let { (_, h) -> add("${h.spoken} : course, sport ou confort ?") }
+        ledger.pending?.let { add("arrêt possible au tour ${it.lap}, à confirmer") }
+    }
+
+    /** Une phrase vient d'être échangée : la suivante peut la continuer (« pourquoi ? »). */
+    fun inConversation(nowMs: Long = clock()): Boolean =
+        inAiConversation(nowMs) || raceMemory.lastExchange?.let { nowMs - it.atMs < AI_CONVERSATION_MS } == true
+
+    /** Sujet de l'échange en cours, s'il est récent. */
+    fun conversationTopic(nowMs: Long = clock()): Topic? = raceMemory.currentTopic(nowMs, AI_CONVERSATION_MS)
+
+    /** Calcul du moteur sur une intervention, sans le dire : il est donné à l'IA, et dit tel quel si elle ne répond pas. */
+    fun engineAnalysis(turn: ConversationRouter.Turn): String? {
+        turn.ask?.let { return strategyText(it, turn.question, mutableListOf()) }
+        when (val q = turn.query) {
+            DriverQuery.NEXT_TYRE -> return nextTyreSentence()
+            DriverQuery.TYRE_CHANGE -> return tyreChangeSentence()
+            DriverQuery.TYRES -> return if (snapshot.packet != null) tyreSummary() else null
+            null -> Unit
+            else -> return engineer.answer(q, snapshot, fuel).text
+        }
+        // Relance (« pourquoi ? », « et alors ? ») : le calcul de l'échange précédent sur ce sujet reste la référence.
+        if (turn.followUp) return raceMemory.lastExchange?.takeIf { it.topic == turn.topic }?.analysis
+        return null
+    }
+
+    /** Contexte synthétique donné au modèle conversationnel : jamais le flux UDP. */
+    fun conversationContext(turn: ConversationRouter.Turn, analysis: String?): EngineerPrompt.Context = EngineerPrompt.Context(
+        telemetryLive = telemetryLive(),
+        lap = snapshot.packet?.currentLap?.takeIf { it >= 0 },
+        topic = turn.topic,
+        facts = aiFacts(),
+        analysis = analysis,
+        memory = raceMemory.render(pendingQuestions(), raceTrend()),
+        recent = raceMemory.recent.takeLast(RECENT_EXCHANGES),
+    )
+
+    /**
+     * Réponse d'une intervention conversationnelle : rédigée par le modèle [answeredBy] (vérifiée), ou le calcul du moteur
+     * s'il n'a pas répondu. Rien n'est modifié dans la course.
+     */
+    fun conversationReply(
+        turn: ConversationRouter.Turn,
+        text: String,
+        answeredBy: String,
+        analysis: String?,
+        fromAi: Boolean,
+        nowMs: Long = clock(),
+        notice: String? = null,
+    ): List<EngineerMessage> {
+        pendingConfirmation = null
+        val echo = EngineerMessage("Toi : ${turn.question}", Priority.INFO, MessageCategory.DRIVER)
+        raceMemory.exchange(RaceMemory.Exchange(currentLap(), nowMs, turn.question, text, answeredBy, turn.topic, analysis))
+        if (fromAi) lastAiAnswerMs = nowMs
+        if (turn.topic == Topic.PLAN || turn.topic == Topic.TYRES || turn.topic == Topic.FUEL) lastStrategyAnswerMs = nowMs
+        turn.ask?.takeIf { it != StrategyDialogue.Ask.FollowUp }?.let { lastStrategyAsk = it }
+        val shown = listOfNotNull(notice?.let { EngineerMessage(it, Priority.INFO, MessageCategory.DRIVER) })
+        val answer = EngineerMessage(text, Priority.HIGH, MessageCategory.ANSWER, expectsReply = fromAi || awaitingAnswer, fromAi = fromAi)
+        return listOf(echo) + deliver(shown + answer)
+    }
+
+    /**
+     * « D'accord, on fait comme ça » juste après une discussion de stratégie : le plan en cours devient une décision
+     * prise ensemble (mémoire et journal). Aucune donnée de course n'est modifiée ; aucun appel à l'IA.
+     */
+    fun agreement(text: String, nowMs: Long = clock()): List<EngineerMessage>? {
+        if (awaitingAnswer) return null
+        val last = raceMemory.lastExchange ?: return null
+        if (nowMs - last.atMs > AGREEMENT_WINDOW_MS || last.topic !in AGREEMENT_TOPICS) return null
+        val t = com.gt7pitwall.core.ai.IntentClassifier.clean(text)
+        if (!AGREEMENT.matches(t) || Regex("(^|\\s)(pas|non|jamais)(\\s|$)").containsMatchIn(t)) return null
+        val stops = plan?.stops?.map { it.endOfLap }?.let(::ahead) ?: emptyList()
+        val what = "plan validé : ${RaceMemory.stopsText(stops)}, après « ${last.question.trim()} » → ${RaceMemory.firstSentence(last.answer)}"
+        raceMemory.agree(currentLap(), nowMs, what)
+        journal.record(
+            JournalType.DECISION, JournalSource.ENGINE, "Décision prise ensemble : ${RaceMemory.stopsText(stops)}",
+            decision = "validée par le pilote (« ${text.trim()} »)",
+            details = mapOf("question" to last.question, "reponse" to last.answer, "repondu_par" to last.answeredBy),
+        )
+        val echo = EngineerMessage("Toi : $text", Priority.INFO, MessageCategory.DRIVER)
+        return listOf(echo) + deliver(listOf(EngineerMessage("C'est noté, on part là-dessus : ${RaceMemory.stopsText(stops)}.", Priority.HIGH, MessageCategory.ANSWER)))
+    }
+
     /**
      * Observation du pilote : notée comme déclaration, confrontée aux chronos mesurés. La stratégie n'est réévaluée que
      * si les chronos montrent quelque chose ; aucun pourcentage d'usure n'est inventé.
@@ -1694,6 +1920,10 @@ class RaceController(
             StopEvidence.DRIVER_DECLARED -> "déclaré par toi"
         }
         val sb = StringBuilder("Arrêt ${rec.number} enregistré : $proof.")
+        raceMemory.fact(
+            rec.lap, clock(), "arrêt ${rec.number} au tour ${rec.lap} ($proof)",
+            if (rec.evidence == StopEvidence.REFUEL) Provenance.MEASURED else Provenance.DRIVER,
+        )
         if (rules.mandatoryStops > 0) {
             val done = ledger.stopCount.coerceAtMost(rules.mandatoryStops)
             sb.append(" Arrêts obligatoires : $done sur ${rules.mandatoryStops}.")
@@ -1782,6 +2012,13 @@ class RaceController(
         const val OBSERVATION_LAPS = 5
         const val STRATEGY_FOLLOW_UP_MS = 45_000L
         const val MAX_PLANS = 40
+        const val RECENT_EXCHANGES = 4
+        const val AGREEMENT_WINDOW_MS = 120_000L
+        val AGREEMENT_TOPICS = setOf(Topic.PLAN, Topic.TYRES, Topic.FUEL)
+        val AGREEMENT = Regex(
+            "^(bon |alors |ok |okay |ouais |oui )*(ok|okay|d'accord|ca marche|ca me va|ca roule|je valide|valide|banco|c'est parti|" +
+                "on fait comme ca|on fait ca|on part la dessus|on part sur ca|on y va|on garde ca|parfait on fait ca)( (alors|on y va|on fait comme ca|on fait ca|c'est parti))?$",
+        )
 
         val AI_TOPICS = mapOf(
             DriverQuery.FUEL to "Carburant",
@@ -1840,6 +2077,7 @@ class RaceController(
         val atStart = c.atStart || lap < 1 || (c.current && ledger.stopCount == 0 && ledger.changes.isEmpty())
         if (atStart) {
             applyRules(rules.copy(startTyre = compound))
+            raceMemory.fact(lap.coerceAtLeast(0), clock(), "départ en ${compound.spoken}", Provenance.DRIVER)
             out += "Noté : départ en ${compound.spoken}."
         } else {
             val passage = ledger.changeForPassage(lap)
@@ -1852,10 +2090,11 @@ class RaceController(
                         JournalType.DECISION, JournalSource.ENGINE, "Gomme corrigée : ${replaced.spoken} → ${compound.spoken}",
                         decision = "déclaration précédente remplacée", details = mapOf("avant" to replaced.name, "apres" to compound.name, "tour" to passage!!.lap.toString()),
                     )
+                    raceMemory.fact(lap, clock(), "gomme corrigée : ${compound.spoken} au lieu de ${replaced.spoken}", Provenance.DRIVER)
                     "Corrigé : ${compound.spoken} au lieu de ${replaced.spoken}."
                 }
-                passage != null -> "Noté : ${compound.spoken} montés à cet arrêt."
-                else -> "Noté : ${compound.spoken} montés au tour $lap."
+                passage != null -> "Noté : ${compound.spoken} montés à cet arrêt.".also { raceMemory.fact(lap, clock(), "${compound.spoken} montés", Provenance.DRIVER) }
+                else -> "Noté : ${compound.spoken} montés au tour $lap.".also { raceMemory.fact(lap, clock(), "${compound.spoken} montés", Provenance.DRIVER) }
             }
         }
         if (rules.requiredTyres.isNotEmpty()) {
