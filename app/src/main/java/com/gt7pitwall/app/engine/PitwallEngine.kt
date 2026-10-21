@@ -45,6 +45,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import com.gt7pitwall.core.telemetry.PositionProbe
+import com.gt7pitwall.core.telemetry.GapHunter
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -162,6 +163,32 @@ class PitwallEngine(
     fun refreshProbe() {
         _probe.value = positionProbe.summary()
     }
+
+    /**
+     * Gap Hunter (outils de développement) : exploration silencieuse des octets de la télémétrie. Désactivé par défaut ;
+     * ne transmet rien à la stratégie ni à la radio.
+     */
+    val gapHunter = GapHunter()
+    private val _gap = MutableStateFlow(gapHunter.summary())
+    val gap: StateFlow<GapHunter.Summary> = _gap.asStateFlow()
+    private var lastGapMs = 0L
+
+    /** Sonde des octets de heartbeat (diagnostic, à lancer dans les menus de GT7). */
+    val formatScan: StateFlow<TelemetryClient.FormatScan> = client.scan
+
+    fun setGapHunter(on: Boolean) {
+        gapHunter.setEnabled(on)
+        client.rawTap = if (on) TelemetryClient.RawTap(gapHunter::onFrame) else null
+        refreshGap()
+    }
+
+    fun refreshGap() {
+        _gap.value = gapHunter.summary()
+    }
+
+    fun startFormatScan() = client.startFormatScan()
+
+    fun cancelFormatScan() = client.cancelFormatScan()
 
     /** Messages de fin de tour détaillés ou courts (temps, écart avec ton meilleur, position). */
     var detailedLapReports: Boolean
@@ -342,6 +369,10 @@ class PitwallEngine(
                 lastProbeMs = now
                 refreshProbe()
             }
+            if (gapHunter.enabled && now - lastGapMs >= GAP_REFRESH_MS) {
+                lastGapMs = now
+                refreshGap()
+            }
         }
         mutex.withLock {
             race.engineer.askPositionEachLap = askPositionEachLap()
@@ -404,6 +435,7 @@ class PitwallEngine(
     private companion object {
         const val UI_REFRESH_MS = 50L
         const val PROBE_REFRESH_MS = 500L
+        const val GAP_REFRESH_MS = 1_000L
         const val MAX_RADIO_LOG = 50
         const val RULES_DEBOUNCE_MS = 1_500L
         const val HISTORY_REFRESH_MS = 2_000L

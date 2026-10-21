@@ -99,6 +99,19 @@ fun CarCard(p: TelemetryPacket?, g: GForce?) {
             }
         }
 
+        // Format C : valeurs brutes de GT7, affichées seulement (aucune annonce radio avant validation sur PS5).
+        p.currentLapTimeMs?.let { ms ->
+            val shown = if (ms > 0) com.gt7pitwall.core.engineer.FrenchFormat.lapTime(ms) else "$ms (valeur brute)"
+            Text("Chrono du tour (format C) $shown", fontFamily = FontFamily.Monospace)
+        }
+        p.surfaces?.let { s ->
+            Text(
+                "Surfaces AVG ${s.fl.label} • AVD ${s.fr.label} • ARG ${s.rl.label} • ARD ${s.rr.label}",
+                color = if (s.wheelsOff > 0) PitColors.Yellow else PitColors.Muted,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+
         p.turboBar?.let { bar ->
             Text("Turbo ${if (bar >= 0) "+" else ""}${fmt(bar, 2)} bar", fontFamily = FontFamily.Monospace)
         }
@@ -110,6 +123,8 @@ fun CarCard(p: TelemetryPacket?, g: GForce?) {
             val tod = p.timeOfDayMs
             if (tod >= 0) add("Heure en piste %02d:%02d".format(tod / 3_600_000, (tod / 60_000) % 60))
             add("Code voiture ${p.carCode}")
+            p.carCategory?.let { add("Catégorie $it") }
+            p.wheelBaseM?.takeIf { it > 0f }?.let { add("Empattement ${fmt(it, 2)} m") }
         }
         Text(details.joinToString(" • "), color = PitColors.Muted, style = MaterialTheme.typography.bodySmall)
 
