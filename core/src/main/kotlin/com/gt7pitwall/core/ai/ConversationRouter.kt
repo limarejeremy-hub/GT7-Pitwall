@@ -92,6 +92,10 @@ object ConversationRouter {
         // Question de chiffre simple (essence, dernier tour, position…) : le moteur répond tout de suite, sans quota.
         if (query != null && !followUp && (!OPEN.containsMatchIn(question) || STATUS.containsMatchIn(question))) return null
 
+        // Bout de phrase mal reconnu (essai réel : « deux sorti », « deux encore », « l'arret position ») : le moteur répond
+        // gratuitement plutôt que d'envoyer une requête sur une phrase sans sens.
+        val words = question.split(' ', '\'').filter { it.isNotBlank() }
+        if (!yesNo && words.size <= SHORT_WORDS && !SHORT_OK.containsMatchIn(question)) return null
         if (followUp) return Turn(question, lastTopic!!, complex = lastTopic in COMPLEX_TOPICS, query = query, followUp = true)
         val topic = when (intent) {
             Intent.COACHING -> Topic.COACHING
@@ -107,6 +111,14 @@ object ConversationRouter {
 
     /** « Comment sont les pneus ? », « combien d'essence ? » : une mesure, pas une discussion. */
     private val STATUS = Regex("^(radio )?(comment (sont|vont|va)|ca va|est ce que (mes|les|j'ai)|il me reste|combien)")
+
+    private const val SHORT_WORDS = 3
+
+    /** Phrases courtes qui ont un sens : relance, question, accord. */
+    private val SHORT_OK = Regex(
+        "(^(et|mais|alors|donc|bon|pourquoi|comment|explique|precise|detaille|continue|vas y|ok|d'accord)(\\s|$))|" +
+            "(^|\\s)(quoi|combien|quel|quelle|quels|quelles|pourquoi|comment|ou|quand|conseil\\w*|avis)(\\s|$)|\\?",
+    )
 
     private val COMPLEX_TOPICS = setOf(Topic.PLAN, Topic.TYRES, Topic.FUEL)
 

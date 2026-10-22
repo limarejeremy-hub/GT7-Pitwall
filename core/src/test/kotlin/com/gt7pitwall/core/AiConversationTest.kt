@@ -278,6 +278,35 @@ class AiConversationTest {
         assertFalse(Regex("(^|\\W)avance(\\W|$)").containsMatchIn(out.answer().text), out.answer().text)
     }
 
+    // Essai réel du 22/10 : télémétrie arrêtée, Gemini disait « Tu es P8 » (position d'une ancienne session), et des
+    // bouts de phrase mal reconnus (« deux sorti », « deux encore ») consommaient des requêtes.
+    @Test
+    fun withoutLiveTelemetryNoStaleRaceDataReachesTheModel() = runBlocking<Unit> {
+        var now = 1_000_000L
+        val store = FakeStorage(rules = rules)
+        val controller = RaceController(storage = store, clock = { now })
+        val sim = RaceSim(controller, totalLaps = 12, perLap = 14f)
+        sim.start()
+        sim.driveLaps(3)
+        assertTrue("Position :" in controller.aiFacts().text)
+        now += 60_000 // plus aucun paquet : la télémétrie n'est plus en direct
+        val facts = controller.aiFacts().text
+        assertTrue("Aucune télémétrie de course en ce moment" in facts, facts)
+        assertFalse("Position :" in facts || "Carburant :" in facts || "Stratégie :" in facts, facts)
+
+        val s = setup()
+        s.sim.start()
+        s.sim.driveLaps(2)
+        s.say("tu me conseilles quels pneus")
+        val calls = s.calls()
+        s.say("deux sorti")
+        s.say("deux encore")
+        s.say("l'arret position")
+        assertEquals(calls, s.calls(), "des bouts de phrase mal reconnus n'envoient aucune requête")
+        s.say("pourquoi")
+        assertEquals(calls + 1, s.calls(), "une vraie relance part bien au modèle")
+    }
+
     // Aiguillage des phrases du pilote (sans aucun appel).
     @Test
     fun routingOfTheDriversRealAndExamplePhrases() {

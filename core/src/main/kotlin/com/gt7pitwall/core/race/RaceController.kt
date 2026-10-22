@@ -653,6 +653,19 @@ class RaceController(
                 listOfNotNull(ed.trackName.value, ed.cars.value?.let { "voitures $it" }, ed.bop.value?.let { "BoP $it" }).joinToString(", ") + "."
         }
         ruleGaps.takeIf { it.isNotEmpty() }?.let { g -> lines += "Règlement inconnu sur : ${g.joinToString(", ") { it.label }}." }
+        // Sans télémétrie en direct, aucune valeur « du moment » (position, carburant, plan, tour en cours) : ce serait
+        // celle d'une ancienne session, présentée comme actuelle (essai réel : « Tu es P8 » télémétrie arrêtée).
+        val live = telemetryLive()
+        if (!live) {
+            lines += "Aucune télémétrie de course en ce moment : aucune position, aucun tour en cours, aucun carburant ni plan en direct."
+            carName?.let { lines += "Voiture de la dernière session : $it." }
+            course?.let { lines += "Circuit de la dernière session : ${it.label}." }
+            lines += "Obligations du règlement : ${obligationsSentence()}"
+            for (lap in snap.laps.takeLast(AI_LAPS)) {
+                lap.timeMs?.takeIf { it > 0 }?.let { lines += "Dernière session, tour ${lap.lapNumber} : ${FrenchFormat.lapTimeSpeech(it)} (mesuré, course terminée ou interrompue)." }
+            }
+            return AiFacts(lines)
+        }
         strategyBrief?.let { lines += it.facts() }
         activeObservations.forEach { o -> lines += "Déclaré par le pilote au tour ${o.lap} (non mesuré) : ${o.kind.label}." }
         history.let { h -> lines += "Historique : ${h.comparable} session(s) comparable(s) archivée(s), dont ${h.sameEvent} avec le même règlement." }
