@@ -332,6 +332,13 @@ class AiConversationTest {
         assertEquals(FailureKind.QUOTA, AiErrors.classify("QuotaExceededException", "Resource has been exhausted (e.g. check quota).").kind)
         assertTrue(AiErrors.classify("ServerException", "429: limit 20 per day").daily)
         assertEquals(FailureKind.OVERLOADED, AiErrors.classify("ServerException", "503 The model is overloaded. Please try again later.").kind)
+        // Message réel reçu de Flash 3.8 le 22/10 : surcharge temporaire, on passe tout de suite à Flash-Lite.
+        val real = AiErrors.classify(
+            "com.google.firebase.ai.type.ServerException",
+            "This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.",
+        )
+        assertEquals(FailureKind.OVERLOADED, real.kind)
+        assertTrue(real.kind.fast)
         assertEquals(FailureKind.NETWORK, AiErrors.classify("java.net.UnknownHostException", "Unable to resolve host").kind)
         assertEquals(FailureKind.AUTH, AiErrors.classify("FirebaseAIException", "Firebase App Check token is invalid").kind)
         assertEquals(FailureKind.MODEL_UNAVAILABLE, AiErrors.classify("ServerException", "404 models/gemini-x is not found").kind)

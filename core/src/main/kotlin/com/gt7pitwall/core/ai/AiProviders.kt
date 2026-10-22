@@ -92,7 +92,10 @@ object AiErrors {
         val kind = when {
             "timeout" in c || "timed out" in m -> FailureKind.TIMEOUT
             "quota" in c || "429" in m || "resource_exhausted" in m || "quota" in m || "rate limit" in m -> FailureKind.QUOTA
-            "503" in m || "unavailable" in m || "overloaded" in m || "service unavailable" in m -> FailureKind.OVERLOADED
+            // Essai réel du 22/10 (Flash 3.8, niveau gratuit) : « This model is currently experiencing high demand. Spikes in
+            // demand are usually temporary. Please try again later. »
+            "503" in m || "unavailable" in m || "overloaded" in m || "high demand" in m || "try again later" in m ||
+                "temporarily" in m -> FailureKind.OVERLOADED
             "unknownhost" in c || "connect" in c || "unable to resolve host" in m || "failed to connect" in m ||
                 "network" in m || "socket" in c || "ioexception" in c -> FailureKind.NETWORK
             "appcheck" in c || "app check" in m || "app_check" in m || "permission_denied" in m || "403" in m ||
