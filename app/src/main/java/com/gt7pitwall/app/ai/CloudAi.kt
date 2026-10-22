@@ -132,11 +132,55 @@ class CloudAi(private val context: Context) {
         }
     }
 
-    fun saveConfig(projectId: String, appId: String, apiKey: String?) {
+    /**
+     * Enregistre la configuration saisie. Renvoie un message d'erreur (rien n'est enregistré) si une valeur n'a pas
+     * le bon format : on évite ainsi de gaspiller des requêtes sur une clé mal copiée.
+     */
+    fun saveConfig(projectId: String, appId: String, apiKey: String?): String? {
+        val key = apiKey?.trim()?.takeIf { it.isNotEmpty() }
+        checkFormat(projectId.trim(), appId.trim(), key, needKey = !store.hasApiKey)?.let { return it }
         store.projectId = projectId
         store.appId = appId
-        apiKey?.trim()?.takeIf { it.isNotEmpty() }?.let(store::saveApiKey)
+        key?.let(store::saveApiKey)
         connect()
+        return null
+    }
+
+    /**
+     * Lit le fichier google-services.json téléchargé depuis la console Firebase : ID du projet, ID de l'application
+     * Android de Pitwall et clé du projet. Rien n'est gardé du fichier en dehors de ces trois valeurs.
+     */
+    fun importGoogleServices(json: String): String {
+        return try {
+            val root = org.json.JSONObject(json)
+            val projectId = root.getJSONObject("project_info").getString("project_id")
+            val clients = root.getJSONArray("client")
+            val client = (0 until clients.length()).map { clients.getJSONObject(it) }.firstOrNull {
+                it.getJSONObject("client_info").optJSONObject("android_client_info")?.optString("package_name") == context.packageName
+            } ?: return "Ce fichier ne contient pas l'application ${context.packageName}. Télécharge celui de ton application Android."
+            val appId = client.getJSONObject("client_info").getString("mobilesdk_app_id")
+            val keys = client.optJSONArray("api_key")
+            val key = keys?.let { k -> (0 until k.length()).map { k.getJSONObject(it).optString("current_key") }.firstOrNull { it.isNotBlank() } }
+                ?: return "Ce fichier ne contient pas de clé (« current_key »)."
+            saveConfig(projectId, appId, key) ?: "Configuration importée : projet $projectId, clé ${maskKey(key)}. Touche « Tester Flash-Lite »."
+        } catch (e: Exception) {
+            "Fichier illisible : choisis le fichier google-services.json téléchargé depuis Firebase."
+        }
+    }
+
+    /** Clé enregistrée, masquée (début et fin seulement), pour vérifier qu'elle est bien celle du projet. */
+    fun savedKeyHint(): String? = store.apiKey()?.let(::maskKey)
+
+    private fun maskKey(k: String) = if (k.length > 10) "${k.take(4)}…${k.takeLast(4)} (${k.length} caractères)" else "(${k.length} caractères)"
+
+    private fun checkFormat(projectId: String, appId: String, key: String?, needKey: Boolean): String? = when {
+        projectId.isEmpty() -> "ID du projet manquant."
+        !Regex("^[a-z0-9-]{4,40}$").matches(projectId) -> "ID du projet inattendu : minuscules, chiffres et tirets (par exemple gt7-pitwall-1a2b3)."
+        !Regex("^1:\\d+:android:[0-9a-f]+$").matches(appId) -> "ID de l'application inattendu : il doit ressembler à 1:123456789:android:abc123…"
+        key == null && needKey -> "Clé manquante."
+        key != null && !Regex("^AIza[0-9A-Za-z_\\-]{35}$").matches(key) ->
+            "Clé inattendue : elle commence par AIza et fait 39 caractères (reçu ${key.length}). Recopie-la ou importe google-services.json."
+        else -> null
     }
 
     fun clearConfig() {

@@ -1693,6 +1693,20 @@ private fun CloudAiCard(cloud: com.gt7pitwall.app.ai.CloudAi, onMode: (com.gt7pi
     var appId by rememberSaveable { mutableStateOf(cloud.store.appId) }
     var apiKey by remember { mutableStateOf("") }
     val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    val context = LocalContext.current
+    var configMessage by remember { mutableStateOf<String?>(null) }
+    var keyHint by remember { mutableStateOf(cloud.savedKeyHint()) }
+    // Import du fichier google-services.json téléchargé depuis la console Firebase (aucune saisie à la main).
+    val importer = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val text = runCatching { context.contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) } }.getOrNull()
+        configMessage = if (text == null) "Impossible de lire ce fichier." else cloud.importGoogleServices(text)
+        projectId = cloud.store.projectId
+        appId = cloud.store.appId
+        keyHint = cloud.savedKeyHint()
+    }
     PitCard("IA de l'ingénieur") {
         com.gt7pitwall.core.ai.AiMode.entries.forEach { m ->
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1744,6 +1758,17 @@ private fun CloudAiCard(cloud: com.gt7pitwall.app.ai.CloudAi, onMode: (com.gt7pi
                 color = PitColors.Muted,
                 style = MaterialTheme.typography.bodySmall,
             )
+            Button(onClick = { importer.launch(arrayOf("application/json", "text/plain", "application/octet-stream", "*/*")) }, modifier = Modifier.fillMaxWidth()) {
+                Text("Importer google-services.json")
+            }
+            Text(
+                "Le plus simple : console Firebase → Paramètres du projet → Vos applications → application Android → " +
+                    "« google-services.json », puis choisis ce fichier ici. Ou saisis les trois valeurs à la main :",
+                color = PitColors.Muted,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            configMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold) }
+            keyHint?.let { Text("Clé enregistrée : $it", color = PitColors.Muted, style = MaterialTheme.typography.bodySmall) }
             OutlinedTextField(projectId, { projectId = it }, singleLine = true, label = { Text("ID du projet") }, modifier = Modifier.fillMaxWidth())
             OutlinedTextField(appId, { appId = it }, singleLine = true, label = { Text("ID de l'application (1:…:android:…)") }, modifier = Modifier.fillMaxWidth())
             OutlinedTextField(
@@ -1753,8 +1778,15 @@ private fun CloudAiCard(cloud: com.gt7pitwall.app.ai.CloudAi, onMode: (com.gt7pi
                 modifier = Modifier.fillMaxWidth(),
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { cloud.saveConfig(projectId, appId, apiKey); apiKey = "" }, modifier = Modifier.weight(1f)) { Text("Enregistrer") }
-                OutlinedButton(onClick = { cloud.clearConfig(); projectId = ""; appId = "" }, modifier = Modifier.weight(1f)) { Text("Effacer") }
+                Button(
+                    onClick = {
+                        configMessage = cloud.saveConfig(projectId, appId, apiKey) ?: "Enregistré. Touche « Tester Flash-Lite »."
+                        apiKey = ""
+                        keyHint = cloud.savedKeyHint()
+                    },
+                    modifier = Modifier.weight(1f),
+                ) { Text("Enregistrer") }
+                OutlinedButton(onClick = { cloud.clearConfig(); projectId = ""; appId = ""; keyHint = null; configMessage = null }, modifier = Modifier.weight(1f)) { Text("Effacer") }
             }
             Text("App Check : ${status.appCheckMode}", style = MaterialTheme.typography.bodySmall)
             status.debugSecret?.let { secret ->
