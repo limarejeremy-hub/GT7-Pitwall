@@ -6,8 +6,10 @@ import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
 import com.google.firebase.ai.ai
 import com.google.firebase.ai.type.GenerativeBackend
+import com.google.firebase.ai.type.ThinkingLevel
 import com.google.firebase.ai.type.content
 import com.google.firebase.ai.type.generationConfig
+import com.google.firebase.ai.type.thinkingConfig
 import com.gt7pitwall.core.ai.AiBackend
 import com.gt7pitwall.core.ai.AiErrors
 import com.gt7pitwall.core.ai.AiMode
@@ -25,6 +27,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Gemini dans le cloud, via le SDK officiel Firebase AI Logic et la Gemini Developer API (niveau gratuit : projet sans
@@ -84,7 +87,12 @@ class CloudAi(private val context: Context) {
                 val model = Firebase.ai(app = a, backend = GenerativeBackend.googleAI()).generativeModel(
                     modelName = modelId,
                     // Réponse parlée courte ; la marge couvre la réflexion du modèle, la longueur est bornée par la consigne.
-                    generationConfig = generationConfig { maxOutputTokens = MAX_OUTPUT_TOKENS },
+                    generationConfig = generationConfig {
+                        maxOutputTokens = MAX_OUTPUT_TOKENS
+                        // Flash 3.8 réfléchit longuement par défaut : à la radio, une réflexion courte suffit (le moteur a
+                        // déjà fait les calculs) et répond plus vite.
+                        if (backend == AiBackend.FLASH) thinkingConfig = thinkingConfig { thinkingLevel = ThinkingLevel.LOW }
+                    },
                     systemInstruction = content { text(systemInstruction) },
                 )
                 val text = model.generateContent(prompt).text?.trim()
@@ -228,7 +236,10 @@ class CloudAi(private val context: Context) {
             _testResult.value = "${b.label} : test en cours (1 requête)…"
             val t0 = System.currentTimeMillis()
             usage.onSent(b)
-            val r = m.complete("Tu es un ingénieur de course. Réponds en français, en une phrase courte.", "Dis au pilote que la radio fonctionne.")
+            // Délai borné : sans lui, un modèle qui réfléchit longtemps laissait « test en cours » affiché sans fin.
+            val r = withTimeoutOrNull(TEST_TIMEOUT_MS) {
+                m.complete("Tu es un ingénieur de course. Réponds en français, en une phrase courte.", "Dis au pilote que la radio fonctionne.")
+            } ?: AiResult.Failure(FailureKind.TIMEOUT, "pas de réponse après ${TEST_TIMEOUT_MS / 1000} s")
             val ms = System.currentTimeMillis() - t0
             _testResult.value = when (r) {
                 is AiResult.Text -> {
@@ -265,5 +276,6 @@ class CloudAi(private val context: Context) {
     private companion object {
         const val APP_NAME = "pitwall-ai"
         const val MAX_OUTPUT_TOKENS = 1024
+        const val TEST_TIMEOUT_MS = 45_000L
     }
 }
