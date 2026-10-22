@@ -1,0 +1,53 @@
+# Test isolé de connexion : n'active PAS encore la chaîne Claude ↔ Codex.
+# Ce workflow doit être fusionné sur la branche par défaut pour réagir aux issues.
+name: "Pitwall - test connexion Claude"
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+  issues: write
+  id-token: write
+
+concurrency:
+  group: pitwall-claude-smoke-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  claude-smoke-test:
+    # Uniquement une demande explicite créée par le propriétaire du dépôt.
+    if: ${{ github.event.issue.user.login == 'limarejeremy-hub' && startsWith(github.event.issue.title, '[Pitwall Test]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Charger la véritable base de code Android (pas main)
+        uses: actions/checkout@v4
+        with:
+          ref: claude/gt7-ia-conversation
+          persist-credentials: false
+
+      - name: Vérifier que le secret Claude est configuré
+        env:
+          CLAUDE_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          if [ -z "$CLAUDE_TOKEN" ]; then
+            echo "::error::Secret CLAUDE_CODE_OAUTH_TOKEN absent : configuration nécessaire dans GitHub Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+
+      - name: Tester Claude Code GitHub Action sans écrire le code
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          base_branch: claude/gt7-ia-conversation
+          prompt: |
+            Tu vérifies seulement la liaison GitHub Action -> Claude Code pour GT7 Pitwall.
+            Issue de test : #${{ github.event.issue.number }}.
+            Lis la structure du projet présent dans le checkout (core/, app/).
+            Réponds brièvement dans l'issue pour indiquer que Claude a bien pu examiner
+            la base de code Android et identifier les modules core et app.
+            Ne modifie aucun fichier, ne crée aucune branche ni PR, ne lance aucun test
+            et ne fusionne rien. En cas de blocage, explique-le.
