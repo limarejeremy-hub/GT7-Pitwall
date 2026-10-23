@@ -1,0 +1,86 @@
+# Diagnostic volontaire, limité à une requête, sans fuite de jetons ou réponses.
+# Ne lance PAS l'automatisation Claude/Codex; ne modifie PAS le code Pitwall.
+name: "Pitwall - diagnostic OAuth Claude"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pitwall-claude-oauth-diagnostic
+  cancel-in-progress: false
+
+jobs:
+  diagnostic:
+    # Seul le propriétaire peut lancer le diagnostic.
+    if: ${{ github.actor == 'limarejeremy-hub' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Installer Claude Code (outil officiel)
+        run: curl -fsSL https://claude.ai/install.sh | bash
+
+      - name: Vérifier un seul appel et classer l'erreur sans afficher de secret
+        shell: bash
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ""
+          ANTHROPIC_AUTH_TOKEN: ""
+        run: |
+          set -euo pipefail
+          if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+            echo "::error::Secret Claude absent"
+            exit 1
+          fi
+          if [[ "$CLAUDE_CODE_OAUTH_TOKEN" =~ [[:space:]] ]]; then
+            echo "::error::Le secret contient des espaces ou retours à la ligne"
+            exit 1
+          fi
+          umask 077
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          set +e
+          timeout 90s "$HOME/.local/bin/claude" -p "Réponds uniquement OK." --max-turns 1 --output-format json > "$tmp/out.json" 2> "$tmp/stderr"
+          exit_code=$?
+          set -e
+          # La sortie brute du modèle, les messages d'erreur libres et le jeton
+          # restent en fichiers éphémères privés : seule une classification sort.
+          python3 - "$tmp/out.json" "$tmp/stderr" "$exit_code" <<'PY'
+          import json
+          import pathlib
+          import re
+          import sys
+
+          out = pathlib.Path(sys.argv[1]).read_text(errors="replace")
+          err = pathlib.Path(sys.argv[2]).read_text(errors="replace")
+          exit_code = int(sys.argv[3])
+          try:
+              obj = json.loads(out)
+          except (json.JSONDecodeError, ValueError):
+              obj = {}
+          if exit_code == 0 and obj.get("is_error") is False:
+              print("RESULTAT : authentification directe CLI et requête minimales réussies.")
+              sys.exit(0)
+
+          raw = out + "\n" + err
+          if exit_code == 124:
+              category = "delai depasse"
+          elif re.search(r"(?i)(?:\\b401\\b|authentication_failed|invalid.*(?:oauth|token|auth)|failed to authenticate|unauthoriz)", raw):
+              category = "authentification refusee (401 probable)"
+          elif re.search(r"(?i)(?:\\b403\\b|forbidden|permission denied)", raw):
+              category = "acces refuse (403 probable)"
+          elif re.search(r"(?i)(?:\\b429\\b|rate.limit|quota|usage.limit)", raw):
+              category = "limite de quota (429 probable)"
+          elif re.search(r"(?i)(?:\\b5\\d\\d\\b|server.error|overloaded)", raw):
+              category = "erreur de service (5xx probable)"
+          else:
+              category = "indetermine : diagnostic complementaire necessaire"
+
+          print("RESULTAT : echec de la requete directe.")
+          print("CATEGORIE :", category)
+          print("ERREUR_RETOUR_CLI :", exit_code)
+          print("Aucune reponse brute, URL d'authentification ni valeur de secret publiee.")
+          sys.exit(1)
+          PY
