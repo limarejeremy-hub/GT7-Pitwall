@@ -1,0 +1,39 @@
+# Diagnostic du jeton Claude (issue #8) : une seule requête minimale, lancée à la main par le propriétaire.
+# Le dépôt est public : on n'affiche JAMAIS le jeton ni la sortie complète, seulement sa forme et le message d'état.
+name: "Pitwall - diagnostic jeton Claude"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostic:
+    if: ${{ github.actor == 'limarejeremy-hub' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Installer Claude Code
+        run: curl -fsSL https://claude.ai/install.sh | bash
+
+      - name: Forme du secret (sans sa valeur)
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          t="$CLAUDE_CODE_OAUTH_TOKEN"
+          blancs=$(printf '%s' "$t" | tr -cd ' \t\r\n' | wc -c)
+          # Un jeton de « claude setup-token » commence par ce préfixe public, identique pour tous.
+          case "$t" in sk-ant-oat*) prefixe="oui" ;; *) prefixe="non" ;; esac
+          echo "longueur=${#t} caracteres_blancs=${blancs} prefixe_setup_token=${prefixe}"
+
+      - name: Une requête minimale, état seulement
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          ~/.local/bin/claude -p "Réponds uniquement OK." --max-turns 1 --output-format json > sortie.json 2> erreurs.txt || true
+          # Uniquement l'indicateur d'erreur et les 200 premiers caractères du résultat (le message d'erreur s'il y en a un).
+          jq '{is_error, result: (.result | tostring | .[0:200])}' sortie.json 2>/dev/null || echo "Sortie JSON absente."
+          # Dernières lignes d'erreur du programme, au cas où il s'arrête avant de produire du JSON.
+          tail -n 5 erreurs.txt | cut -c1-200
