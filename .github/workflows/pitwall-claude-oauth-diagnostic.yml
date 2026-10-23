@@ -34,8 +34,17 @@ jobs:
             echo "::error::Secret Claude absent"
             exit 1
           fi
-          if [[ "$CLAUDE_CODE_OAUTH_TOKEN" =~ [[:space:]] ]]; then
-            echo "::error::Le secret contient des espaces ou retours à la ligne"
+          # Les terminaux mobiles peuvent ajouter des retours à la ligne pendant
+          # la sélection du jeton. Nettoyage uniquement en mémoire, sans log.
+          # Les jetons OAuth Claude n'incluent pas de caractères d'espacement.
+          CLAUDE_CODE_OAUTH_TOKEN="$(printf '%s' "$CLAUDE_CODE_OAUTH_TOKEN" | LC_ALL=C tr -d '[:space:]')"
+          export CLAUDE_CODE_OAUTH_TOKEN
+          if [[ "$CLAUDE_CODE_OAUTH_TOKEN" != sk-ant-oat01-* ]]; then
+            echo "::error::Format du secret invalide : jeton OAuth Claude attendu"
+            exit 1
+          fi
+          if (( ${#CLAUDE_CODE_OAUTH_TOKEN} < 70 )); then
+            echo "::error::Jeton probablement incomplet après nettoyage"
             exit 1
           fi
           umask 077
