@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"
+	xmlns:content="http://purl.org/rss/1.0/modules/content/"
+	xmlns:dc="http://purl.org/dc/elements/1.1/"
+	>
+<!-- Extrait réel du flux https://www.gtplanet.net/tag/gran-turismo-7-daily-races/feed/ lu le 19/10/2026 (article du
+     19 octobre, images retirées). Le second article est construit pour les tests (semaine précédente). -->
+<channel>
+	<title>Gran Turismo 7 Daily Races &#8211; GTPlanet</title>
+	<item>
+		<title>Gran Turismo 7 Daily Races: No Sugo for You</title>
+		<link>https://www.gtplanet.net/gran-turismo-7-daily-races-no-sugo-for-you-20261019/</link>
+		<pubDate>Mon, 19 Oct 2026 16:10:06 +0000</pubDate>
+		<description><![CDATA[Sugo may be the track everyone wants to drive.]]></description>
+		<content:encoded><![CDATA[
+<p class="wp-block-paragraph">A new week brings a new set of <em>Gran Turismo 7</em> Daily Races, with three fresh events now live and running through next Monday, October 26.</p>
+<p class="wp-block-paragraph">In its place, Race A heads to Circuit Gilles-Villeneuve for a five-lap one-make in the Ferrari Enzo Ferrari &#8217;02. Here it runs on Sports Soft tires with BOP (L), a rolling start, and settings fully fixed.</p>
+<p class="wp-block-paragraph">Race B is a straightforward six laps of Autodromo de Interlagos in Gr.3 cars on Racing Hard tires, with BOP (M), a rolling start, and brake balance the only open setting.</p>
+<p class="wp-block-paragraph">Race C is the longest and most involved event of the week. It&#8217;s eleven laps of Suzuka&#8217;s figure-eight layout in the full 2016 Super GT GT500 lineup, with fuel use doubled and tire wear at 4x. Racing Mediums are the only compound available, and a single pit stop is mandatory.</p>
+<h2 id="gt7-daily-races-october-19-race-a" class="wp-block-heading">GT7 Daily Races (October 19): Race A</h2>
+<ul class="wp-block-list">
+<li><strong>Track:</strong> Circuit Gilles-Villeneuve (5 laps)</li>
+<li><strong>Car:</strong> Ferrari Enzo Ferrari &#8217;02 — Event-Specified</li>
+<li><strong>Power/Weight/PP Limit:</strong> BOP (L)</li>
+<li><strong>Tires:</strong> Sports Soft</li>
+<li><strong>Settings:</strong> Specified</li>
+<li><strong>Start Type:</strong> Rolling Start</li>
+<li><strong>Mandatory Pit Stop:</strong> –</li>
+<li><strong>Fuel Multiplier:</strong> 1x</li>
+<li><strong>Tire Multiplier:</strong> 1x</li>
+</ul>
+<h2 id="gt7-daily-races-october-19-race-b" class="wp-block-heading">GT7 Daily Races (October 19): Race B</h2>
+<ul class="wp-block-list">
+<li><strong>Track:</strong> Autodromo de Interlagos (6 laps)</li>
+<li><strong>Car:</strong> Gr.3 — Garage/Specified Car</li>
+<li><strong>Power/Weight/PP Limit:</strong> BOP (M)</li>
+<li><strong>Tires:</strong> Racing Hard</li>
+<li><strong>Settings:</strong> Partially Allowed (Brake Balance)</li>
+<li><strong>Start Type:</strong> Rolling Start</li>
+<li><strong>Mandatory Pit Stop:</strong> –</li>
+<li><strong>Fuel Multiplier:</strong> 1x</li>
+<li><strong>Tire Multiplier:</strong> 1x</li>
+</ul>
+<h2 id="gt7-daily-races-october-19-race-c" class="wp-block-heading">GT7 Daily Races (October 19): Race C</h2>
+<ul class="wp-block-list">
+<li><strong>Track:</strong> Suzuka Circuit (11 laps)</li>
+<li><strong>Car:</strong> Nissan GT-R NISMO GT500 &#8217;16, Honda NSX CONCEPT-GT &#8217;16, Lexus RC F GT500 &#8217;16 — Garage/Specified Car</li>
+<li><strong>Power/Weight/PP Limit:</strong> BOP (M)</li>
+<li><strong>Tires:</strong> Racing Medium</li>
+<li><strong>Settings:</strong> Partially Allowed (Brake Balance)</li>
+<li><strong>Start Type:</strong> Rolling Start</li>
+<li><strong>Mandatory Pit Stop:</strong> 1</li>
+<li><strong>Fuel Multiplier:</strong> 2x</li>
+<li><strong>Tire Multiplier:</strong> 4x</li>
+</ul>
+<p class="wp-block-paragraph">With <em>GT7</em>&#8217;s Daily Races rolling over every Monday, the next new set should land on Monday, October 26.</p>
+]]></content:encoded>
+	</item>
+	<item>
+		<title>Gran Turismo 7 Daily Races: Test Week</title>
+		<link>https://www.gtplanet.net/test-20261012/</link>
+		<pubDate>Mon, 12 Oct 2026 18:36:08 +0000</pubDate>
+		<content:encoded><![CDATA[
+<h2>GT7 Daily Races (October 12): Race B</h2>
+<ul>
+<li><strong>Track:</strong> Circuit de Spa-Francorchamps (7 laps)</li>
+<li><strong>Car:</strong> Gr.3 — Garage/Specified Car</li>
+<li><strong>Tires:</strong> Racing Medium, Racing Hard (both required)</li>
+<li><strong>Mandatory Pit Stop:</strong> 1</li>
+<li><strong>Fuel Multiplier:</strong> 3x</li>
+<li><strong>Tire Multiplier:</strong> ten</li>
+</ul>
+]]></content:encoded>
+	</item>
+</channel>
+</rss>
