@@ -161,3 +161,43 @@ journal après chaque course.
    mets quoi comme pneus ? » doit donner les chiffres de l'historique, ou dire qu'il est insuffisant.
 7. **Non-régression** : bips, conversation continue, Discord, écran éteint, Fold, Gemini, positions et carburant
    fonctionnent comme avant.
+
+## 8. Retour d'essai PS5 : pneus conservés et essai comparatif
+
+### Compréhension de « je n'ai pas changé les pneus » (corrigé)
+
+Avant : « je n'ai pas changé les pneus » était lu comme un changement nié, et « mêmes pneus », « j'ai pas touché aux
+pneus » comme une question sur l'état des pneus ; « non je les ai pas changés » n'était pas compris. Nouvelle commande
+`DriverCommand.TyresKept` :
+
+| Phrase | Après « As-tu changé les pneus ? » | Dite spontanément |
+|---|---|---|
+| « je n'ai pas changé les pneus », « j'ai gardé les mêmes pneus », « mêmes pneus », « pas de changement de pneus », « j'ai pas touché aux pneus », « pneus pas changés », « même train de pneus » | arrêt marqué « pneus conservés », relais continu | arrêt récent (0 à 2 tours) sans réponse : marqué « conservés » ; sinon « je ne note aucun changement » |
+| « non je les ai pas changés », « non pas changé », « j'ai rien changé », « c'est les mêmes » | idem | rien n'est noté : « Tu parles des pneus ? Dis « mêmes pneus » » |
+| « est-ce que je garde les mêmes pneus ? » | question : réponse sur le changement de pneus | idem |
+| « je vais garder les pneus » | intention, rien n'est noté | idem |
+
+Les mots nécessaires ont été ajoutés à la grammaire Vosk. Tests : `TyresKeptTest`.
+
+### Signature thermique : ce qui est mesuré, ce qui ne l'est pas
+
+Aucun journal de l'essai PS5 n'a été transmis : **aucune signature réelle n'a pu être analysée**, rien n'est affirmé sur
+ce que GT7 envoie au changement. La calibration compare désormais, sur les arrêts étiquetés par le pilote, le **saut
+de température le plus faible des quatre pneus** (`hunter_saut_c`) : un vrai changement doit toucher les quatre.
+Elle n'est « démontrée » que si, sur au moins 3 arrêts de chaque sorte, sans faux positif ni faux négatif, le plus
+petit saut « pneus changés » dépasse d'au moins 5 °C le plus grand saut « pneus conservés ». Même alors, **la
+confirmation reste au pilote** dans cette version (tests : `TyreSignatureTest`).
+
+### Essai comparatif à faire
+
+Course d'essai sans adversaire (Corvette C7 Gr.4, Dragon Trail Gardens, usure ×8, carburant ×10), 12 tours :
+
+1. Tours 1 à 3, puis **arrêt A : plein seul, pneus conservés**. Réponds « je n'ai pas changé les pneus ».
+2. Tours 4 à 6, puis **arrêt B : plein + pneus neufs, même gomme**. Réponds « oui », puis la gomme.
+3. Tours 7 à 9, puis **arrêt C : pneus neufs sans essence**. Réponds selon la question.
+4. Tours 10 à 11, puis **arrêt D : plein seul**. Réponds « mêmes pneus ».
+5. Exporte le journal (Export JSON) et envoie-le. Refaire la course une deuxième fois donne les 3 + 3 exemples minimum.
+
+À lire dans l'export : pour chaque arrêt, `hunter_verdict`, `hunter_saut_c`, `phases` et les séries `avg/avd/arg/ard`.
+Si les sauts des arrêts A et D sont aussi forts que ceux de B et C, la température seule ne suffit pas et la question au
+pilote restera la règle.

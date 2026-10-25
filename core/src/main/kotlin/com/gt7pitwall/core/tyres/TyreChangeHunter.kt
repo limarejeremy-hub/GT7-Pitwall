@@ -244,24 +244,61 @@ class TyreChangeHunter(val thresholdC: Float = DEFAULT_THRESHOLD_C) {
  * Elle n'est pas activée dans cette version : le pilote confirme toujours.
  */
 object TyreHunterCalibration {
-    data class Example(val suspected: Boolean, val changed: Boolean)
+    /**
+     * [stepC] : saut de température mesuré à ce passage, par pneu (AVG, AVD, ARG, ARD) ; vide si aucun saut net.
+     * C'est la signature qui doit séparer pneus neufs et pneus conservés sur les essais réels.
+     */
+    data class Example(val suspected: Boolean, val changed: Boolean, val stepC: List<Float> = emptyList()) {
+        /** Le plus petit saut des quatre pneus (en valeur absolue) : un vrai changement les touche tous. 0 sans saut. */
+        val weakestStepC: Float get() = if (stepC.size == 4) stepC.minOf { kotlin.math.abs(it) } else 0f
+    }
 
-    data class Status(val positives: Int, val negatives: Int, val falsePositives: Int, val falseNegatives: Int) {
-        val ready: Boolean get() = positives >= MIN_EACH && negatives >= MIN_EACH && falsePositives == 0 && falseNegatives == 0
+    data class Status(
+        val positives: Int,
+        val negatives: Int,
+        val falsePositives: Int,
+        val falseNegatives: Int,
+        /** Plus petit « saut le plus faible » parmi les pneus changés (null sans exemple). */
+        val changedMinStepC: Float? = null,
+        /** Plus grand « saut le plus faible » parmi les pneus conservés (null sans exemple). */
+        val keptMaxStepC: Float? = null,
+    ) {
+        /** Les sauts mesurés séparent nettement les deux cas sur ces essais (marge d'au moins [MIN_MARGIN_C]). */
+        val separated: Boolean
+            get() = changedMinStepC != null && keptMaxStepC != null && changedMinStepC - keptMaxStepC >= MIN_MARGIN_C
+
+        val ready: Boolean
+            get() = positives >= MIN_EACH && negatives >= MIN_EACH && falsePositives == 0 && falseNegatives == 0 && separated
 
         val text: String
             get() = "$positives arrêt(s) avec pneus changés et $negatives sans, étiquetés par le pilote ; " +
-                "$falsePositives faux positif(s), $falseNegatives faux négatif(s). " +
+                "$falsePositives faux positif(s), $falseNegatives faux négatif(s). " + signature() +
                 if (ready) "Fiabilité démontrée sur ces essais (confirmation automatique toujours désactivée)." else
                     "Pas encore assez d'essais : la confirmation du pilote reste nécessaire."
+
+        private fun signature(): String {
+            fun f(v: Float) = String.format(java.util.Locale.ROOT, "%.1f", v)
+            if (changedMinStepC == null || keptMaxStepC == null) return ""
+            return "Saut thermique le plus faible des quatre pneus : au moins ${f(changedMinStepC)} °C pneus changés, " +
+                "au plus ${f(keptMaxStepC)} °C pneus conservés (" + (if (separated) "séparation nette" else "pas de séparation nette") + "). "
+        }
     }
 
     const val MIN_EACH = 3
+
+    /** Écart minimal entre les deux familles de sauts pour parler de signature fiable. */
+    const val MIN_MARGIN_C = 5f
 
     fun evaluate(examples: List<Example>): Status = Status(
         positives = examples.count { it.changed },
         negatives = examples.count { !it.changed },
         falsePositives = examples.count { it.suspected && !it.changed },
         falseNegatives = examples.count { !it.suspected && it.changed },
+        changedMinStepC = examples.filter { it.changed }.minOfOrNull { it.weakestStepC },
+        keptMaxStepC = examples.filter { !it.changed }.maxOfOrNull { it.weakestStepC },
     )
+
+    /** Sauts relus dans le journal (« 12.5,11.0,9.8,10.2 », ou « aucun »). */
+    fun parseStep(raw: String?): List<Float> =
+        raw?.split(',')?.mapNotNull { it.trim().toFloatOrNull() }?.takeIf { it.size == 4 }.orEmpty()
 }
