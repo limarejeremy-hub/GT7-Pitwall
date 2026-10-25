@@ -14,6 +14,12 @@ import com.gt7pitwall.core.strategy.TyreService
 import kotlin.math.abs
 import kotlin.math.sqrt
 
+/** Un tour propre d'un relais passé : session, début du relais, gomme déclarée (null : inconnue), âge des pneus. */
+class StintLap(val session: String, val stintStart: Int, val compound: TyreCompound?, val age: Int, val lap: LapEntry)
+
+/** Tours propres des sessions comparables ; [excluded] : sessions incompatibles écartées ; [gains] : gain des pneus neufs par gomme. */
+class StintPool(val laps: List<StintLap>, val related: Set<String>, val excluded: Int, val gains: List<Triple<String, TyreCompound?, Double>>)
+
 /**
  * Ce que Pitwall apprend des relais pneus passés, indépendamment du carburant. Seuls comptent les relais comparables :
  * même épreuve et même type de session (un entraînement seulement s'il reproduit exactement l'épreuve), même voiture,
@@ -52,43 +58,55 @@ data class TyreModel(
 
         private class Stint(val session: String, val laps: List<Pair<Int, LapEntry>>)
 
-        fun learn(context: SessionContext, sessions: Collection<SessionRecord>, compound: TyreCompound?, excludeId: String? = null): TyreModel {
+        /**
+         * Sessions comparables (même épreuve, voiture, circuit, multiplicateurs) et leurs tours propres : ni premier tour,
+         * ni ravitaillement, ni tour d'entrée ou de sortie des stands, ni sortie de piste mesurée, ni incident déclaré, ni
+         * chrono à plus de 7 % de la médiane (trafic, erreur). Seuls les tours dont l'âge des pneus est certain comptent.
+         */
+        fun pool(context: SessionContext, sessions: Collection<SessionRecord>, excludeId: String? = null): StintPool {
             val pool = sessions.filter { it.id != excludeId }
             val same = pool.filter { HistoryRelation.of(context.profile.id, it.context.profile.id) == HistoryRelation.SAME }
             val related = pool.filter { HistoryRelation.of(context.profile.id, it.context.profile.id) == HistoryRelation.RELATED }
             val usable = same.filter { Compatibility.compare(context, it.context).first != Comparability.INCOMPATIBLE } +
                 related.filter { Compatibility.compare(context, it.context).first == Comparability.SAME_EVENT }
             val excluded = same.size + related.size - usable.size
-            if (usable.isEmpty()) return EMPTY.copy(sessionsExcluded = excluded, compound = compound)
-            val relatedIds = related.map { it.id }.toSet()
-
-            val stints = mutableListOf<Stint>()
-            val gains = mutableListOf<Pair<String, Double>>()
+            val rows = mutableListOf<StintLap>()
+            val gains = mutableListOf<Triple<String, TyreCompound?, Double>>()
             for (s in usable) {
                 val stopLaps = s.stops.map { it.lap }.toSet()
                 val incidents = s.notes.filter { INCIDENT.containsMatchIn(it.text) }.map { it.lap }.toSet()
                 val typical = s.laps.mapNotNull { it.timeMs?.toDouble() }.sorted().let { if (it.isEmpty()) null else it[it.size / 2] }
-                fun clean(l: LapEntry) = l.lap > 1 && !l.refuelled && l.lap !in stopLaps && (l.lap - 1) !in stopLaps &&
+                fun clean(l: LapEntry) = l.lap > 1 && !l.refuelled && !l.pitLane && (l.offTrackEvents ?: 0) == 0 &&
+                    l.lap !in stopLaps && (l.lap - 1) !in stopLaps &&
                     l.lap !in incidents && (l.timeMs ?: 0) > 0 && typical != null && abs(l.timeMs!! - typical) <= typical * 0.07
-                val byStint = s.laps.mapNotNull { l ->
-                    val age = HistoryModel.tyreAge(s, l) ?: return@mapNotNull null
-                    val comp = l.tyreCompound ?: if (s.tyres.none { it.lap <= l.lap }) s.startTyre else s.tyres.last { it.lap <= l.lap }.compound
-                    Triple(l.lap - age, comp, age to l)
-                }.groupBy { it.first }
-                for ((_, rows) in byStint) {
-                    val comp = rows.first().second
-                    // Gomme déclarée : seuls les relais de la même gomme ; non déclarée : tous, confiance limitée.
-                    if (compound != null && comp != compound) continue
-                    val laps = rows.map { it.third }.filter { clean(it.second) }
-                    if (laps.size >= MIN_STINT_LAPS) stints += Stint(s.id, laps)
+                fun compoundAt(l: LapEntry) = l.tyreCompound ?: if (s.tyres.none { it.lap <= l.lap }) s.startTyre else s.tyres.last { it.lap <= l.lap }.compound
+                for (l in s.laps) {
+                    if (!clean(l)) continue
+                    val age = HistoryModel.tyreAge(s, l) ?: continue
+                    rows += StintLap(s.id, l.lap - age, compoundAt(l), age, l)
                 }
-                // Gain des pneus neufs à chaque changement déclaré.
+                // Gain des pneus neufs à chaque changement déclaré : trois tours avant contre trois tours après.
                 for (stop in s.stops.filter { it.tyres == TyreService.CHANGED }) {
                     val before = s.laps.filter { it.lap < stop.lap && clean(it) }.takeLast(3).mapNotNull { it.timeMs }
-                    val after = s.laps.filter { it.lap > stop.lap + 1 && clean(it) }.take(3).mapNotNull { it.timeMs }
-                    if (before.size == 3 && after.size == 3) gains += s.id to (before.average() - after.average())
+                    val afterLaps = s.laps.filter { it.lap > stop.lap + 1 && clean(it) }.take(3)
+                    val after = afterLaps.mapNotNull { it.timeMs }
+                    if (before.size == 3 && after.size == 3) gains += Triple(s.id, afterLaps.firstOrNull()?.let(::compoundAt), before.average() - after.average())
                 }
             }
+            return StintPool(rows, related.map { it.id }.toSet(), excluded, gains)
+        }
+
+        fun learn(context: SessionContext, sessions: Collection<SessionRecord>, compound: TyreCompound?, excludeId: String? = null): TyreModel {
+            val p = pool(context, sessions, excludeId)
+            if (p.laps.isEmpty() && p.gains.isEmpty()) return EMPTY.copy(sessionsExcluded = p.excluded, compound = compound)
+            val relatedIds = p.related
+            val excluded = p.excluded
+            // Gomme déclarée : seuls les relais de la même gomme ; non déclarée : tous, confiance limitée.
+            val stints = p.laps.filter { compound == null || it.compound == compound }
+                .groupBy { it.session to it.stintStart }.values
+                .filter { it.size >= MIN_STINT_LAPS }
+                .map { rows -> Stint(rows.first().session, rows.map { it.age to it.lap }) }
+            val gains = p.gains.filter { compound == null || it.second == compound }.map { it.first to it.third }
             val usedSessions = stints.map { it.session }.distinct()
             val related2 = usedSessions.count { it in relatedIds }
             val cap = related2 > 0 || compound == null

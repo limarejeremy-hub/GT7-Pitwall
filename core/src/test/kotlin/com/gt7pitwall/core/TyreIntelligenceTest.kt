@@ -210,6 +210,8 @@ class TyreIntelligenceTest {
         val change = c.tyreChangeSentence()
         assertTrue("GT7 ne transmet pas l'usure" in change, change)
         val next = c.nextTyreSentence()
+        assertTrue("Pas assez d'historique comparable pour chiffrer les gommes." in next, next)
+        assertNull(c.tyreScenarios().recommended)
         assertFalse(Regex("\\d+ ?%").containsMatchIn(change + next), "jamais de pourcentage d'usure : $change $next")
         assertFalse("apprise" in change + next || "Estimation" in change + next, "$change $next")
         assertTrue(s.texts.none { Regex("(?i)usés? à \\d+").containsMatchIn(it) })

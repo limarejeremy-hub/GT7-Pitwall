@@ -60,6 +60,9 @@ import com.gt7pitwall.core.strategy.StopCosts
 import com.gt7pitwall.core.strategy.StopKind
 import com.gt7pitwall.core.strategy.Cost
 import com.gt7pitwall.core.tyres.TyreModel
+import com.gt7pitwall.core.tyres.CompoundBook
+import com.gt7pitwall.core.tyres.TyreScenarioReport
+import com.gt7pitwall.core.tyres.TyreScenarios
 import com.gt7pitwall.core.tyres.ThermalCapture
 import com.gt7pitwall.core.tyres.TyreChangeHunter
 import com.gt7pitwall.core.tyres.TyreChangeVerdict
@@ -150,6 +153,9 @@ class RaceController(
         private set
 
     /** Relais pneus comparables appris (gomme actuelle), indépendants du carburant. */
+    /** Performance apprise par gomme (rythme, perte par tour d'âge, durée compétitive), courses comparables seulement. */
+    var compoundBook: CompoundBook = CompoundBook.EMPTY
+        private set
     var tyreModel: TyreModel = TyreModel.EMPTY
         private set
 
@@ -733,6 +739,9 @@ class RaceController(
             lines += "${AI_TOPICS[q]} : $text"
         }
         lines += "Arrêts aux stands enregistrés : ${ledger.stopCount}."
+        tyreScenarios().basis.takeIf { it.isNotEmpty() }?.let { b ->
+            lines += "Performance des gommes (estimée sur l'historique comparable, pas une mesure de cette course) : ${b.joinToString(" ; ")}."
+        }
         rules.tyreStintLaps?.let { life ->
             val age = ledger.tyreAge((snap.packet?.currentLap ?: 1).coerceAtLeast(1))
             lines += "Pneus : ils tiennent $life tours d'après toi ; $age tours faits avec le train actuel."
@@ -1096,6 +1105,7 @@ class RaceController(
         // Historique : sessions comparables archivées d'abord (avec leur niveau de confiance), sinon l'ancienne mémoire.
         val model = HistoryModel.learn(sessionContext, sessions.values, excludeId = sessionId).also { historyModel = it }
         tyreModel = TyreModel.learn(sessionContext, sessions.values, ledger.currentTyre(rules.startTyre), excludeId = sessionId)
+        compoundBook = CompoundBook.learn(sessionContext, sessions.values, excludeId = sessionId)
         // Arrêt pneus retenu déjà passé : il sort de la liste.
         performanceTyreLaps = performanceTyreLaps.filter { it >= p.currentLap.coerceAtLeast(1) }
         val learnedFuel = model.fuelPerLap?.takeIf { it.confidence != Confidence.INSUFFICIENT }
@@ -1342,6 +1352,37 @@ class RaceController(
         val res = xs.indices.sumOf { val e = ys[it] - (my + b * (xs[it] - mx)); e * e } / (xs.size - 2)
         val se = kotlin.math.sqrt(res / sxx)
         return if (kotlin.math.abs(b) >= 2 * se && kotlin.math.abs(b) >= 100) b to se else null
+    }
+
+    /**
+     * Continuer, tendres, mediums ou durs : temps total jusqu'à l'arrivée, arrêt compris, d'après les relais comparables
+     * archivés et les chronos propres du relais en cours. Sans données suffisantes, aucun scénario n'est recommandé.
+     */
+    fun tyreScenarios(): TyreScenarioReport {
+        val lap = (snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)
+        val total = plan?.totalLaps ?: rules.totalLaps ?: snapshot.packet?.totalLaps?.takeIf { it > 0 }
+            ?: return TyreScenarioReport(emptyList(), null, "Nombre de tours inconnu : je ne compare pas les gommes.", emptyList())
+        val ctx = tyreStintContext()
+        val stint = ledger.tyreStint(lap, rules.startTyre)
+        val live = snapshot.laps.filter {
+            it.lapNumber >= maxOf(2, ctx.startLap + 1) && it.lapNumber !in ctx.excludedLaps && !it.refuelled && (it.timeMs ?: 0) > 0
+        }.map { (it.lapNumber - stint.startLap) to it.timeMs!! }
+        return TyreScenarios.compare(
+            TyreScenarios.Input(
+                currentLap = lap,
+                totalLaps = total,
+                current = stint.compound,
+                tyreAge = stint.age,
+                ageCertain = ctx.certain,
+                liveLaps = live,
+                book = compoundBook,
+                costs = stopCosts(historyModel, course?.pitLaneDeltaS?.let { it * 1000.0 }),
+                plannedStops = plan?.stops?.filter { it.endOfLap >= lap }?.map { it.endOfLap }.orEmpty(),
+                allowed = rules.allowedTyres,
+                requiredMissing = missingTyres,
+                tyreLife = rules.tyreStintLaps,
+            ),
+        )
     }
 
     // ------------------------------------------------------------------ Dialogue stratégique
@@ -2341,7 +2382,19 @@ class RaceController(
      * confirmé), les pneus montés, les tours restants et la durée de vie donnée par le pilote. GT7 ne transmet pas
      * l'usure : sans durée de vie, l'ingénieur le dit et pose une seule question courte.
      */
-    fun nextTyreSentence(): String {
+    fun nextTyreSentence(): String = nextTyreFacts() + tyreScenarioSentence()
+
+    /** Chiffres du moteur seulement (historique comparable) : jamais une gomme recommandée sans eux. */
+    private fun tyreScenarioSentence(): String {
+        val sc = tyreScenarios()
+        return when {
+            sc.recommended != null || sc.changeAdvised -> " D'après tes courses comparables : ${sc.reason}"
+            sc.scenarios.count { it.estimable } >= 2 -> " ${sc.reason}"
+            else -> " Pas assez d'historique comparable pour chiffrer les gommes."
+        }
+    }
+
+    private fun nextTyreFacts(): String {
         val lap = (snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)
         val total = plan?.totalLaps ?: rules.totalLaps ?: snapshot.packet?.totalLaps?.takeIf { it > 0 }
         val nextStop = plan?.stops?.firstOrNull { it.endOfLap >= lap }
