@@ -49,6 +49,9 @@ class RaceMemory {
     private val plans = ArrayDeque<Plan>()
     private val exchanges = ArrayDeque<Exchange>()
     private val summary = ArrayDeque<String>()
+    private val preferences = ArrayDeque<Item>()
+    private val hypotheses = ArrayDeque<Item>()
+    private val disagreements = ArrayDeque<Item>()
 
     /** Plan sur lequel le pilote a dit « d'accord » (sinon null : seul le moteur l'a proposé). */
     var agreedPlan: Plan? = null
@@ -57,6 +60,7 @@ class RaceMemory {
     @Synchronized
     fun clear() {
         intentions.clear(); facts.clear(); decisions.clear(); plans.clear(); exchanges.clear(); summary.clear()
+        preferences.clear(); hypotheses.clear(); disagreements.clear()
         agreedPlan = null
     }
 
@@ -79,6 +83,44 @@ class RaceMemory {
         agreedPlan = plans.lastOrNull()?.copy(lap = lap, atMs = atMs)
         push(decisions, Item(lap, atMs, what, Provenance.DECISION), MAX_DECISIONS)
     }
+
+    /** Préférence du pilote pour cette course (« je veux préserver les pneus ») : pas un réglage permanent. */
+    @Synchronized
+    fun preference(lap: Int, atMs: Long, text: String) = push(preferences, Item(lap, atMs, text, Provenance.DRIVER), MAX_PREFERENCES)
+
+    /** Hypothèse discutée (« et si je mets les tendres ? ») : jamais un fait ni une décision. */
+    @Synchronized
+    fun hypothesis(lap: Int, atMs: Long, text: String) = push(hypotheses, Item(lap, atMs, text, Provenance.DRIVER), MAX_HYPOTHESES)
+
+    /** Désaccord entre le pilote et la recommandation du moteur, avec ce que chacun a dit. */
+    @Synchronized
+    fun disagreement(lap: Int, atMs: Long, text: String) = push(disagreements, Item(lap, atMs, text, Provenance.DRIVER), MAX_DISAGREEMENTS)
+
+    /** Décision explicite du pilote, confirmée (« je rentre quand même » puis « oui »). */
+    @Synchronized
+    fun decision(lap: Int, atMs: Long, text: String) = push(decisions, Item(lap, atMs, text, Provenance.DECISION), MAX_DECISIONS)
+
+    /**
+     * « Oublie ce que je viens de dire » : retire la dernière déclaration du pilote (intention, préférence, hypothèse) faite
+     * dans les [windowMs] dernières millisecondes. Renvoie son texte, ou null s'il n'y avait rien de récent.
+     */
+    @Synchronized
+    fun retractLast(nowMs: Long, windowMs: Long = RETRACT_WINDOW_MS): String? {
+        val lists = listOf(intentions, preferences, hypotheses)
+        val latest = lists.mapNotNull { q -> q.lastOrNull()?.let { q to it } }.maxByOrNull { it.second.atMs } ?: return null
+        if (nowMs - latest.second.atMs > windowMs) return null
+        latest.first.removeLast()
+        return latest.second.text
+    }
+
+    @get:Synchronized
+    val preferenceList: List<Item> get() = preferences.toList()
+
+    @get:Synchronized
+    val hypothesisList: List<Item> get() = hypotheses.toList()
+
+    @get:Synchronized
+    val disagreementList: List<Item> get() = disagreements.toList()
 
     @Synchronized
     fun exchange(e: Exchange) {
@@ -129,6 +171,9 @@ class RaceMemory {
             decisions.map { "tour ${it.lap} : ${it.text}" }.ifEmpty { listOf("aucune décision validée par le pilote pour l'instant") },
         )
         section("INTENTIONS DU PILOTE (pas encore réalisées)", intentions.map { "tour ${it.lap} : ${it.text}" })
+        section("PRÉFÉRENCES DU PILOTE POUR CETTE COURSE (à respecter dans tes conseils)", preferences.map { "tour ${it.lap} : ${it.text}" })
+        section("HYPOTHÈSES DISCUTÉES (pas des faits, rien n'a changé)", hypotheses.map { "tour ${it.lap} : ${it.text}" })
+        section("DÉSACCORDS (le pilote n'était pas d'accord avec la recommandation)", disagreements.map { "tour ${it.lap} : ${it.text}" })
         section("FAITS CONFIRMÉS OU CORRIGÉS", facts.map { "tour ${it.lap} [${it.provenance.label}] : ${it.text}" })
         section("QUESTIONS DE L'INGÉNIEUR EN ATTENTE DE RÉPONSE", pending)
         section("ÉVOLUTION DU RYTHME ET DU CARBURANT", trend)
@@ -149,6 +194,10 @@ class RaceMemory {
         const val MAX_PLANS = 8
         const val MAX_EXCHANGES = 6
         const val MAX_SUMMARY = 8
+        const val MAX_PREFERENCES = 4
+        const val MAX_HYPOTHESES = 4
+        const val MAX_DISAGREEMENTS = 4
+        const val RETRACT_WINDOW_MS = 90_000L
         const val TOPIC_WINDOW_MS = 120_000L
 
         fun stopsText(stops: List<Int>): String = when {

@@ -93,6 +93,10 @@ interface RaceStorage {
     fun appendJournal(sessionId: String, line: String) {}
     fun loadJournal(sessionId: String): List<String> = emptyList()
     fun journalSessionIds(): List<String> = emptyList()
+
+    /** Mémoire durable du pilote (JSON) ; null au premier lancement. */
+    fun loadPilotMemory(): String? = null
+    fun savePilotMemory(json: String) {}
 }
 
 /**
@@ -208,6 +212,22 @@ class RaceController(
 
     /** Mémoire de la course (intentions, plans, décisions, faits confirmés, échanges) pour la conversation. */
     val raceMemory = RaceMemory()
+
+    /** Session en cours (pour invalider une réponse de l'IA préparée pendant une autre session). */
+    val currentSessionId: String? get() = sessionId
+
+    /** Contexte sportif de la course (ton de l'ingénieur), déduit des événements mesurés. */
+    val mood = com.gt7pitwall.core.ai.MoodTracker(clock)
+
+    /** Mémoire durable de la relation pilote-ingénieur (préférences confirmées), consultable et effaçable. */
+    val pilotMemory = com.gt7pitwall.core.ai.PilotMemory(load = { storage?.loadPilotMemory() }, save = { storage?.savePilotMemory(it) }, clock = clock)
+
+    // Dialogue : désaccord en attente de la raison du pilote, décision ou préférence durable à confirmer.
+    private var awaitingReasonUntil = 0L
+    private var pendingPilotDecision: Pair<String, Long>? = null
+    private var pendingLasting: Pair<String, Long>? = null
+    private var lastSaidPosition: Int? = null
+    private var lastCelebrationMs = 0L
 
     /** Sujet du dernier échange avec l'IA (une relance courte le garde). */
     val lastAiIntent: Intent? get() = aiExchanges.lastOrNull()?.intent
@@ -383,6 +403,10 @@ class RaceController(
                 lastStrategyAnswerMs = null
                 rulesReminded = false
                 pendingConfirmation = null
+                mood.reset()
+                awaitingReasonUntil = 0L
+                pendingPilotDecision = null
+                lastSaidPosition = null
                 lastAiAnswerMs = null
                 tyreLifeAsked = false
                 pendingTyreFamily = null
@@ -428,7 +452,8 @@ class RaceController(
         engineer.stintContext = tyreStintContext()
         // Retour au menu après une course finie : pas de « nouvelle session » annoncée.
         out.addAll(0, engineer.onUpdate(events, tracker.snapshot, fuel).filterNot { finishedBefore && it.text.startsWith("Nouvelle session détectée") })
-        out += engineer.onPosition(positionChanges, nowMs)
+        out += celebrate(engineer.onPosition(positionChanges, nowMs), nowMs)
+        updateMood(events, positionChanges, p)
         if (events.any { it is SessionEvent.LapCompleted || it is SessionEvent.RaceFinished || it is SessionEvent.PitVisitEnded }) saveSession()
         // Messages non urgents différés pendant un gros freinage ou un virage (au plus quelques secondes).
         if (events.any { it is SessionEvent.SessionReset }) pacer.clear()
@@ -1456,8 +1481,14 @@ class RaceController(
         pendingConfirmation = null
         val echo = EngineerMessage("Toi : $question", Priority.INFO, MessageCategory.DRIVER)
         val extra = mutableListOf<EngineerMessage>()
+        val reason = reasonPrefix(ask, nowMs)
         val text = strategyText(ask, question, extra)
-        val said = if (intention) "Noté comme intention, je n'enregistre rien tant que ce n'est pas fait. $text" else text
+        val said = when {
+            reason != null -> "$reason $text"
+            intention -> "Noté comme intention, je n'enregistre rien tant que ce n'est pas fait. $text"
+            else -> text
+        }
+        if (ask !is StrategyDialogue.Ask.Unclear) mood.onStrategy(nowMs)
         if (ask !is StrategyDialogue.Ask.Unclear) lastStrategyAnswerMs = nowMs
         if (ask !is StrategyDialogue.Ask.FollowUp && ask !is StrategyDialogue.Ask.Unclear) lastStrategyAsk = ask
         if (ask !is StrategyDialogue.Ask.Unclear && ask !is StrategyDialogue.Ask.Observe) {
@@ -1932,8 +1963,9 @@ class RaceController(
         topic = turn.topic,
         facts = aiFacts(),
         analysis = analysis,
-        memory = raceMemory.render(pendingQuestions(), raceTrend()),
+        memory = raceMemory.render(pendingQuestions(), raceTrend()) + pilotMemory.render(),
         recent = raceMemory.recent.takeLast(RECENT_EXCHANGES),
+        mood = mood.mood(),
     )
 
     /**
@@ -1964,6 +1996,193 @@ class RaceController(
      * « D'accord, on fait comme ça » juste après une discussion de stratégie : le plan en cours devient une décision
      * prise ensemble (mémoire et journal). Aucune donnée de course n'est modifiée ; aucun appel à l'IA.
      */
+    // ------------------------------------------------------------------ Dialogue V4 (personnalité, désaccord, mémoire courte)
+
+    /** Place gagnée mesurée : une réaction brève, au plus une fois toutes les deux minutes ; jamais une cause inventée. */
+    private fun celebrate(messages: List<EngineerMessage>, nowMs: Long): List<EngineerMessage> = messages.map { m ->
+        val pos = Regex("^P(\\d+)\\.$").matchEntire(m.text)?.groupValues?.get(1)?.toInt() ?: return@map m
+        val before = lastSaidPosition
+        lastSaidPosition = pos
+        if (before != null && pos < before && nowMs - lastCelebrationMs >= CELEBRATION_GAP_MS) {
+            lastCelebrationMs = nowMs
+            m.copy(text = "Bien joué ! P$pos.")
+        } else {
+            m
+        }
+    }
+
+    /** Le ton suit la course : places, meilleurs tours, incidents, décisions, progression du rythme. */
+    private fun updateMood(events: List<SessionEvent>, changes: List<PositionTracker.Change>, p: TelemetryPacket) {
+        mood.onLap(p.currentLap)
+        if (p.currentLap >= 1) {
+            for (c in changes) if (c is PositionTracker.Change.Moved && c.from != null) {
+                if (c.to < c.from) mood.onPositionGained() else if (c.to > c.from) mood.onPositionLost(p.currentLap)
+            }
+        }
+        if (pitWindowPackets > 0) mood.onStrategy()
+        for (e in events) {
+            if (e !is SessionEvent.LapCompleted) continue
+            val t = e.lap.timeMs ?: continue
+            if (e.lap.refuelled || e.lap.pitLane) continue
+            val best = e.previousBestMs
+            if (best != null && t < best) mood.onBestLap()
+            if ((e.lap.offTrackEvents ?: 0) > 0 || (best != null && t > best * 1.05)) mood.onIncident(p.currentLap)
+            val clean = snapshot.laps.filter { it.lapNumber > 1 && !it.refuelled && !it.pitLane && (it.timeMs ?: 0) > 0 }.mapNotNull { it.timeMs }
+            if (clean.size >= 4) {
+                val median = clean.sorted()[clean.size / 2]
+                mood.onPace(clean.takeLast(2).all { it <= median })
+            }
+        }
+    }
+
+    /**
+     * Ce que l'ingénieur pense de la course (« tu le sens comment ? »), en phrases courtes tirées des seuls faits : plan,
+     * carburant, pneus, contexte sportif. Rien n'est inventé ; sans télémétrie, il le dit.
+     */
+    fun feelingText(nowMs: Long = clock()): String {
+        if (!telemetryLive()) return "Pas de télémétrie en ce moment : je ne peux pas juger la course."
+        val lap = currentLap()
+        val parts = mutableListOf<String>()
+        parts += when (mood.mood(nowMs)) {
+            com.gt7pitwall.core.ai.RaceMood.CELEBRATE -> "Franchement, ça c'était bien."
+            com.gt7pitwall.core.ai.RaceMood.ATTACK -> "Ça avance : tes derniers tours sont parmi tes meilleurs."
+            com.gt7pitwall.core.ai.RaceMood.PRESSURE -> "C'est compliqué en ce moment. On se reconcentre, un virage après l'autre."
+            com.gt7pitwall.core.ai.RaceMood.STRATEGY -> "On a une décision à prendre, je reste sur les chiffres."
+            com.gt7pitwall.core.ai.RaceMood.CALM -> "On est bien."
+        }
+        val next = plan?.stops?.firstOrNull { it.endOfLap >= lap }
+        parts += when {
+            plan == null -> "Pas encore de plan : il me faut un tour mesuré."
+            plan!!.warnings.isNotEmpty() -> "Mais je surveille un risque sur le plan."
+            next == null -> "Plus d'arrêt prévu, le plan tient."
+            else -> "Le plan tient : arrêt fin du tour ${next.endOfLap}."
+        }
+        val wear = engineer.tyreWearSuspectedLap
+        when {
+            wear != null -> parts += "Les pneus fatiguent depuis le tour $wear, je les surveille."
+            rules.tyreMultiplier > 1 -> parts += "Je garde un œil sur les pneus."
+        }
+        return parts.joinToString(" ") + preferenceReminder()
+    }
+
+    private fun preferenceReminder(): String = raceMemory.preferenceList.lastOrNull()?.let { " Et je tiens compte de ta consigne : ${it.text}." } ?: ""
+
+    /**
+     * Actes de dialogue traités par l'ingénieur lui-même, avant toute IA : se rétracter, identité, préférences, désaccord
+     * sur un arrêt immédiat, décision explicite, hypothèse. Renvoie null si la phrase suit son chemin habituel.
+     * [cloudAvailable] : l'avis sur la course (« tu le sens comment ? ») est alors formulé par le modèle.
+     */
+    fun dialogue(text: String, nowMs: Long = clock(), cloudAvailable: Boolean = false): List<EngineerMessage>? {
+        val lap = currentLap()
+        // Réponse à une confirmation du dialogue.
+        pendingPilotDecision?.let { (what, at) ->
+            if (nowMs - at > DIALOGUE_CONFIRM_MS) {
+                pendingPilotDecision = null
+            } else if (com.gt7pitwall.core.ai.DialogueActs.yes(text)) {
+                pendingPilotDecision = null
+                raceMemory.decision(lap, nowMs, "$what (décidé par le pilote)")
+                noteIntention("décision du pilote : $what")
+                journal.record(JournalType.DECISION, JournalSource.ENGINE, "Décision du pilote : $what", decision = "confirmée par le pilote")
+                return localReply(text, "Compris, $what. C'est ta décision, je m'adapte et je recalcule tout après l'arrêt.")
+            } else if (com.gt7pitwall.core.ai.DialogueActs.no(text)) {
+                pendingPilotDecision = null
+                return localReply(text, "D'accord, on reste sur le plan.")
+            }
+        }
+        pendingLasting?.let { (what, at) ->
+            if (nowMs - at > DIALOGUE_CONFIRM_MS) {
+                pendingLasting = null
+            } else if (com.gt7pitwall.core.ai.DialogueActs.yes(text)) {
+                pendingLasting = null
+                val saved = pilotMemory.remember(what, sessionId)
+                return localReply(text, if (saved) "C'est retenu pour les prochaines courses." else "La mémoire durable est désactivée : je ne le garde que pour cette course.")
+            } else if (com.gt7pitwall.core.ai.DialogueActs.no(text)) {
+                pendingLasting = null
+                return localReply(text, "D'accord, je ne retiens rien.")
+            }
+        }
+        val act = com.gt7pitwall.core.ai.DialogueActs.classify(text) ?: return null
+        return when (act) {
+            com.gt7pitwall.core.ai.DialogueActs.Act.Retract -> {
+                pendingConfirmation = null
+                pendingPilotDecision = null
+                val removed = raceMemory.retractLast(nowMs)
+                localReply(text, if (removed != null) "OK, j'oublie." else "Rien à oublier, on continue.")
+            }
+            is com.gt7pitwall.core.ai.DialogueActs.Act.Correction -> null // traitée par la conversation (rétractation + suite)
+            com.gt7pitwall.core.ai.DialogueActs.Act.Identity -> localReply(
+                text,
+                "Non, je suis l'ingénieur virtuel de Pitwall : un programme qui lit la télémétrie de GT7. Mais ta course, je la vis à fond.",
+            )
+            com.gt7pitwall.core.ai.DialogueActs.Act.Feeling -> if (cloudAvailable) null else localReply(text, feelingText(nowMs))
+            is com.gt7pitwall.core.ai.DialogueActs.Act.RacePreference -> {
+                raceMemory.preference(lap, nowMs, "« ${act.text} »")
+                localReply(text, "Compris, c'est noté pour cette course. J'en tiens compte dans mes conseils.")
+            }
+            is com.gt7pitwall.core.ai.DialogueActs.Act.LastingPreference -> {
+                pendingLasting = act.text to nowMs
+                listOf(EngineerMessage("Toi : $text", Priority.INFO, MessageCategory.DRIVER)) + deliver(
+                    listOf(EngineerMessage("Je le retiens pour les prochaines courses : « ${act.text} ». C'est bien ça ?", Priority.HIGH, MessageCategory.ANSWER, expectsReply = true)),
+                )
+            }
+            com.gt7pitwall.core.ai.DialogueActs.Act.PitNowWish -> pitNowDebate(text, nowMs)
+            com.gt7pitwall.core.ai.DialogueActs.Act.Decision -> {
+                pendingPilotDecision = "box à la fin de ce tour" to nowMs
+                mood.onStrategy(nowMs)
+                listOf(EngineerMessage("Toi : $text", Priority.INFO, MessageCategory.DRIVER)) + deliver(
+                    listOf(EngineerMessage("C'est ta décision : box à la fin de ce tour ? Dis oui pour confirmer.", Priority.HIGH, MessageCategory.ANSWER, expectsReply = true)),
+                )
+            }
+            is com.gt7pitwall.core.ai.DialogueActs.Act.Hypothesis -> {
+                raceMemory.hypothesis(lap, nowMs, "« ${act.text} »")
+                // Avec l'IA, l'hypothèse suit le chemin de la conversation (calcul du moteur compris) ; sans elle, le moteur répond.
+                if (act.tyres && telemetryLive() && !cloudAvailable) {
+                    localReply(text, "On peut regarder. ${tyreScenarioSentence().trim()} Rien ne change tant que tu ne décides pas.")
+                } else {
+                    null
+                }
+            }
+        }
+    }
+
+    /**
+     * « Je veux rentrer maintenant » : l'ingénieur donne son avis chiffré par le moteur, le défend s'il n'est pas d'accord,
+     * et demande la raison du pilote. Rien n'est modifié.
+     */
+    private fun pitNowDebate(text: String, nowMs: Long): List<EngineerMessage> {
+        val lap = currentLap()
+        mood.onStrategy(nowMs)
+        noteIntention("« ${text.trim()} »")
+        val next = plan?.stops?.firstOrNull { it.endOfLap >= lap }
+        val report = strategy
+        val early = report?.option(OptionKind.EARLY)
+        val u = report?.uncertaintyMs
+        val reply = when {
+            next != null && next.endOfLap == lap -> "C'est prévu : arrêt à la fin de ce tour."
+            report == null || early == null -> {
+                awaitingReasonUntil = nowMs + DIALOGUE_CONFIRM_MS
+                "Je n'ai pas de quoi chiffrer un arrêt maintenant. Qu'est-ce qui te pousse à rentrer ?"
+            }
+            early.feasible && early.deltaMs != null && u != null && -early.deltaMs > u -> "D'accord avec toi. ${answerEarly()}"
+            else -> {
+                awaitingReasonUntil = nowMs + DIALOGUE_CONFIRM_MS
+                raceMemory.disagreement(lap, nowMs, "le pilote veut rentrer maintenant ; le moteur : ${answerEarly()}")
+                val opener = if (early.feasible && early.deltaMs != null && u != null && early.deltaMs <= u) "Ça se discute." else "Je ne suis pas convaincu."
+                "$opener ${answerEarly()} Qu'est-ce qui te pousse à rentrer ?"
+            }
+        }
+        val out = localReply(text, reply)
+        return out.map { if (it.category == MessageCategory.ANSWER) it.copy(expectsReply = true) else it }
+    }
+
+    /** Le pilote donne la raison de son désaccord : son ressenti est pris en compte, le plan réévalué. */
+    private fun reasonPrefix(ask: StrategyDialogue.Ask, nowMs: Long): String? {
+        if (nowMs > awaitingReasonUntil || ask !is StrategyDialogue.Ask.Observe || ask.negated) return null
+        awaitingReasonUntil = 0L
+        raceMemory.disagreement(currentLap(), nowMs, "raison du pilote : ${ask.kind.label}")
+        return "OK, information importante. Je prends ton ressenti en compte."
+    }
+
     fun agreement(text: String, nowMs: Long = clock()): List<EngineerMessage>? {
         if (awaitingAnswer) return null
         val last = raceMemory.lastExchange ?: return null
@@ -2288,6 +2507,10 @@ class RaceController(
 
         /** Paquets identiques (voiture « en mouvement » qui ne bouge pas) avant de considérer la télémétrie figée : 0,5 s. */
         const val FROZEN_PACKETS = 30
+
+        /** Une confirmation du dialogue (décision, préférence durable) attend au plus 30 s. */
+        const val DIALOGUE_CONFIRM_MS = 30_000L
+        const val CELEBRATION_GAP_MS = 120_000L
     }
 
     /**

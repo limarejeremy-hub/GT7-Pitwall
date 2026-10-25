@@ -45,6 +45,24 @@ class RadioConversation(
     var lastTrace: AiTrace? = null
         private set
 
+    /**
+     * Tour de parole : chaque phrase du pilote et chaque interruption ouvrent un nouveau tour. Une réponse préparée pour un
+     * tour dépassé (nouvelle question, interruption, nouvelle session) n'est jamais dite.
+     */
+    @Volatile
+    var turn: Long = 0
+        private set
+
+    /** Le pilote a coupé l'ingénieur : la réponse en préparation devient périmée. */
+    fun interrupt() {
+        turn++
+    }
+
+    /** Une réponse de l'IA est en préparation (la conversation ne se referme pas pendant ce temps). */
+    @Volatile
+    var thinking: Boolean = false
+        private set
+
     /** Modèles cloud (Flash-Lite, Flash 3.8) ; null ou non configurés : la radio fonctionne comme avant, sans cloud. */
     @Volatile
     var cloud: AiRouter? = null
@@ -60,6 +78,15 @@ class RadioConversation(
     ): List<EngineerMessage> {
         val source = if (addressed) CommandSource.VOICE else CommandSource.CONVERSATION
         val heardFree = freeText?.takeIf { it.isNotBlank() } ?: text
+        val myTurn = ++turn
+        // « Non attends, finalement on reste en piste » : la déclaration précédente est retirée, la suite est traitée seule.
+        (DialogueActs.classify(heardFree) as? DialogueActs.Act.Correction)?.let { c ->
+            mutex.withLock { race.raceMemory.retractLast(clock()) }
+            return onUtterance(c.rest, c.rest, model, onThinking, addressed)
+        }
+        // Actes de dialogue (oubli, identité, préférence, désaccord, décision, hypothèse) : l'ingénieur répond lui-même.
+        val cloudReady = cloud?.let { it.mode.cloudOrder(false).isNotEmpty() && it.available(false) } == true
+        mutex.withLock { race.dialogue(heardFree, clock(), cloudReady) }?.let { return it }
         // « D'accord, on fait comme ça » juste après une discussion de stratégie : décision prise ensemble, sans IA.
         mutex.withLock { race.agreement(heardFree) }?.let { return it }
         // Conversation : questions ouvertes, conseils, analyses et relances vont au modèle cloud s'il est disponible,
@@ -74,9 +101,10 @@ class RadioConversation(
             }
             if (turn != null) {
                 if (router.available(turn.complex)) {
-                    when (val r = converse(router, turn, onThinking)) {
+                    when (val r = converse(router, turn, onThinking, myTurn)) {
                         is Converse.Done -> return r.messages
                         is Converse.Failed -> notice = r.notice
+                        Converse.Stale -> return emptyList()
                     }
                 } else {
                     val why = router.mode.cloudOrder(turn.complex).joinToString(" ; ") { b ->
@@ -153,6 +181,9 @@ class RadioConversation(
 
         /** Aucun modèle n'a répondu et le moteur n'a pas de calcul sur ce sujet : le chemin habituel répond. */
         data class Failed(val notice: EngineerMessage) : Converse
+
+        /** Le pilote a posé une autre question, coupé l'ingénieur, ou la session a changé : rien n'est dit. */
+        data object Stale : Converse
     }
 
     /**
@@ -160,15 +191,26 @@ class RadioConversation(
      * mémoire. La réponse est vérifiée (chiffres, autres voitures, conseils) ; une commande passe par le garde. Si le
      * modèle ne répond pas, le calcul du moteur est dit tel quel.
      */
-    private suspend fun converse(router: AiRouter, turn: ConversationRouter.Turn, onThinking: (EngineerMessage) -> Unit): Converse {
+    private suspend fun converse(router: AiRouter, turn: ConversationRouter.Turn, onThinking: (EngineerMessage) -> Unit, myTurn: Long = this.turn): Converse {
         val (analysis, ctx) = mutex.withLock {
             val a = race.engineAnalysis(turn)
             a to race.conversationContext(turn, a)
         }
+        val session = race.currentSessionId
         router.candidates(turn.complex).firstOrNull()?.let { p ->
             onThinking(EngineerMessage("${p.backend.label} réfléchit : « ${turn.question} »", Priority.INFO, MessageCategory.DRIVER))
         }
-        val outcome = router.complete(EngineerPrompt.system, EngineerPrompt.build(turn.question, ctx), turn.complex)
+        thinking = true
+        val outcome = try {
+            router.complete(EngineerPrompt.system, EngineerPrompt.build(turn.question, ctx), turn.complex)
+        } finally {
+            thinking = false
+        }
+        // Réponse arrivée trop tard : une autre question, une interruption ou une autre session l'ont rendue périmée.
+        if (myTurn != this.turn || race.currentSessionId != session) {
+            lastTrace = AiTrace(turn.question, outcome.text, "réponse périmée, non dite", outcome.attempts.sumOf { it.latencyMs }, outcome.backend ?: AiBackend.ENGINE, outcome.modelId, outcome.attempts, fallback = true)
+            return Converse.Stale
+        }
         val history = ctx.recent.map { RadioAi.Exchange(it.question, it.answer) }
         val reply = outcome.text?.let {
             RadioAi.parse(
@@ -190,7 +232,9 @@ class RadioConversation(
         val why = if (reply == null) "IA cloud : ${failure?.kind?.label ?: "pas de réponse"}" else "IA cloud : réponse écartée ($verdict)"
         return mutex.withLock {
             when {
-                reply is AiReply.Answer -> Converse.Done(race.conversationReply(turn, reply.text, outcome.modelId ?: "IA", analysis, fromAi = true))
+                reply is AiReply.Answer -> Converse.Done(
+                    race.conversationReply(turn, Persona.polish(reply.text, ctx.recent.map { it.answer }).ifBlank { reply.text }, outcome.modelId ?: "IA", analysis, fromAi = true),
+                )
                 // Gemini ne modifie rien : sa commande passe par le même garde que la voix, avec confirmation au besoin.
                 reply is AiReply.Command -> Converse.Done(race.aiReply(turn.question, reply, clock()))
                 analysis != null -> Converse.Done(
