@@ -35,6 +35,12 @@ data class EngineerMessage(
     val dedupKey: String? = null,
     /** Réponse rédigée par l'IA (Gemini), signalée comme telle à l'écran. */
     val fromAi: Boolean = false,
+    /** Sujet : une annonce plus récente sur le même sujet remplace celle qui attend encore (voir RadioPacer). */
+    val topic: String? = null,
+    /** Annonce périmée au-delà de ce tour (décision d'arrêt, consigne d'un virage). */
+    val validUntilLap: Int? = null,
+    /** Durée de validité d'une annonce différée (ms) ; par défaut selon la priorité. */
+    val ttlMs: Long? = null,
 )
 
 /**

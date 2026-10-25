@@ -113,15 +113,19 @@ class TyreRadioTest {
 
     @Test
     fun nonUrgentMessagesWaitForTheStraightButAlertsNever() {
-        val pacer = RadioPacer(maxHoldMs = 6_000)
+        val pacer = RadioPacer()
         val info = EngineerMessage("Températures des pneus stabilisées, 85 degrés en moyenne.", Priority.INFO, MessageCategory.LAP)
         val lap = EngineerMessage("Tour 4 bouclé.", Priority.NORMAL, MessageCategory.LAP)
         val box = EngineerMessage("Box, box !", Priority.CRITICAL, MessageCategory.ALERT)
         val answer = EngineerMessage("Pneus de 4 tours.", Priority.HIGH, MessageCategory.ANSWER)
         assertEquals(listOf(box, answer), pacer.pace(listOf(info, lap, box, answer), busy = true, nowMs = 0))
         assertEquals(emptyList<EngineerMessage>(), pacer.pace(emptyList(), busy = true, nowMs = 2_000))
-        assertEquals(listOf(info, lap), pacer.pace(emptyList(), busy = false, nowMs = 2_500), "dans la ligne droite")
+        assertEquals(emptyList<EngineerMessage>(), pacer.pace(emptyList(), busy = false, nowMs = 2_500), "relâché entre deux virages")
+        assertEquals(listOf(lap, info), pacer.pace(emptyList(), busy = false, nowMs = 3_800), "dans la ligne droite, le plus important d'abord")
+        // V3 : jamais relâché tant que le pilote reste occupé, même au-delà de 6 s ; annulé une fois périmé.
         pacer.pace(listOf(info), busy = true, nowMs = 10_000)
-        assertEquals(listOf(info), pacer.pace(emptyList(), busy = true, nowMs = 16_000), "jamais plus de 6 s")
+        assertEquals(emptyList<EngineerMessage>(), pacer.pace(emptyList(), busy = true, nowMs = 16_000))
+        assertEquals(emptyList<EngineerMessage>(), pacer.pace(emptyList(), busy = true, nowMs = 31_000))
+        assertEquals(emptyList<EngineerMessage>(), pacer.pace(emptyList(), busy = false, nowMs = 32_500), "périmé après 20 s")
     }
 }

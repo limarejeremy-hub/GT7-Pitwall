@@ -152,7 +152,11 @@ class SessionTracker(
 
         if (prev == null) {
             events += SessionEvent.FirstData
-        } else if (p.carCode != prev.carCode || p.currentLap < prev.currentLap) {
+        } else if (p.carCode != prev.carCode || p.currentLap < prev.currentLap ||
+            // Format de course différent (10 tours puis 15) : une autre épreuve, même si le compteur n'a pas reculé
+            // (reconnexion après un passage par les menus).
+            (p.totalLaps > 0 && prev.totalLaps > 0 && p.totalLaps != prev.totalLaps)
+        ) {
             reset()
             resetNow = true
             events += SessionEvent.SessionReset
@@ -183,7 +187,11 @@ class SessionTracker(
                 val completed = before.currentLap
                 if (completed >= 1) {
                     val start = fuelAtLapStart
-                    val used = if (start != null && !refuelledThisLap) start - p.fuelLevel else null
+                    // Plusieurs tours sautés (coupure de la télémétrie, téléphone en veille) : la baisse mesurée couvre
+                    // plusieurs tours, elle n'est pas la consommation d'un tour.
+                    // Une coupure à cheval sur la ligne fausse aussi le tour terminé (fin mesurée plus loin) et le suivant.
+                    val skipped = p.currentLap > before.currentLap + 1 || dId > MAX_GAP_PACKETS
+                    val used = if (start != null && !refuelledThisLap && !skipped) start - p.fuelLevel else null
                     pending?.let { finishPending(it, null, events) }
                     // Le tracé du tour terminé est conservé jusqu'à l'arrivée du chrono officiel.
                     trace.add(p)
@@ -201,7 +209,9 @@ class SessionTracker(
                 } else if (p.totalLaps > 0 && p.currentLap == p.totalLaps) {
                     events += SessionEvent.FinalLapStarted(p.currentLap)
                 }
-                fuelAtLapStart = p.fuelLevel
+                // Après une coupure, le niveau au début de ce tour n'a pas été vu : sa consommation restera inconnue.
+                val blind = p.currentLap > before.currentLap + 1 || dId > MAX_GAP_PACKETS
+                fuelAtLapStart = if (blind) null else p.fuelLevel
                 refuelledThisLap = false
                 lapStartedInPit = pitDetector.inVisit
                 trace = SectorTrace().also { it.startLap(p) }
@@ -293,5 +303,8 @@ class SessionTracker(
     private companion object {
         /** Pas de passage aux stands dans les 10 premières secondes (départ arrêté, grille). */
         const val RACE_START_GRACE_TICKS = 600L
+
+        /** Au-delà de 2 s sans paquet au passage de la ligne, les niveaux de carburant de part et d'autre ne sont pas fiables. */
+        const val MAX_GAP_PACKETS = 120
     }
 }
