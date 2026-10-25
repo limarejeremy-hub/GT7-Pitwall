@@ -85,7 +85,13 @@ class PitwallApp : Application() {
             it.useGoogleSpeech = settings.googleSpeech
             it.remoteMic = { if (settings.discordMicInput) discord.openMicSource() else null }
             it.bench = bench
+            // Interruption : seulement là où le matériel le permet (voir DuplexPolicy, testé dans le module core).
+            it.duplexMode = { duplexMode() }
+            it.inGap = voice.inGap
+            it.engineerMessage = { discord.current ?: voice.current }
+            it.isThinking = { if (::engine.isInitialized) engine.thinking else false }
         }
+        voice.gaps = { duplexMode() == com.gt7pitwall.core.radio.DuplexMode.GAPS }
         // Le bot entre dans le salon ou en sort : l'écoute bascule entre le micro du casque PS5 et celui du Fold.
         CoroutineScope(SupervisorJob() + Dispatchers.Main).launch {
             // Bot dans le salon ET pilote présent : seul dans un salon vide, le bot ne prend pas le micro.
@@ -94,6 +100,8 @@ class PitwallApp : Application() {
             }
         }
         engine = PitwallEngine(radioOut, voiceInput, loadDatabase(), RaceStore(this)).also {
+            voice.onAudible = it::onAudible
+            discord.onAudible = it::onAudible
             it.voiceEnabled = settings.voiceEnabled
             it.detailedLapReports = settings.detailedLapReports
             it.askPositionEachLap = { settings.askPositionEachLap && voiceInput.isRunning }
@@ -109,6 +117,27 @@ class PitwallApp : Application() {
             sport.state.collect { s -> if (s != null) engine.applySchedule(s) }
         }
         sport.start()
+    }
+
+    /**
+     * Où le micro peut entendre une interruption : Discord (flux du pilote séparé de la voix du bot) ou Fold au casque :
+     * pendant la parole ; Fold sur haut-parleur : seulement entre les phrases (le micro entendrait l'ingénieur).
+     */
+    fun duplexMode(): com.gt7pitwall.core.radio.DuplexMode {
+        if (!settings.bargeIn) return com.gt7pitwall.core.radio.DuplexMode.OFF
+        // Voix dans le casque PS5 (Discord) : ni le flux Discord du pilote ni le micro du Fold ne l'entendent.
+        return com.gt7pitwall.core.radio.DuplexPolicy.mode(radioOut.route, phoneSpeaker = phoneOnSpeaker())
+    }
+
+    /** La voix du Fold sort par le haut-parleur intégré (aucun casque ni écouteurs branchés ou connectés). */
+    private fun phoneOnSpeaker(): Boolean {
+        val am = getSystemService(android.media.AudioManager::class.java) ?: return true
+        val headset = setOf(
+            android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET, android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+            android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP, android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+            android.media.AudioDeviceInfo.TYPE_USB_HEADSET,
+        )
+        return am.getDevices(android.media.AudioManager.GET_DEVICES_OUTPUTS).none { it.type in headset }
     }
 
     /** Active ou coupe l'ingénieur IA (la transcription libre de Vosk reste active dans les deux cas). */

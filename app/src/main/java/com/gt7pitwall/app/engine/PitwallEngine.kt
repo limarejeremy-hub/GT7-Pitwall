@@ -169,6 +169,53 @@ class PitwallEngine(
     @Volatile
     var onAiTrace: (AiTrace) -> Unit = {}
 
+    /** Une réponse est en préparation (la conversation ne se referme pas, signal discret si elle tarde). */
+    val thinking: Boolean get() = conversation.thinking
+
+    private val _latency = MutableStateFlow<String?>(null)
+    /** Dernière mesure de latence d'un tour de parole, étape par étape (diagnostic). */
+    val latency: StateFlow<String?> = _latency.asStateFlow()
+
+    /** Tour de parole dont on attend le premier son, et les réponses qui le concluent. */
+    @Volatile
+    private var pendingLatency: Pair<com.gt7pitwall.core.radio.LatencyTrace, Set<EngineerMessage>>? = null
+
+    /** Premier son réellement émis pour un message (synthèse du Fold ou salon Discord). */
+    fun onAudible(message: EngineerMessage, atMs: Long) {
+        val (trace, answers) = pendingLatency ?: return
+        if (answers.none { it === message }) return
+        pendingLatency = null
+        trace.mark(com.gt7pitwall.core.radio.LatencyTrace.Step.AUDIBLE, atMs)
+        val text = trace.text()
+        _latency.value = text
+        race.journal.record(
+            JournalType.RADIO, JournalSource.SYSTEM, "Latence : $text",
+            details = listOfNotNull("total_ms" to (trace.totalMs?.toString() ?: "?"), trace.slowest?.let { "etape_la_plus_lente" to it.first.label }).toMap(),
+        )
+    }
+
+    private var turnSeq = 0L
+
+    private val _memory = MutableStateFlow<List<com.gt7pitwall.core.ai.PilotMemory.Entry>>(emptyList())
+    /** Mémoire durable de l'ingénieur (déclarations confirmées du pilote), consultable et effaçable. */
+    val pilotMemory: StateFlow<List<com.gt7pitwall.core.ai.PilotMemory.Entry>> = _memory.asStateFlow()
+
+    private val _memoryOn = MutableStateFlow(true)
+    val pilotMemoryEnabled: StateFlow<Boolean> = _memoryOn.asStateFlow()
+
+    fun refreshPilotMemory() {
+        scope.launch {
+            _memory.value = race.pilotMemory.all
+            _memoryOn.value = race.pilotMemory.enabled
+        }
+    }
+
+    fun forgetPilotMemory(id: String) = scope.launch { race.pilotMemory.forget(id); refreshPilotMemory() }
+
+    fun clearPilotMemory() = scope.launch { race.pilotMemory.clear(); refreshPilotMemory() }
+
+    fun setPilotMemoryEnabled(on: Boolean) = scope.launch { race.pilotMemory.setEnabled(on); refreshPilotMemory() }
+
     private val _aiTrace = MutableStateFlow<AiTrace?>(null)
     /** Dernier échange avec l'IA (diagnostic affiché dans la carte « Ingénieur IA »). */
     val aiTrace: StateFlow<AiTrace?> = _aiTrace.asStateFlow()
@@ -337,15 +384,56 @@ class PitwallEngine(
                 EngineerMessage(if (event.byDriver) "🎙 Conversation terminée" else "🎙 Conversation refermée (silence)", Priority.INFO, MessageCategory.DRIVER),
             )
             is VoiceInputEvent.Notice -> deliver(EngineerMessage(event.text, Priority.HIGH, MessageCategory.ANSWER))
+            is VoiceInputEvent.BargeIn -> {
+                // Le pilote coupe l'ingénieur : la voix s'arrête, la réponse en préparation ne sera pas dite.
+                voice.stop()
+                conversation.interrupt()
+                pendingLatency = null
+                race.journal.record(
+                    JournalType.RADIO, JournalSource.TRANSCRIPT, "Interruption du pilote : ${event.heard}",
+                    details = mapOf("mode" to event.mode.label),
+                )
+                deliver(EngineerMessage("🎙 Interrompu : « ${event.heard} »", Priority.INFO, MessageCategory.DRIVER))
+            }
             is VoiceInputEvent.Utterance -> {
                 journalUtterance(event)
-                // Commandes et questions simples : analyseur (immédiat, testé). Questions ouvertes : IA. Fragments : ignorés.
-                // Phrase de la conversation continue sans « radio » devant : modifications de course à confirmer.
-                val before = conversation.lastTrace
-                val messages = conversation.onUtterance(event.text, event.freeText, languageModel, ::deliver, addressed = event.addressed)
-                mutex.withLock { publish(force = true) }
-                conversation.lastTrace?.takeIf { it !== before }?.let { _aiTrace.value = it; journalAi(it); onAiTrace(it) }
-                messages.forEach(::deliver)
+                val heardAt = android.os.SystemClock.elapsedRealtime()
+                val trace = com.gt7pitwall.core.radio.LatencyTrace(++turnSeq).apply {
+                    val (start, end) = voiceInput?.speechTiming ?: (null to null)
+                    start?.takeIf { heardAt - it < 30_000 }?.let { mark(com.gt7pitwall.core.radio.LatencyTrace.Step.SPEECH_START, it) }
+                    end?.takeIf { heardAt - it < 30_000 }?.let { mark(com.gt7pitwall.core.radio.LatencyTrace.Step.SPEECH_END, it) }
+                    mark(com.gt7pitwall.core.radio.LatencyTrace.Step.TRANSCRIBED, heardAt)
+                }
+                // Chaque phrase a son propre tour : une nouvelle question n'attend pas la réponse lente de la précédente,
+                // qui devient périmée (jamais dite).
+                scope.launch {
+                    val thinkingTone = scope.launch {
+                        kotlinx.coroutines.delay(THINKING_TONE_MS)
+                        if (conversation.thinking) voiceInput?.thinking()
+                    }
+                    try {
+                        // Commandes et questions simples : analyseur (immédiat, testé). Questions ouvertes : IA. Fragments : ignorés.
+                        // Phrase de la conversation continue sans « radio » devant : modifications de course à confirmer.
+                        val before = conversation.lastTrace
+                        val messages = conversation.onUtterance(event.text, event.freeText, languageModel, ::deliver, addressed = event.addressed)
+                        val answeredAt = android.os.SystemClock.elapsedRealtime()
+                        mutex.withLock { publish(force = true) }
+                        val aiTrace = conversation.lastTrace?.takeIf { it !== before }
+                        aiTrace?.let { _aiTrace.value = it; journalAi(it); onAiTrace(it) }
+                        trace.mark(
+                            if (aiTrace?.modelId != null && !aiTrace.fallback) com.gt7pitwall.core.radio.LatencyTrace.Step.AI else com.gt7pitwall.core.radio.LatencyTrace.Step.ENGINE,
+                            answeredAt,
+                        )
+                        val spoken = messages.filter { it.category != MessageCategory.DRIVER }.toSet()
+                        if (spoken.isNotEmpty()) {
+                            trace.mark(com.gt7pitwall.core.radio.LatencyTrace.Step.SYNTHESIS, android.os.SystemClock.elapsedRealtime())
+                            pendingLatency = trace to spoken
+                        }
+                        messages.forEach(::deliver)
+                    } finally {
+                        thinkingTone.cancel()
+                    }
+                }
             }
         }
     }
@@ -560,6 +648,8 @@ class PitwallEngine(
     }
 
     private companion object {
+        /** Au-delà, un petit signal discret dit que la réponse arrive (jamais une phrase « je réfléchis »). */
+        const val THINKING_TONE_MS = 1_500L
         const val UI_REFRESH_MS = 50L
         const val PROBE_REFRESH_MS = 500L
         const val GAP_REFRESH_MS = 1_000L

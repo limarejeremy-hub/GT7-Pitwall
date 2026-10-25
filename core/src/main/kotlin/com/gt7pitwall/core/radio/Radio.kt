@@ -63,6 +63,12 @@ sealed interface VoiceInputEvent {
 
     /** Message de la radio elle-même (« Je n'ai pas reçu ta demande… ») : dit au pilote, jamais silencieux. */
     data class Notice(val text: String) : VoiceInputEvent
+
+    /**
+     * Le pilote a coupé l'ingénieur ([heard] : ce qui a été reconnu). La voix doit s'arrêter, la réponse en préparation
+     * devient périmée, et l'écoute reprend pour la suite de sa phrase.
+     */
+    data class BargeIn(val heard: String, val mode: DuplexMode) : VoiceInputEvent
 }
 
 /**
@@ -74,6 +80,12 @@ interface VoiceInput {
 
     /** L'ingénieur vient de poser une question : écouter la réponse sans mot de réveil. */
     fun expectReply() {}
+
+    /** La réponse tarde : petit signal non verbal (jamais une phrase). */
+    fun thinking() {}
+
+    /** Début et fin de la dernière phrase du pilote (horloge monotone, ms), si l'entrée vocale les mesure. */
+    val speechTiming: Pair<Long?, Long?> get() = null to null
 }
 
 /** Conversion d'une phrase reconnue en question (compatibilité). */

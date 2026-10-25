@@ -24,6 +24,10 @@ class ConversationWindow(var idleMs: Long = DEFAULT_IDLE_MS) {
     /** Fin de la fenêtre (horloge monotone, ms), quand personne ne parle. */
     private var deadline = 0L
     private var engineerSpeaking = false
+    private var thinking = false
+
+    /** Fragments inintelligibles de suite (bruit du jeu reconnu comme parole) : trop nombreux, la conversation se ferme. */
+    private var noise = 0
 
     /** Nombre de phrases du pilote depuis l'ouverture : la première suit directement « Radio ». */
     var exchanges: Int = 0
@@ -53,7 +57,11 @@ class ConversationWindow(var idleMs: Long = DEFAULT_IDLE_MS) {
         if (isClosing(text)) return close()
         if (isIntelligible(text)) {
             exchanges++
+            noise = 0
             deadline = nowMs + idleMs
+        } else if (++noise >= MAX_NOISE) {
+            // Écoute involontaire : le jeu ou la pièce font réagir la reconnaissance sans que le pilote parle.
+            return close()
         }
         return null
     }
@@ -67,8 +75,17 @@ class ConversationWindow(var idleMs: Long = DEFAULT_IDLE_MS) {
         if (!speaking && open) deadline = nowMs + idleMs
     }
 
-    /** À appeler régulièrement : referme la conversation à l'expiration. */
-    fun tick(nowMs: Long): Effect? = if (open && !engineerSpeaking && nowMs >= deadline) close() else null
+    /**
+     * Une réponse est en préparation (moteur ou IA) : la fenêtre ne se referme pas pendant ce temps ; quand elle est prête,
+     * l'ingénieur parle, puis le délai repart.
+     */
+    fun thinking(busy: Boolean, nowMs: Long) {
+        thinking = busy
+        if (!busy && open) deadline = maxOf(deadline, nowMs + idleMs)
+    }
+
+    /** À appeler régulièrement : referme la conversation à l'expiration (jamais pendant une parole ou une réflexion). */
+    fun tick(nowMs: Long): Effect? = if (open && !engineerSpeaking && !thinking && nowMs >= deadline) close() else null
 
     fun remainingMs(nowMs: Long): Long = if (open) (deadline - nowMs).coerceAtLeast(0) else 0
 
@@ -77,6 +94,8 @@ class ConversationWindow(var idleMs: Long = DEFAULT_IDLE_MS) {
         open = false
         exchanges = 0
         beeped = false
+        noise = 0
+        thinking = false
     }
 
     private fun close(): Effect {
@@ -85,7 +104,14 @@ class ConversationWindow(var idleMs: Long = DEFAULT_IDLE_MS) {
     }
 
     companion object {
-        const val DEFAULT_IDLE_MS = 5_000L
+        /**
+         * Silence avant fermeture, une fois que personne ne parle ni ne réfléchit. 5 s coupaient le pilote qui cherchait
+         * ses mots en pleine course ; au-delà de 10 s, le bruit du jeu a le temps de déclencher une commande.
+         */
+        const val DEFAULT_IDLE_MS = 8_000L
+
+        /** Fragments inintelligibles de suite avant de refermer : écoute involontaire. */
+        const val MAX_NOISE = 3
 
         private val CLOSING = Regex(
             "^(merci )?(c'est )?(termine|terminee|fin de (la )?communication|fin de transmission|over|terminer|stop radio|ca sera tout|c'est tout)( merci)?$",
