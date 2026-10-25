@@ -94,6 +94,10 @@ interface RaceStorage {
     fun loadJournal(sessionId: String): List<String> = emptyList()
     fun journalSessionIds(): List<String> = emptyList()
 
+    /** Persisted Driver DNA profiles; independent from race session archives. */
+    fun loadDriverBook(): String? = null
+    fun saveDriverBook(json: String) {}
+
     /** Mémoire durable du pilote (JSON) ; null au premier lancement. */
     fun loadPilotMemory(): String? = null
     fun savePilotMemory(json: String) {}
@@ -115,6 +119,18 @@ class RaceController(
     val tracker = SessionTracker()
     val engineer = RaceEngineer()
     val ledger = PitLedger()
+    val driverCoach = com.gt7pitwall.core.driver.DriverCoach(
+        load = { storage?.loadDriverBook() },
+        save = { storage?.saveDriverBook(it) },
+    )
+    private var lastPositionChangeClockMs: Long? = null
+    private var gridPosition: Int? = null
+    private var finishPosition: Int? = null
+    private var briefed = false
+    var lastReview: com.gt7pitwall.core.strategy.RaceReview? = null
+        private set
+    var fuelCorrectionPct: Double? = null
+        private set
     private val gMeter = GForceMeter()
 
     /** Règlement par épreuve (Sport A, B, C, autre × qualification, course). */
@@ -366,8 +382,11 @@ class RaceController(
         if (sessionId != null && journal.sessionId != sessionId && p.currentLap >= 1) beginJournal()
         if (!replay) events.filterIsInstance<SessionEvent.LapCompleted>().forEach { checkReplay(it.lap) }
         if (replay) return emptyList()
+        val coached = if (sessionFinished) emptyList() else runCatching { driverCoach.onPacket(p, tracker.pitVisitOpen) }.getOrDefault(emptyList())
+        if (positionChanges.isNotEmpty()) lastPositionChangeClockMs = pacer.packetClockMs
         journalPositions(positionChanges)
         val out = mutableListOf<EngineerMessage>()
+        if (events.isEmpty()) out += journalCoaching(coached)
         val windowWasOpen = pitWindowPackets > 0
         if (pitWindowPackets > 0) pitWindowPackets--
         // « As-tu changé les pneus ? » sans réponse : la question expire, les pneus de cet arrêt restent « non précisés »
@@ -412,6 +431,8 @@ class RaceController(
                 pendingTyreFamily = null
             }
             out += learn(events)
+            if (!sessionFinished) out += coachLaps(events)
+            out += journalCoaching(coached)
             journalEvents(events)
             if (events.any { it is SessionEvent.RaceFinished }) sessionFinished = true
             if (events.any { it is SessionEvent.LapCompleted }) out += rulesReminder()
@@ -453,6 +474,8 @@ class RaceController(
         // Retour au menu après une course finie : pas de « nouvelle session » annoncée.
         out.addAll(0, engineer.onUpdate(events, tracker.snapshot, fuel).filterNot { finishedBefore && it.text.startsWith("Nouvelle session détectée") })
         out += celebrate(engineer.onPosition(positionChanges, nowMs), nowMs)
+        if (events.any { it is SessionEvent.RaceFinished }) finishPosition = engineer.measured.finalPosition ?: engineer.driverPosition
+        out += briefingIfDue(p)
         updateMood(events, positionChanges, p)
         if (events.any { it is SessionEvent.LapCompleted || it is SessionEvent.RaceFinished || it is SessionEvent.PitVisitEnded }) saveSession()
         // Messages non urgents différés pendant un gros freinage ou un virage (au plus quelques secondes).
@@ -800,6 +823,9 @@ class RaceController(
             return AiFacts(lines)
         }
         strategyBrief?.let { lines += it.facts() }
+        lines += runCatching { driverCoach.facts(driverKey) }.getOrDefault(emptyList())
+        forecastTrack().text()?.let { lines += "Justesse de mes prévisions comparables : $it" }
+        lastReview?.lines()?.takeIf { it.isNotEmpty() }?.let { lines += "Dernier bilan : ${it.joinToString(" ")}" }
         activeObservations.forEach { o -> lines += "Déclaré par le pilote au tour ${o.lap} (non mesuré) : ${o.kind.label}." }
         history.let { h -> lines += "Historique : ${h.comparable} session(s) comparable(s) archivée(s), dont ${h.sameEvent} avec le même règlement." }
         carName?.let { lines += "Voiture : $it." }
@@ -962,12 +988,17 @@ class RaceController(
     // ------------------------------------------------------------------ Archive des sessions
 
     private fun startSession() {
+        gridPosition = null
+        finishPosition = null
+        briefed = false
+        lastPositionChangeClockMs = null
         replay = false
         replaySuspect = null
         sessionExamples.clear()
         calibrationCache = null
         sessionStartMs = clock()
         sessionId = "$sessionStartMs-${snapshot.packet?.carCode ?: 0}"
+        driverCoach.start(sessionId!!)
         sessionFinished = false
         planLog.clear()
         raceMemory.clear()
@@ -1011,6 +1042,8 @@ class RaceController(
             tyres = ledger.changes.map { TyreEntry(it.lap, it.compound) },
             plans = planLog.toList(),
             notes = driverNotes.toList(),
+            gridPosition = gridPosition,
+            finishPosition = finishPosition,
         )
     }
 
@@ -1065,6 +1098,43 @@ class RaceController(
         }
     }
 
+    /** Course Sport officielle : l'ingénieur est un stratège ; sinon (entraînement, chrono, personnalisée) un coach. */
+    val raceMode: Boolean get() = profile.id.mode == SessionMode.SPORT_OFFICIAL && profile.id.kind == SessionKind.RACE
+
+    /** Clé du profil de pilotage : voiture × circuit × type de session (jamais mélangés). */
+    val driverKey: String
+        get() = com.gt7pitwall.core.driver.DriverProfile.key(snapshot.packet?.carCode ?: 0, rules.trackId?.toString() ?: "piste-inconnue", profile.id.kind.name)
+
+    private fun coachLaps(events: List<SessionEvent>): List<EngineerMessage> {
+        val out = mutableListOf<EngineerMessage>()
+        for (e in events) {
+            if (e !is SessionEvent.LapCompleted) continue
+            val lap = e.lap
+            val stopped = ledger.stopList.any { it.lap == lap.lapNumber || it.lap == lap.lapNumber - 1 }
+            val recent = lastPositionChangeClockMs?.let { pacer.packetClockMs - it < POSITION_CALM_MS } == true
+            val ctx = com.gt7pitwall.core.driver.DriverCoach.LapContext(
+                profileKey = driverKey,
+                race = raceMode,
+                totalLaps = snapshot.packet?.totalLaps ?: 0,
+                positionChangedRecently = recent,
+                pitLap = stopped,
+                wheelBaseM = snapshot.packet?.wheelBaseM,
+            )
+            out += journalCoaching(runCatching { driverCoach.onLap(lap, ctx) }.getOrDefault(emptyList()))
+        }
+        return out
+    }
+
+    private fun journalCoaching(said: List<EngineerMessage>): List<EngineerMessage> {
+        for (m in said) {
+            journal.record(
+                JournalType.ENGINEER, JournalSource.ENGINE, "Coaching : ${m.text}",
+                details = mapOf("mode" to if (raceMode) "course" else "entrainement"),
+            )
+        }
+        return said
+    }
+
     private fun saveSession() {
         // Premier tour identique à une course archivée : on attend le deuxième avant d'archiver quoi que ce soit.
         if (replay || replaySuspect != null) return
@@ -1079,6 +1149,7 @@ class RaceController(
      */
     private fun closeSession(outcome: SessionOutcome) {
         if (replay) return
+        val dna = driverCoach.close(fuel?.perLap)
         val final = if (sessionFinished) SessionOutcome.FINISHED else outcome
         journal.end(
             when (final) {
@@ -1095,9 +1166,75 @@ class RaceController(
             tyres = ledger.changes.map { TyreEntry(it.lap, it.compound) },
             plans = planLog.toList(),
             notes = driverNotes.toList(),
+            gridPosition = gridPosition,
+            finishPosition = finishPosition,
         ) ?: return
         sessions[r.id] = r
         storage?.saveSession(r)
+        val advice = dna?.advice?.filter { it.sessionId == r.id }.orEmpty()
+        val review = com.gt7pitwall.core.strategy.RaceReview.of(
+            r, advice.size, advice.count { a -> a.lossAfterMs?.let { it < a.lossBeforeMs - com.gt7pitwall.core.driver.DriverProfile.IMPROVED_MS } == true },
+        )
+        lastReview = review
+        review.lines().forEach { journal.record(JournalType.DECISION, JournalSource.ENGINE, "Bilan : $it", details = mapOf("session" to r.id)) }
+    }
+
+    /** Justesse des prévisions sur les courses comparables archivées (hors session en cours). */
+    fun forecastTrack(): com.gt7pitwall.core.strategy.ForecastTrack {
+        val ctx = sessionContext
+        val comparable = sessions.values.filter {
+            it.id != sessionId && it.context.profile.id == ctx.profile.id && Compatibility.compare(ctx, it.context).first != Comparability.INCOMPATIBLE
+        }
+        return com.gt7pitwall.core.strategy.ForecastTrack.of(comparable.map { com.gt7pitwall.core.strategy.RaceReview.of(it) })
+    }
+
+    /**
+     * Briefing avant une épreuve Sport (une fois, sur la grille) : règlement, circuit, historique, consommation, pneus,
+     * plan et fiabilité, profil de pilotage. Chaque phrase dit sur quoi elle repose.
+     */
+    fun briefing(): List<String> {
+        val out = mutableListOf<String>()
+        val gaps = ruleGaps
+        out += when {
+            !profile.confirmed -> "Briefing ${profile.id.label} : règlement non confirmé, vérifie-le dans la carte Course."
+            gaps.isNotEmpty() -> "Briefing ${profile.id.label} : règlement à compléter (${gaps.joinToString(", ") { it.label }})."
+            else -> "Briefing ${profile.id.label} : règlement confirmé."
+        }
+        if (rules.trackId == null) out += "Circuit non identifié : je ne peux pas utiliser ton historique."
+        val h = history
+        val learned = historyModel.fuelPerLap?.takeIf { it.confidence != Confidence.INSUFFICIENT }
+        out += if (h.comparable == 0) {
+            "Aucune course comparable : je me baserai sur tes premiers tours."
+        } else {
+            "${h.comparable} course${if (h.comparable > 1) "s" else ""} comparable${if (h.comparable > 1) "s" else ""}" +
+                (learned?.let { l ->
+                    ", consommation de référence ${String.format(java.util.Locale.FRANCE, "%.2f", l.mean)} par tour (${l.confidence.label})" +
+                        (fuelCorrectionPct?.let { c -> ", corrigée de ${if (c >= 0) "+" else "−"}${String.format(java.util.Locale.FRANCE, "%.1f", kotlin.math.abs(c))} % d'après mes erreurs passées" } ?: "")
+                } ?: "") + "."
+        }
+        val tyre = compoundBook[ledger.currentTyre(rules.startTyre)]
+        if (tyre != null && tyre.confidence != Confidence.INSUFFICIENT) out += "Pneus : ${tyre.summary()}."
+        strategy?.let { rep ->
+            val o = rep.recommendedOption
+            val gain = o.deltaMs?.takeIf { it < 0 }
+            out += when {
+                rep.indistinguishable -> "Plusieurs plans se valent : écarts inférieurs à l'incertitude."
+                gain != null && rep.uncertaintyMs != null -> "${o.kind.label.replaceFirstChar { it.uppercase() }} : environ ${StrategyOptions.seconds(-gain)} de gagnés, à ± ${StrategyOptions.seconds(rep.uncertaintyMs)}."
+                else -> null
+            } ?: return@let
+        }
+        if (!raceMode) driverCoach.known(driverKey)?.traits()?.text?.let { out += it }
+        return out
+    }
+
+    private fun briefingIfDue(p: TelemetryPacket): List<EngineerMessage> {
+        if (briefed || !profile.id.sport || profile.id.kind != SessionKind.RACE || p.currentLap != 0 || p.speedKmh > 1f) return emptyList()
+        briefed = true
+        val lines = briefing()
+        // Le briefing a déjà signalé le règlement non confirmé : pas de second rappel au premier tour.
+        if (!profile.confirmed) rulesReminded = true
+        journal.record(JournalType.STRATEGY, JournalSource.ENGINE, "Briefing : ${lines.joinToString(" ")}")
+        return listOf(EngineerMessage(lines.joinToString(" "), Priority.NORMAL, MessageCategory.FUEL, topic = "briefing"))
     }
 
     /** Événements mesurés du tracker inscrits au journal (tours, stands, arrivée, grille). */
@@ -1142,7 +1279,10 @@ class RaceController(
                 details = mapOf("analyse" to e.visit.assessment.name.lowercase(), "lieu_connu" to if (e.visit.locationKnown) "oui" else "non"),
             )
             is SessionEvent.RaceFinished -> journal.record(JournalType.SESSION, JournalSource.TELEMETRY, "Arrivée : ${e.totalLaps} tours")
-            is SessionEvent.GridPosition -> journal.record(JournalType.POSITION, JournalSource.TELEMETRY, "Grille : P${e.position} sur ${e.cars}")
+            is SessionEvent.GridPosition -> {
+                gridPosition = e.position
+                journal.record(JournalType.POSITION, JournalSource.TELEMETRY, "Grille : P${e.position} sur ${e.cars}")
+            }
             else -> {}
         }
     }
@@ -1213,9 +1353,10 @@ class RaceController(
         // Arrêt pneus retenu déjà passé : il sort de la liste.
         performanceTyreLaps = performanceTyreLaps.filter { it >= p.currentLap.coerceAtLeast(1) }
         val learnedFuel = model.fuelPerLap?.takeIf { it.confidence != Confidence.INSUFFICIENT }
+        fuelCorrectionPct = if (live?.perLap == null && learnedFuel != null) forecastTrack().fuelCorrection else null
         val (perLap, fuelSource) = when {
             live?.perLap != null -> live.perLap to DataSource.MEASURED
-            learnedFuel != null -> learnedFuel.mean.toFloat() to DataSource.HISTORY
+            learnedFuel != null -> (learnedFuel.mean * (1 + (fuelCorrectionPct ?: 0.0) / 100.0)).toFloat() to DataSource.HISTORY
             rec?.fuelPerLapX1 != null -> rec.fuelPerLapX1 * rules.fuelMultiplier to DataSource.HISTORY
             else -> null to null
         }
@@ -1284,7 +1425,8 @@ class RaceController(
         }
         val stopLaps = plan?.stops?.map { it.endOfLap } ?: emptyList()
         if (plan != null && planLog.lastOrNull()?.stopLaps != stopLaps) {
-            planLog += PlanEntry(p.currentLap, stopLaps, reason, fuelPerLap = plan?.perLap, fuelSource = plan?.fuelSource?.name)
+            val pitLoss = stopCosts(model, course?.pitLaneDeltaS?.let { it * 1000.0 })?.cost(StopKind.FUEL_ONLY)?.ms?.roundToInt()
+            planLog += PlanEntry(p.currentLap, stopLaps, reason, fuelPerLap = plan?.perLap, fuelSource = plan?.fuelSource?.name, pitLossMs = pitLoss)
             raceMemory.planProposed(p.currentLap, clock(), stopLaps, reason)
             journal.record(
                 JournalType.STRATEGY, JournalSource.ENGINE,
@@ -2495,6 +2637,7 @@ class RaceController(
     private companion object {
         val INCIDENT_NOTE = Regex("(?i)accident|accroch|t[eê]te.?[aà].?queue|sortie de piste|touch[eé]|crash|abîm|abim")
         const val TYRE_QUESTION_PACKETS = 60 * 60
+        const val POSITION_CALM_MS = 30_000L
 
         /** Réponses gardées entières : détail demandé, secteurs, règlement. */
         val DETAILED_QUERIES = setOf(DriverQuery.DETAILS, DriverQuery.SECTORS, DriverQuery.OBLIGATIONS)
