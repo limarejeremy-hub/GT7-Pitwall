@@ -82,6 +82,7 @@ data class PlanEntry(
     val fuelPerLap: Float? = null,
     /** MEASURED, HISTORY… (d'où venait la consommation). */
     val fuelSource: String? = null,
+    val pitLossMs: Int? = null,
 )
 
 /** Déclaration utile du pilote (« je perds l'avant », « on rentre au tour 8 »), jamais une mesure. */
@@ -103,6 +104,8 @@ data class SessionRecord(
     val tyres: List<TyreEntry> = emptyList(),
     val plans: List<PlanEntry> = emptyList(),
     val notes: List<DriverNote> = emptyList(),
+    val gridPosition: Int? = null,
+    val finishPosition: Int? = null,
 ) {
     val completedLaps: Int get() = laps.size
 
