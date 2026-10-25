@@ -93,6 +93,10 @@ interface RaceStorage {
     fun appendJournal(sessionId: String, line: String) {}
     fun loadJournal(sessionId: String): List<String> = emptyList()
     fun journalSessionIds(): List<String> = emptyList()
+
+    /** Profils de pilotage (Driver DNA), en JSON ; null au premier lancement. */
+    fun loadDriverBook(): String? = null
+    fun saveDriverBook(json: String) {}
 }
 
 /**
@@ -111,6 +115,13 @@ class RaceController(
     val tracker = SessionTracker()
     val engineer = RaceEngineer()
     val ledger = PitLedger()
+
+    /** Coach de pilotage par virage, nourri par le profil Driver DNA (persistant). */
+    val driverCoach = com.gt7pitwall.core.driver.DriverCoach(
+        load = { storage?.loadDriverBook() },
+        save = { storage?.saveDriverBook(it) },
+    )
+    private var lastPositionChangeClockMs: Long? = null
     private val gMeter = GForceMeter()
 
     /** Règlement par épreuve (Sport A, B, C, autre × qualification, course). */
@@ -346,8 +357,11 @@ class RaceController(
         if (sessionId != null && journal.sessionId != sessionId && p.currentLap >= 1) beginJournal()
         if (!replay) events.filterIsInstance<SessionEvent.LapCompleted>().forEach { checkReplay(it.lap) }
         if (replay) return emptyList()
+        val coached = if (sessionFinished) emptyList() else runCatching { driverCoach.onPacket(p, tracker.pitVisitOpen) }.getOrDefault(emptyList())
+        if (positionChanges.isNotEmpty()) lastPositionChangeClockMs = pacer.packetClockMs
         journalPositions(positionChanges)
         val out = mutableListOf<EngineerMessage>()
+        if (events.isEmpty()) out += journalCoaching(coached)
         val windowWasOpen = pitWindowPackets > 0
         if (pitWindowPackets > 0) pitWindowPackets--
         // « As-tu changé les pneus ? » sans réponse : la question expire, les pneus de cet arrêt restent « non précisés »
@@ -388,6 +402,8 @@ class RaceController(
                 pendingTyreFamily = null
             }
             out += learn(events)
+            if (!sessionFinished) out += coachLaps(events)
+            out += journalCoaching(coached)
             journalEvents(events)
             if (events.any { it is SessionEvent.RaceFinished }) sessionFinished = true
             if (events.any { it is SessionEvent.LapCompleted }) out += rulesReminder()
@@ -738,6 +754,8 @@ class RaceController(
             return AiFacts(lines)
         }
         strategyBrief?.let { lines += it.facts() }
+        // Profil de pilotage (Driver DNA) : mesures répétées seulement, jamais un événement isolé.
+        lines += runCatching { driverCoach.facts(driverKey) }.getOrDefault(emptyList())
         activeObservations.forEach { o -> lines += "Déclaré par le pilote au tour ${o.lap} (non mesuré) : ${o.kind.label}." }
         history.let { h -> lines += "Historique : ${h.comparable} session(s) comparable(s) archivée(s), dont ${h.sameEvent} avec le même règlement." }
         carName?.let { lines += "Voiture : $it." }
@@ -900,12 +918,14 @@ class RaceController(
     // ------------------------------------------------------------------ Archive des sessions
 
     private fun startSession() {
+        sessionId?.let { driverCoach.close(fuel?.perLap) }
         replay = false
         replaySuspect = null
         sessionExamples.clear()
         calibrationCache = null
         sessionStartMs = clock()
         sessionId = "$sessionStartMs-${snapshot.packet?.carCode ?: 0}"
+        driverCoach.start(sessionId!!)
         sessionFinished = false
         planLog.clear()
         raceMemory.clear()
@@ -979,6 +999,43 @@ class RaceController(
     }
 
     /** Enregistre la session au fil de l'eau : une fermeture brutale ne perd au plus que le tour en cours. */
+    /** Course Sport officielle : l'ingénieur est un stratège ; sinon (entraînement, chrono, personnalisée) un coach. */
+    val raceMode: Boolean get() = profile.id.mode == SessionMode.SPORT_OFFICIAL && profile.id.kind == SessionKind.RACE
+
+    /** Clé du profil de pilotage : voiture × circuit × type de session (jamais mélangés). */
+    val driverKey: String
+        get() = com.gt7pitwall.core.driver.DriverProfile.key(snapshot.packet?.carCode ?: 0, rules.trackId?.toString() ?: "piste-inconnue", profile.id.kind.name)
+
+    private fun coachLaps(events: List<SessionEvent>): List<EngineerMessage> {
+        val out = mutableListOf<EngineerMessage>()
+        for (e in events) {
+            if (e !is SessionEvent.LapCompleted) continue
+            val lap = e.lap
+            val stopped = ledger.stopList.any { it.lap == lap.lapNumber || it.lap == lap.lapNumber - 1 }
+            val recent = lastPositionChangeClockMs?.let { pacer.packetClockMs - it < POSITION_CALM_MS } == true
+            val ctx = com.gt7pitwall.core.driver.DriverCoach.LapContext(
+                profileKey = driverKey,
+                race = raceMode,
+                totalLaps = snapshot.packet?.totalLaps ?: 0,
+                positionChangedRecently = recent,
+                pitLap = stopped,
+                wheelBaseM = snapshot.packet?.wheelBaseM,
+            )
+            out += journalCoaching(runCatching { driverCoach.onLap(lap, ctx) }.getOrDefault(emptyList()))
+        }
+        return out
+    }
+
+    private fun journalCoaching(said: List<EngineerMessage>): List<EngineerMessage> {
+        for (m in said) {
+            journal.record(
+                JournalType.ENGINEER, JournalSource.ENGINE, "Coaching : ${m.text}",
+                details = mapOf("mode" to if (raceMode) "course" else "entrainement"),
+            )
+        }
+        return said
+    }
+
     /** Deux chronos identiques à la milliseconde à ceux d'une course archivée (même voiture) : c'est sa rediffusion. */
     private fun checkReplay(lap: LapRecord) {
         val t = lap.timeMs?.takeIf { it > 0 } ?: return
@@ -1017,6 +1074,7 @@ class RaceController(
      */
     private fun closeSession(outcome: SessionOutcome) {
         if (replay) return
+        driverCoach.close(fuel?.perLap)
         val final = if (sessionFinished) SessionOutcome.FINISHED else outcome
         journal.end(
             when (final) {
@@ -2288,6 +2346,9 @@ class RaceController(
 
         /** Paquets identiques (voiture « en mouvement » qui ne bouge pas) avant de considérer la télémétrie figée : 0,5 s. */
         const val FROZEN_PACKETS = 30
+
+        /** Pas de coaching en course dans les 30 s qui suivent un changement de position (bataille probable). */
+        const val POSITION_CALM_MS = 30_000L
     }
 
     /**

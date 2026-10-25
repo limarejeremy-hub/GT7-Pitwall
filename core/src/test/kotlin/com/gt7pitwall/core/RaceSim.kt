@@ -50,6 +50,12 @@ class FakeStorage(
     override fun loadJournal(sessionId: String): List<String> = journals[sessionId].orEmpty()
     override fun journalSessionIds(): List<String> = journals.keys.toList()
 
+    var driverBook: String? = null
+    override fun loadDriverBook(): String? = driverBook
+    override fun saveDriverBook(json: String) {
+        driverBook = json
+    }
+
     override fun loadMemory(): Map<String, CarTrackRecord> = memory
     override fun saveMemory(records: Collection<CarTrackRecord>) {
         memory.clear()
