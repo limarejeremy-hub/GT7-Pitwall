@@ -50,6 +50,12 @@ class FakeStorage(
     override fun loadJournal(sessionId: String): List<String> = journals[sessionId].orEmpty()
     override fun journalSessionIds(): List<String> = journals.keys.toList()
 
+    var pilotMemory: String? = null
+    override fun loadPilotMemory(): String? = pilotMemory
+    override fun savePilotMemory(json: String) {
+        pilotMemory = json
+    }
+
     override fun loadMemory(): Map<String, CarTrackRecord> = memory
     override fun saveMemory(records: Collection<CarTrackRecord>) {
         memory.clear()

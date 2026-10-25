@@ -63,6 +63,13 @@ class VoiceActivity(
         var sum = 0.0
         for (i in 0 until n) sum += samples[i].toDouble() * samples[i]
         val rms = sqrt(sum / n)
+        // Plancher de bruit : descend vite vers le calme, monte lentement avec un bruit stationnaire (moteur du jeu),
+        // jamais assez vite pour suivre une voix.
+        floor = when {
+            floor == 0.0 -> rms
+            rms < floor -> floor * 0.7 + rms * 0.3
+            else -> minOf(rms, floor * 1.05)
+        }
         val threshold = maxOf(minRms, floor * ratio)
         if (rms >= threshold) {
             speechSamples += n
@@ -70,7 +77,6 @@ class VoiceActivity(
             if (speechSamples * 1000 / sampleRate >= minSpeechMs) speaking = true
         } else {
             quietSamples += n
-            floor = if (floor == 0.0) rms else floor * 0.95 + rms * 0.05
             if (quietSamples * 1000 / sampleRate >= hangoverMs) {
                 speaking = false
                 speechSamples = 0
@@ -179,8 +185,8 @@ class LatencyTrace(val turn: Long) {
     val totalMs: Long?
         get() = marks[Step.AUDIBLE]?.let { end -> (marks[Step.SPEECH_END] ?: marks[Step.TRANSCRIBED])?.let { end - it } }
 
-    /** Étape la plus lente (pour le diagnostic). */
-    val slowest: Pair<Step, Long>? get() = report().maxByOrNull { it.second }
+    /** Étape de traitement la plus lente (la durée de la phrase du pilote n'est pas une lenteur). */
+    val slowest: Pair<Step, Long>? get() = report().filter { it.first != Step.SPEECH_END }.maxByOrNull { it.second }
 
     fun text(): String = report().joinToString(", ") { "${it.first.label} ${it.second} ms" } +
         (totalMs?.let { " ; total fin de phrase → premier son : $it ms" } ?: "")
