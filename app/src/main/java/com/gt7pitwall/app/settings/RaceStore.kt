@@ -105,6 +105,20 @@ class RaceStore(context: Context) : RaceStorage {
         }
     }
 
+    private val dnaFile = File(context.filesDir, "driver_dna.json")
+    private val dnaTmp = File(context.filesDir, "driver_dna.json.tmp")
+
+    override fun loadDriverBook(): String? = runCatching { dnaFile.takeIf { it.exists() }?.readText(Charsets.UTF_8) }.getOrNull()
+
+    /** Profils de pilotage : écriture atomique (fichier temporaire puis renommage). */
+    @Synchronized
+    override fun saveDriverBook(json: String) {
+        runCatching {
+            dnaTmp.writeText(json, Charsets.UTF_8)
+            if (!dnaTmp.renameTo(dnaFile)) dnaTmp.delete()
+        }
+    }
+
     private fun journalFile(sessionId: String) = File(journalDir, sessionId.filter { it.isLetterOrDigit() || it == '-' } + ".jsonl")
 
     /**
