@@ -123,6 +123,7 @@ class RaceEngineer {
 
     /** Arrêts restants du dernier plan annoncé (tour, pneus) : on ne réannonce que si le prochain arrêt ou leur nombre change. */
     private var announcedStops: List<Pair<Int, Boolean>>? = null
+    private var pendingLater: List<Pair<Int, Boolean>>? = null
 
     /** Tour où chaque avertissement a été annoncé (pas de répétition à chaque recalcul). */
     private val announcedWarnings = mutableMapOf<PlanWarning, Int>()
@@ -183,6 +184,7 @@ class RaceEngineer {
                     tyres.reset()
                     raining = false
                     announcedStops = null
+                    pendingLater = null
                     announcedWarnings.clear()
                     raceOver = false
                     positionReportedLap = null
@@ -579,16 +581,27 @@ class RaceEngineer {
             announcedStops = stops
             // Premier plan déjà choisi par la comparaison (arrêt pour les pneus…) : on dit pourquoi.
             val why = planReason?.let { " $it" } ?: ""
-            out += msg(planSentence(newPlan) + why, Priority.HIGH, MessageCategory.FUEL).copy(dedupKey = "plan-full")
+            out += msg(planSentence(newPlan) + why, Priority.HIGH, MessageCategory.FUEL).copy(dedupKey = "plan-full", topic = "plan")
         } else if (stops != stillAhead) {
+            // Arrêt simplement repoussé d'un tour (autonomie un peu meilleure) : annoncé seulement s'il se confirme. Un arrêt
+            // avancé (risque de panne sèche) ou un arrêt ajouté ou retiré est annoncé tout de suite.
+            val oneLapLater = stillAhead != null && stops.size == stillAhead.size && stops.isNotEmpty() &&
+                stops.first().first == stillAhead.first().first + 1 && stops.first().second == stillAhead.first().second
+            if (oneLapLater && pendingLater != stops) {
+                pendingLater = stops
+                planReason = null
+                return out
+            }
+            pendingLater = null
             announcedStops = stops
             val changed = stops.size != stillAhead?.size || stops.firstOrNull() != stillAhead.firstOrNull()
             if (changed) {
                 val why = planReason?.let { " $it" } ?: ""
                 out += msg(planUpdateSentence(newPlan) + why, Priority.HIGH, MessageCategory.FUEL)
-                    .copy(dedupKey = "plan:" + stops.joinToString(",") { "${it.first}/${it.second}" })
+                    .copy(dedupKey = "plan:" + stops.joinToString(",") { "${it.first}/${it.second}" }, topic = "plan")
             }
         } else {
+            pendingLater = null
             announcedStops = stops
         }
         planReason = null
