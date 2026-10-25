@@ -35,6 +35,12 @@ data class EngineerMessage(
     val dedupKey: String? = null,
     /** Réponse rédigée par l'IA (Gemini), signalée comme telle à l'écran. */
     val fromAi: Boolean = false,
+    /** Sujet : une annonce plus récente sur le même sujet remplace celle qui attend encore (voir RadioPacer). */
+    val topic: String? = null,
+    /** Annonce périmée au-delà de ce tour (décision d'arrêt, consigne d'un virage). */
+    val validUntilLap: Int? = null,
+    /** Durée de validité d'une annonce différée (ms) ; par défaut selon la priorité. */
+    val ttlMs: Long? = null,
 )
 
 /**
@@ -146,6 +152,17 @@ class RaceEngineer {
      */
     var shortLapReports: Boolean = true
 
+    /**
+     * Course : silence par défaut (essai PS5, l'ingénieur parlait trop). Un tour ordinaire n'est pas annoncé (le chrono
+     * reste à l'écran et sur « détails ») ; seuls un meilleur tour, le dernier tour, un carburant juste, un avis pneus
+     * ou une question passent. La position n'est plus répétée dans le message du tour : l'annonce de position, fraîche,
+     * suffit. Sans effet en qualification et avec les rapports détaillés.
+     */
+    var quietRace: Boolean = false
+
+    /** Le dernier message de tour mérite d'être dit (voir [quietRace]). */
+    private var lapNoteworthy = true
+
     fun onUpdate(events: List<SessionEvent>, snapshot: SessionSnapshot, fuel: FuelReport?): List<EngineerMessage> {
         snapshot.packet?.let { fuelCapacity = it.fuelCapacity.takeIf { c -> c > 0f } }
         val out = mutableListOf<EngineerMessage>()
@@ -209,7 +226,7 @@ class RaceEngineer {
                     if (!finishedNow) boxMessage(event.lap.lapNumber + 1, fuel)?.let { out += it }
                     // À l'arrivée, seul « course terminée » est annoncé ; le détail du dernier tour reste sur « détails ».
                     val lapMsg = lapMessage(event, snapshot, fuel, finalLapNext, finishedNow)
-                    if (!finishedNow) out += lapMsg
+                    if (!finishedNow && (lapNoteworthy || !quietLaps)) out += lapMsg
                 }
             }
         }
@@ -217,7 +234,10 @@ class RaceEngineer {
             // Pendant un ravitaillement, le niveau bas est en train d'être corrigé : pas d'alerte (course réelle du 21/10,
             // « moins de deux tours » répété au stand pendant le plein).
             if (!snapshot.refuelledThisLap) fuelAlert(fuel)?.let { out += it }
-            snapshot.packet?.let { p -> tyres.onPacket(p)?.let { out += msg(it.text, it.priority, MessageCategory.LAP) } }
+            // Course silencieuse : une simple information (« températures stabilisées ») n'est pas dite, un avis l'est.
+            snapshot.packet?.let { p ->
+                tyres.onPacket(p)?.takeIf { !(quietLaps && it.priority == Priority.INFO) }?.let { out += msg(it.text, it.priority, MessageCategory.LAP) }
+            }
         }
         val result = RadioFilter.criticalFirst(out.filter { RadioFilter.allowed(radioLevel, it) })
         result.lastOrNull()?.let { lastSpoken = it }
@@ -387,6 +407,12 @@ class RaceEngineer {
         return msg(text, Priority.HIGH, MessageCategory.ANSWER)
     }
 
+    /**
+     * Course réelle du 25/10 : rapports détaillés activés, chaque tour était encore annoncé en entier. Le silence en course
+     * s'applique quel que soit ce réglage ; « détaillé » ne change plus que le contenu des tours qui méritent d'être dits.
+     */
+    private val quietLaps: Boolean get() = quietRace && measured.enabled
+
     private fun lapMessage(
         e: SessionEvent.LapCompleted,
         snapshot: SessionSnapshot,
@@ -397,6 +423,7 @@ class RaceEngineer {
         val lap = e.lap
         val sb = StringBuilder()
         val time = lap.timeMs
+        var noteworthy = finalLapNext
         if (time != null) {
             sb.append("Tour ${lap.lapNumber} : ${lapTimeSpeech(time)}. ")
             // Sous la pluie, on compare aux tours sous la pluie, pas au meilleur tour sur le sec.
@@ -408,7 +435,7 @@ class RaceEngineer {
             when {
                 best == null && raining -> sb.append("Premier tour de référence sous la pluie. ")
                 best == null -> Unit
-                time < best -> sb.append("Meilleur tour, ${deltaSpeech(best - time)} de mieux ! ")
+                time < best -> sb.append("Meilleur tour, ${deltaSpeech(best - time)} de mieux ! ").also { noteworthy = true }
                 time == best -> sb.append("Égalité avec ton meilleur. ")
                 time - best < 10 -> sb.append("À moins d'un centième de ton meilleur. ")
                 else -> sb.append("Plus ${deltaSpeech(time - best)} sur ton meilleur. ")
@@ -425,12 +452,15 @@ class RaceEngineer {
         tyres.onLap(snapshot.laps, stintContext.copy(raining = raining))?.let {
             sb.append(it).append(' ')
             short.append(it).append(' ')
+            noteworthy = true
         }
-        if (finished) return msg(sb.toString().trim(), Priority.NORMAL, MessageCategory.LAP).also { lastLapDetails = it.text }
+        if (finished) return msg(sb.toString().trim(), Priority.NORMAL, MessageCategory.LAP).also { lastLapDetails = it.text; lapNoteworthy = true }
 
         currentPosition?.let {
-            sb.append("Tu es P$it. ")
-            short.append("P$it. ")
+            if (!quietLaps) {
+                sb.append("Tu es P$it. ")
+                short.append("P$it. ")
+            }
         }
 
         val totalLaps = snapshot.packet?.totalLaps?.takeIf { it > 0 } ?: plan?.totalLaps ?: 0
@@ -469,11 +499,12 @@ class RaceEngineer {
                         is FuelAdvice.Comfortable -> a.marginLaps < 1f
                         else -> false
                     }
-                    if (tight) short.append(fuelSentence(fuel, verbose = false))
+                    if (tight) short.append(fuelSentence(fuel, verbose = false)).also { noteworthy = true }
                 }
             }
         }
         val priority = if (finalLapNext) Priority.HIGH else Priority.NORMAL
+        lapNoteworthy = noteworthy || (askPositionEachLap && radioLevel == RadioLevel.FULL && measured.position == null)
         lastLapDetails = sb.toString().trim()
         if (shortLapReports) {
             sb.setLength(0)
@@ -701,14 +732,19 @@ class RaceEngineer {
         val pos = measured.position
         if (pos != null && measured.settled && !raceOver && snapshotLap >= 1 && pos != announcedPosition &&
             lastMoveMs?.let { nowMs - it >= POSITION_GROUP_MS } != false &&
-            lastPositionAnnounceMs?.let { nowMs - it >= POSITION_ANNOUNCE_MS } != false
+            lastPositionAnnounceMs?.let { nowMs - it >= if (quietLaps) QUIET_POSITION_ANNOUNCE_MS else POSITION_ANNOUNCE_MS } != false
         ) {
             val before = announcedPosition
             announcedPosition = pos
             lastPositionAnnounceMs = nowMs
             if (before != null) {
                 // Clé propre à l'annonce : la même phrase plus tard dans la course n'est pas un doublon.
-                out += EngineerMessage("P$pos.", Priority.NORMAL, MessageCategory.RADIO, dedupKey = "position:$nowMs")
+                // Sujet commun : une place plus récente remplace celle qui attend encore ; validité courte (essai PS5 :
+                // des places dites avec retard, déjà fausses).
+                out += EngineerMessage(
+                    "P$pos.", Priority.NORMAL, MessageCategory.RADIO, dedupKey = "position:$nowMs",
+                    topic = POSITION_TOPIC, ttlMs = POSITION_TTL_MS,
+                )
             }
         }
         return out
@@ -869,7 +905,19 @@ class RaceEngineer {
         /** Au plus une annonce de position toutes les 8 s. */
         const val POSITION_ANNOUNCE_MS = 8_000L
 
+        /**
+         * Course silencieuse : au plus une place toutes les 30 s (course du 25/10 : 30 annonces de place en 7 tours, parfois
+         * deux d'affilée). La place exacte reste à l'écran et sur « position ? ».
+         */
+        const val QUIET_POSITION_ANNOUNCE_MS = 30_000L
+
         /** Position inchangée depuis 3 s (en plus des 3 s de stabilité de la mesure) : dépassements multiples regroupés. */
         const val POSITION_GROUP_MS = 3_000L
+
+        /** Sujet des annonces de position (voir [com.gt7pitwall.core.radio.RadioPacer]). */
+        const val POSITION_TOPIC = "position"
+
+        /** Une place annoncée plus de 4 s après sa mesure est périmée : elle n'est plus dite. */
+        const val POSITION_TTL_MS = 4_000L
     }
 }

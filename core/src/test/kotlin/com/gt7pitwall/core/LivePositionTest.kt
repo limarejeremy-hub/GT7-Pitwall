@@ -51,9 +51,10 @@ class LivePositionTest {
     }
 
     /** Rejoue un journal à 20 paquets par seconde (le filtre est temporel). */
-    private fun replay(segs: List<Seg>, kind: SessionKind = SessionKind.RACE, until: Double? = null, onTime: (Double, Replay) -> Unit = { _, _ -> }): Replay {
+    private fun replay(segs: List<Seg>, kind: SessionKind = SessionKind.RACE, until: Double? = null, quiet: Boolean = false, onTime: (Double, Replay) -> Unit = { _, _ -> }): Replay {
         var now = 0L
         val c = RaceController(storage = FakeStorage(), clock = { now })
+        c.engineer.quietRace = quiet
         c.selectProfile(ProfileId(Series.DAILY_A, kind))
         val r = Replay(c, 0)
         val end = until ?: (segs.last().t + 10)
@@ -317,5 +318,30 @@ class LivePositionTest {
         val lap = msgs.single { it.startsWith("Tour 3") }
         assertEquals("Tour 3 : 1 minute 38 secondes 2. Plus 15 centièmes sur ton meilleur. P3.", lap)
         assertTrue(e.answer(com.gt7pitwall.core.radio.DriverQuery.DETAILS, t.snapshot, null).text.startsWith("Tour 3"), "le détail reste disponible")
+    }
+
+    /**
+     * Course réelle du 25/10, tour 3 (temps relevés dans le journal, en secondes) : une place annoncée presque toutes les
+     * 10 s, parfois deux d'affilée. Course silencieuse : au plus une place toutes les 30 s, toujours la place du moment.
+     */
+    @Test
+    fun aQuietRaceAnnouncesFewFreshPositions() {
+        val moves = listOf(0.0 to 15, 10.0 to 14, 17.0 to 13, 24.0 to 12, 32.0 to 13, 44.0 to 12, 79.0 to 11, 84.0 to 9,
+            103.0 to 8, 122.0 to 7, 131.0 to 8, 159.0 to 7)
+        val segs = listOf(Seg(0.0, 0, 7, 15, 20, onTrack), Seg(5.0, 1, 7, 15, 20, onTrack)) +
+            moves.map { (t, p) -> Seg(20.0 + t, 1, 7, p, 20, onTrack) }
+        val announce = Regex("P(\\d+)\\.$")
+        fun announces(r: Replay) = r.said.filter { it.category == MessageCategory.RADIO && announce.containsMatchIn(it.text) }
+        val loud = announces(replay(segs, until = 200.0))
+        var times = mutableListOf<Pair<Long, Int>>()
+        val quietRun = replay(segs, until = 200.0, quiet = true) { _, r ->
+            val n = announces(r).size
+            if (n > times.size) times += r.now to r.c.engineer.measured.position!!
+        }
+        val quiet = announces(quietRun)
+        assertTrue(quiet.size in 2 until loud.size, "${quiet.size} annonces contre ${loud.size}")
+        assertTrue(times.zipWithNext().all { (a, b) -> b.first - a.first >= 30_000 }, times.toString())
+        // Chaque annonce donne la place mesurée au moment où elle est dite.
+        quiet.zip(times).forEach { (m, t) -> assertEquals("P${t.second}.", announce.find(m.text)!!.value, m.text) }
     }
 }

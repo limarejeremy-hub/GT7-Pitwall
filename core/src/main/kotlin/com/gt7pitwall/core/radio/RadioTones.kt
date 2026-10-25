@@ -12,6 +12,9 @@ enum class RadioTone {
 
     /** Double bip plus grave : conversation refermée, le mot de réveil redevient nécessaire. */
     CLOSED,
+
+    /** Petit signal très discret : la réponse demande un peu plus de temps (jamais une phrase répétitive). */
+    THINKING,
 }
 
 /**
@@ -28,12 +31,16 @@ object RadioTones {
     /** Deux notes plus graves, séparées d'un court silence. */
     val CLOSED_PATTERN = listOf(Beep(660.0, 70), Beep(0.0, 70), Beep(523.0, 90))
 
+    /** Une note grave, brève et douce. */
+    val THINKING_PATTERN = listOf(Beep(440.0, 60))
+
     const val AMPLITUDE = 0.22
     private const val FADE_MS = 8
 
     fun pattern(tone: RadioTone): List<Beep> = when (tone) {
         RadioTone.READY -> READY_PATTERN
         RadioTone.CLOSED -> CLOSED_PATTERN
+        RadioTone.THINKING -> THINKING_PATTERN
     }
 
     fun pcm(tone: RadioTone, sampleRate: Int): ShortArray {

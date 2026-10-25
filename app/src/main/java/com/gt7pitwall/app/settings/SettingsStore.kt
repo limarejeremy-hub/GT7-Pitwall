@@ -25,7 +25,7 @@ class SettingsStore(context: Context) {
 
     /** Conversation continue : secondes de silence avant le double bip et le retour au mot de réveil. */
     var conversationIdleS: Int
-        get() = prefs.getInt("conversation_idle_s", 5)
+        get() = prefs.getInt("conversation_idle_s", 8)
         set(value) = prefs.edit().putInt("conversation_idle_s", value.coerceIn(3, 60)).apply()
 
     /** Messages de fin de tour détaillés (secteurs, rythme, carburant) ; sinon courts : temps, écart, position. */
@@ -67,6 +67,11 @@ class SettingsStore(context: Context) {
         set(value) = prefs.edit().putBoolean(KEY_DISCORD_MIRROR, value).apply()
 
     /** Radio Discord : la radio du pilote écoute le micro du casque PS5 quand le bot est dans le salon. */
+    /** Interruption de l'ingénieur à la voix (« attends ») : là où le matériel le permet. */
+    var bargeIn: Boolean
+        get() = prefs.getBoolean("barge_in", true)
+        set(value) = prefs.edit().putBoolean("barge_in", value).apply()
+
     var discordMicInput: Boolean
         get() = prefs.getBoolean(KEY_DISCORD_MIC, true)
         set(value) = prefs.edit().putBoolean(KEY_DISCORD_MIC, value).apply()

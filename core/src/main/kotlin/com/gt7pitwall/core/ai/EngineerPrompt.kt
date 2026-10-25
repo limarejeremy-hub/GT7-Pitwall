@@ -32,7 +32,7 @@ object EngineerPrompt {
           la forme d'un de ces exemples : ${RadioAi.COMMAND_EXAMPLES.joinToString(" ; ")}. Le moteur la vérifiera et
           demandera confirmation au pilote en cas de doute.
         - Si on te demande une donnée que GT7 ne transmet pas, réponds ${RadioAi.UNKNOWN}.
-    """.trimIndent()
+    """.trimIndent() + "\n\n" + Persona.prompt
 
     data class Context(
         val telemetryLive: Boolean,
@@ -44,6 +44,8 @@ object EngineerPrompt {
         /** Mémoire rendue par [RaceMemory.render]. */
         val memory: String,
         val recent: List<RaceMemory.Exchange>,
+        /** Contexte sportif (ton), jamais une mesure de l'humeur du pilote. */
+        val mood: RaceMood? = null,
     )
 
     fun build(question: String, c: Context): String = buildString {
@@ -55,7 +57,9 @@ object EngineerPrompt {
                 "pas de télémétrie GT7 en ce moment : ne cite aucun tour, chrono, position ni carburant du moment."
             },
         )
-        append("\nSUJET EN COURS : ").append(c.topic.label).append("\n\n")
+        append("\nSUJET EN COURS : ").append(c.topic.label).append("\n")
+        c.mood?.let { append(Persona.moodLine(it)).append('\n') }
+        append('\n')
         append("FAITS (télémétrie GT7, calculs du moteur, déclarations du pilote) :\n").append(c.facts.text).append("\n\n")
         if (c.topic == Topic.COACHING && c.facts.observations.isNotEmpty()) {
             append("CONSTATS DE PILOTAGE (prouvés par la télémétrie) :\n")

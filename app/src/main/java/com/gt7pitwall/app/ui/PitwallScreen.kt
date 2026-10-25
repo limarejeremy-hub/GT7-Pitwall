@@ -225,6 +225,7 @@ fun PitwallScreen(
             listeningOn = micLabel,
         )
         CloudAiCard(cloudAi, onAiMode)
+        HumanRadioCard(engine, settings)
         AiCard(
             on = aiOn,
             state = aiState,
@@ -1157,6 +1158,47 @@ private fun PositionProbeCard(engine: PitwallEngine) {
     }
 }
 
+/**
+ * Radio humaine : interruption à la voix (selon le matériel), dernière mesure de latence, et mémoire durable de
+ * l'ingénieur — chaque souvenir se consulte, se supprime ; la mémoire se désactive ou s'efface entièrement.
+ */
+@Composable
+private fun HumanRadioCard(engine: PitwallEngine, settings: com.gt7pitwall.app.settings.SettingsStore) {
+    val memory by engine.pilotMemory.collectAsStateWithLifecycle()
+    val memoryOn by engine.pilotMemoryEnabled.collectAsStateWithLifecycle()
+    val latency by engine.latency.collectAsStateWithLifecycle()
+    var bargeIn by rememberSaveable { mutableStateOf(settings.bargeIn) }
+    androidx.compose.runtime.LaunchedEffect(Unit) { engine.refreshPilotMemory() }
+    PitCard("Radio humaine") {
+        SwitchLine(
+            "Interruption à la voix",
+            "Dis « attends » ou « stop » pendant qu'il parle. Casque PS5 (Discord) ou écouteurs : à tout moment. " +
+                "Haut-parleur du Fold : entre ses phrases seulement. Une alerte critique n'est jamais coupée.",
+            bargeIn,
+        ) {
+            bargeIn = it
+            settings.bargeIn = it
+        }
+        latency?.let { DiagLine("Dernière latence", it) }
+        SwitchLine(
+            "Mémoire de l'ingénieur",
+            "Seulement ce que tu lui demandes de retenir (« retiens que… ») et que tu confirmes. Aucun audio n'est gardé.",
+            memoryOn,
+        ) { engine.setPilotMemoryEnabled(it) }
+        if (memory.isEmpty()) {
+            Text("Rien de retenu pour l'instant.", style = MaterialTheme.typography.bodySmall, color = PitColors.Muted)
+        } else {
+            memory.forEach { e ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(e.text, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                    TextButton(onClick = { engine.forgetPilotMemory(e.id) }) { Text("Oublier") }
+                }
+            }
+            OutlinedButton(onClick = { engine.clearPilotMemory() }, modifier = Modifier.fillMaxWidth()) { Text("Tout effacer") }
+        }
+    }
+}
+
 @Composable
 private fun SwitchLine(title: String, detail: String, checked: Boolean, onChange: (Boolean) -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1418,7 +1460,7 @@ private fun VoiceRadioCard(
     googleSpeech: Boolean,
     onGoogleSpeechChange: (Boolean) -> Unit,
     conversationOpen: Boolean = false,
-    conversationIdleS: Int = 5,
+    conversationIdleS: Int = 8,
     onConversationIdleChange: (Int) -> Unit = {},
     detailedLaps: Boolean = false,
     onDetailedLapsChange: (Boolean) -> Unit = {},
@@ -1521,7 +1563,7 @@ private fun VoiceRadioCard(
                 style = MaterialTheme.typography.bodySmall,
             )
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                listOf(5, 10, 15, 20).forEach { sec ->
+                listOf(5, 8, 12, 20).forEach { sec ->
                     if (sec == conversationIdleS) {
                         Button(onClick = {}, modifier = Modifier.weight(1f)) { Text("$sec s") }
                     } else {

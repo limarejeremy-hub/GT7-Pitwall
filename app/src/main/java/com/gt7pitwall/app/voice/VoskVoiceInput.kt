@@ -1,7 +1,12 @@
 package com.gt7pitwall.app.voice
 
 import android.os.SystemClock
+import com.gt7pitwall.core.engineer.EngineerMessage
 import com.gt7pitwall.core.radio.ConversationWindow
+import com.gt7pitwall.core.radio.DuplexMode
+import com.gt7pitwall.core.radio.DuplexPolicy
+import com.gt7pitwall.core.radio.InterruptDetector
+import com.gt7pitwall.core.radio.VoiceActivity
 import com.gt7pitwall.core.radio.GoogleOutcome
 import com.gt7pitwall.core.radio.RadioTone
 import com.gt7pitwall.core.radio.TonePlayer
@@ -74,6 +79,48 @@ class VoskVoiceInput(
     private val _conversationOpen = MutableStateFlow(false)
     /** Conversation ouverte (affichage discret, rien n'est dit). */
     val conversationOpen: StateFlow<Boolean> = _conversationOpen.asStateFlow()
+
+    /**
+     * Interruption (barge-in) : où le micro peut écouter pendant que l'ingénieur parle. [DuplexMode.FULL] : flux du pilote
+     * séparé de la voix (Discord) ou voix au casque ; [DuplexMode.GAPS] : seulement dans les pauses entre ses phrases
+     * ([inGap]) ; [DuplexMode.OFF] : micro coupé pendant la parole, comme avant.
+     */
+    @Volatile
+    var duplexMode: () -> DuplexMode = { DuplexMode.OFF }
+
+    /** Pause entre deux phrases de l'ingénieur (synthèse du Fold en mode [DuplexMode.GAPS]). */
+    var inGap: StateFlow<Boolean>? = null
+
+    /** Message que dit l'ingénieur (écho reconnu, alerte critique jamais coupée). */
+    @Volatile
+    var engineerMessage: () -> EngineerMessage? = { null }
+
+    /** Une réponse est en préparation (moteur ou IA) : la conversation ne se referme pas. */
+    @Volatile
+    var isThinking: () -> Boolean = { false }
+
+    private val voiceActivity = VoiceActivity()
+    private val interrupts = InterruptDetector()
+    /** Sans flux séparé, la fin d'une phrase résonne encore un instant dans le micro. */
+    private val gapInterrupts = InterruptDetector(echoGuardMs = GAP_ECHO_GUARD_MS)
+    private var gapJob: Job? = null
+
+    /** Le pilote vient de couper l'ingénieur : l'écoute reprend sans attendre. */
+    @Volatile
+    private var bargedIn = false
+
+    /** Après une écoute pendant la parole, la reconnaissance repart d'un état propre. */
+    @Volatile
+    private var resetRecognizer = false
+
+    /** Début et fin de la dernière phrase du pilote (horloge monotone), pour la mesure de latence. */
+    @Volatile
+    var lastSpeechStartMs: Long? = null
+        private set
+
+    @Volatile
+    var lastSpeechEndMs: Long? = null
+        private set
 
     /** Dernière fois que Vosk entendait quelqu'un parler (phrase en cours) : la conversation ne se ferme pas au milieu. */
     @Volatile
@@ -298,6 +345,13 @@ class VoskVoiceInput(
                 audioJob = scope.launch(Dispatchers.IO) { listen(record, rec, free) }
                 _state.value = ListenState.WAITING_WAKE_WORD
                 ttsJob = scope.launch { speaking.collectLatest(::onEngineerSpeaking) }
+                gapJob = scope.launch {
+                    inGap?.collect { gap ->
+                        val now = SystemClock.elapsedRealtime()
+                        // Début de pause : fin d'une phrase (garde anti-écho) ; fin de pause : l'ingénieur reprend.
+                        gapInterrupts.engineer(!gap, engineerMessage()?.text, now)
+                    }
+                }
                 tickJob = scope.launch {
                     while (isActive) {
                         delay(TICK_MS)
@@ -346,9 +400,12 @@ class VoskVoiceInput(
     private fun tickConversation() {
         if (!conversation.open || audioJob == null) return
         val now = SystemClock.elapsedRealtime()
-        val busy = googleSpeech?.listening == true || pendingCommand != null || now - lastVoiceActivityMs < VOICE_GRACE_MS
-        if (busy) return
-        if (conversation.tick(now) != null) closeConversation(byDriver = false)
+        val thinking = isThinking()
+        conversation.thinking(thinking, now)
+        // Le pilote parle (ou sa phrase est en cours de traitement) : prolongation bornée par la fenêtre elle-même, pour que
+        // le double bip vienne toujours après le silence prévu (essai PS5 : le bruit du jeu le repoussait sans fin).
+        val talking = googleSpeech?.listening == true || pendingCommand != null || now - lastVoiceActivityMs < VOICE_GRACE_MS
+        if (conversation.tick(now, driverTalking = talking) != null) closeConversation(byDriver = false)
     }
 
     /** Ouvre la conversation (« radio » dit seul, ou en tête d'une demande). */
@@ -391,6 +448,7 @@ class VoskVoiceInput(
         micReleased = false
         shadow = null
         ttsJob?.cancel()
+        gapJob?.cancel()
         expiryJob?.cancel()
         pendingJob?.cancel()
         audioJob?.cancel() // la boucle ferme le micro et les reconnaisseurs
@@ -451,14 +509,27 @@ class VoskVoiceInput(
                 }
                 val n = record.read(buffer)
                 if (n < 0) error("Erreur micro ($n)")
-                if (n == 0 || paused) continue
+                if (n == 0) continue
+                if (paused) {
+                    // L'ingénieur parle : seul le mode d'interruption autorisé par le matériel écoute (jamais une commande).
+                    if (bargeListening()) bargeFeed(buffer, n, rec)
+                    continue
+                }
+                if (resetRecognizer) {
+                    resetRecognizer = false
+                    rec.reset()
+                }
                 bench?.feed(buffer, n)
                 if (rec.acceptWaveForm(buffer, n)) {
                     val text = textOf(rec.result)
+                    if (text.isNotBlank()) lastSpeechEndMs = SystemClock.elapsedRealtime()
                     withContext(Dispatchers.Main) { onCommandText(text) }
-                } else if (conversation.open && partialOf(rec.partialResult).isNotBlank()) {
+                } else if (ConversationWindow.isIntelligible(partialOf(rec.partialResult))) {
+                    // Un « [unk] » du bruit du jeu n'est pas le pilote qui parle.
+                    val now = SystemClock.elapsedRealtime()
                     // Le pilote est en train de parler : la conversation ne se referme pas au milieu de sa phrase.
-                    lastVoiceActivityMs = SystemClock.elapsedRealtime()
+                    if (now - lastVoiceActivityMs > VOICE_GRACE_MS) lastSpeechStartMs = now
+                    if (conversation.open) lastVoiceActivityMs = now
                 }
                 if (free != null && free.acceptWaveForm(buffer, n)) {
                     val text = textOf(free.result)
@@ -525,10 +596,54 @@ class VoskVoiceInput(
         }
     }
 
+    /** L'ingénieur parle : le micro écoute-t-il une éventuelle interruption ? */
+    private fun bargeListening(): Boolean {
+        if (!speaking.value || !DuplexPolicy.interruptible(engineerMessage())) return false
+        return when (duplexMode()) {
+            DuplexMode.FULL -> true
+            DuplexMode.GAPS -> inGap?.value == true
+            DuplexMode.OFF -> false
+        }
+    }
+
+    /**
+     * Écoute pendant la parole de l'ingénieur : une voix établie dans le flux du pilote ET des mots qui ne sont pas les
+     * siens (« attends », « stop », ou une vraie phrase) coupent l'ingénieur. Rien d'autre n'est fait de ces mots.
+     */
+    private suspend fun bargeFeed(buffer: ShortArray, n: Int, rec: Recognizer) {
+        val now = SystemClock.elapsedRealtime()
+        val mode = duplexMode()
+        val detector = if (mode == DuplexMode.GAPS) gapInterrupts else interrupts
+        if (voiceActivity.accept(buffer, n)) detector.voice(now)
+        val text = if (rec.acceptWaveForm(buffer, n)) textOf(rec.result) else partialOf(rec.partialResult)
+        if (text.isBlank() || !detector.words(text, now)) return
+        rec.reset()
+        voiceActivity.reset()
+        withContext(Dispatchers.Main) { onBargeIn(text, mode) }
+    }
+
+    /** Le pilote coupe l'ingénieur : la conversation s'ouvre (ou reste ouverte) et le moteur arrête la voix. */
+    private fun onBargeIn(text: String, mode: DuplexMode) {
+        log("interruption", text, mode.label)
+        bargedIn = true
+        if (!conversation.open) openConversation()
+        lastSpeechStartMs = SystemClock.elapsedRealtime()
+        _events.tryEmit(VoiceInputEvent.BargeIn(text, mode))
+    }
+
+    override val speechTiming: Pair<Long?, Long?> get() = lastSpeechStartMs to lastSpeechEndMs
+
+    override fun thinking() {
+        scope.launch { if (!speaking.value) tones.play(RadioTone.THINKING) }
+    }
+
     private suspend fun onEngineerSpeaking(speaking: Boolean) {
         if (audioJob == null) return
+        val now = SystemClock.elapsedRealtime()
+        interrupts.engineer(speaking, engineerMessage()?.text, now)
+        if (speaking) voiceActivity.reset() else resetRecognizer = true
         // Le temps où l'ingénieur parle ne compte pas dans la fenêtre de conversation.
-        conversation.engineerSpeaking(speaking, SystemClock.elapsedRealtime())
+        conversation.engineerSpeaking(speaking, now)
         if (speaking) reopenJob?.cancel()
         if (speaking) {
             // L'ingénieur reprend la parole pendant une écoute Google : on la relancera après lui.
@@ -545,7 +660,14 @@ class VoskVoiceInput(
         } else {
             // Conversation ouverte : l'écoute reprend sans « radio », une fois la fin de la phrase sortie du casque.
             if (conversation.open) {
-                delay(if (google() != null) GOOGLE_AFTER_SPEECH_MS else RESUME_DELAY_MS)
+                // Après une interruption, le pilote est déjà en train de parler : l'écoute reprend aussitôt.
+                val wait = when {
+                    bargedIn -> 0L
+                    google() != null -> GOOGLE_AFTER_SPEECH_MS
+                    else -> RESUME_DELAY_MS
+                }
+                bargedIn = false
+                if (wait > 0) delay(wait)
                 if (this.speaking.value || !conversation.open) return
                 paused = false
                 conversation.engineerSpeaking(false, SystemClock.elapsedRealtime())
@@ -756,9 +878,13 @@ class VoskVoiceInput(
                 _events.tryEmit(VoiceInputEvent.Utterance(rest, free, addressed = true))
                 keepListeningIfSilent()
             } else {
-                // « Radio » redit alors que la conversation est déjà ouverte : rien de nouveau, ni statut ni bip.
+                // « Radio » redit alors que la conversation est déjà ouverte : le pilote doit savoir qu'il est entendu
+                // (essai PS5 : « radio » semblait ne rien déclencher). Bip d'écoute, et le délai de silence repart.
                 if (conversation.open) {
                     conversation.utterance("radio", SystemClock.elapsedRealtime())
+                    log("Vosk", freeText ?: text, "« $wakeWord » redit : conversation déjà ouverte, à l'écoute")
+                    scope.launch { tones.play(RadioTone.READY) }
+                    _events.tryEmit(VoiceInputEvent.Listening)
                     return
                 }
                 // « Radio » seul : conversation ouverte, aucune phrase dite. Bip quand le micro écoute vraiment
@@ -820,6 +946,7 @@ class VoskVoiceInput(
         const val SHADOW_FLUSH_MS = 1_000L
         const val HISTORY_SIZE = 8
         const val GOOGLE_AFTER_SPEECH_MS = 150L
+        const val GAP_ECHO_GUARD_MS = 150L
         const val TICK_MS = 250L
         /** Phrase en cours chez Vosk : pas de fermeture avant ce délai après le dernier mot entendu. */
         const val VOICE_GRACE_MS = 1_500L

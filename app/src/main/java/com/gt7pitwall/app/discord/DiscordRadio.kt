@@ -565,8 +565,18 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
     override fun stop() {
         queue.drain().forEach { it.done?.complete(false) }
         sender.clear()
+        current = null
         _speaking.value = false
     }
+
+    /** Message en cours de diffusion dans le salon (écho de l'ingénieur, alerte à ne pas couper). */
+    @Volatile
+    var current: EngineerMessage? = null
+        private set
+
+    /** Premier son d'un message envoyé au salon (mesure de latence ; le tampon Discord et PS5 s'y ajoute). */
+    @Volatile
+    var onAudible: (EngineerMessage, Long) -> Unit = { _, _ -> }
 
     /** Diffuse la file une phrase après l'autre : synthèse → Opus → attente de la fin de la lecture. */
     private suspend fun speakLoop() {
@@ -595,6 +605,10 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
                     item.onFailed(item.message)
                     continue
                 }
+                if (!item.isTone) {
+                    current = item.message
+                    onAudible(item.message, android.os.SystemClock.elapsedRealtime())
+                }
                 sender.enqueue(frames)
                 val started = System.currentTimeMillis()
                 val maxMs = frames.size * FRAME_MS + PLAYBACK_MARGIN_MS
@@ -604,6 +618,7 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
                     delay(FRAME_MS)
                 }
                 item.done?.complete(true)
+                if (!item.isTone) current = null
             }
             // File vide : la dernière trame met encore un instant à sortir du casque (tampon de Discord et de la PS5).
             if (_speaking.value) {

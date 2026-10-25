@@ -91,6 +91,20 @@ class RaceStore(context: Context) : RaceStorage {
         }
     }
 
+    private val pilotFile = File(context.filesDir, "pilot_memory.json")
+    private val pilotTmp = File(context.filesDir, "pilot_memory.json.tmp")
+
+    override fun loadPilotMemory(): String? = runCatching { pilotFile.takeIf { it.exists() }?.readText(Charsets.UTF_8) }.getOrNull()
+
+    /** Mémoire durable du pilote : écriture atomique ; effacée avec les données de l'application. */
+    @Synchronized
+    override fun savePilotMemory(json: String) {
+        runCatching {
+            pilotTmp.writeText(json, Charsets.UTF_8)
+            if (!pilotTmp.renameTo(pilotFile)) pilotTmp.delete()
+        }
+    }
+
     private fun journalFile(sessionId: String) = File(journalDir, sessionId.filter { it.isLetterOrDigit() || it == '-' } + ".jsonl")
 
     /**

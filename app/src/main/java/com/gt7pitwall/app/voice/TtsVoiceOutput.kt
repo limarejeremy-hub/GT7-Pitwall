@@ -6,6 +6,7 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import com.gt7pitwall.core.engineer.EngineerMessage
 import com.gt7pitwall.core.engineer.Priority
+import com.gt7pitwall.core.radio.SpeechStyle
 import com.gt7pitwall.core.radio.VoiceOutput
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -30,6 +31,28 @@ class TtsVoiceOutput(context: Context) : VoiceOutput, TextToSpeech.OnInitListene
     @Volatile
     var speechRate: Float = 1.0f
 
+    /**
+     * Mode d'interruption entre les phrases (haut-parleur du Fold) : chaque phrase est suivie d'une courte pause pendant
+     * laquelle le micro peut entendre « attends ». Sans ce mode, le message est dit d'un trait, comme avant.
+     */
+    @Volatile
+    var gaps: () -> Boolean = { false }
+
+    private val _inGap = MutableStateFlow(false)
+    /** Vrai pendant une pause entre deux phrases : le micro écoute une éventuelle interruption. */
+    val inGap: StateFlow<Boolean> = _inGap.asStateFlow()
+
+    /** Message en cours de diffusion (pour reconnaître l'écho de l'ingénieur et ne pas couper une alerte). */
+    @Volatile
+    var current: EngineerMessage? = null
+        private set
+
+    /** Premier son réellement émis pour un message (mesure de latence). */
+    @Volatile
+    var onAudible: (EngineerMessage, Long) -> Unit = { _, _ -> }
+
+    private val messages = ConcurrentHashMap<String, EngineerMessage>()
+
     private val ids = AtomicInteger()
     private val pending = mutableListOf<EngineerMessage>()
     private val tts = TextToSpeech(context.applicationContext, this)
@@ -40,7 +63,20 @@ class TtsVoiceOutput(context: Context) : VoiceOutput, TextToSpeech.OnInitListene
             return
         }
         tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(utteranceId: String?) = Unit
+            override fun onStart(utteranceId: String?) {
+                if (utteranceId == null) return
+                if (utteranceId.startsWith(GAP_PREFIX)) {
+                    _inGap.value = true
+                    return
+                }
+                _inGap.value = false
+                messages[utteranceId]?.let { m ->
+                    if (current !== m) {
+                        current = m
+                        onAudible(m, android.os.SystemClock.elapsedRealtime())
+                    }
+                }
+            }
 
             override fun onDone(utteranceId: String?) = finished(utteranceId)
 
@@ -71,14 +107,27 @@ class TtsVoiceOutput(context: Context) : VoiceOutput, TextToSpeech.OnInitListene
             VoiceState.UNAVAILABLE -> Unit
             // Sans voix française, on parle quand même avec la voix par défaut plutôt que se taire.
             VoiceState.READY, VoiceState.FRENCH_MISSING -> {
-                tts.setSpeechRate(speechRate)
+                // Débit et hauteur selon le message (alerte plus directe, réaction plus vive), sans jamais le retarder.
+                val style = SpeechStyle.of(message)
+                tts.setSpeechRate(speechRate * style.rate)
+                tts.setPitch(style.pitch)
                 val flush = message.priority == Priority.CRITICAL
-                val id = "pitwall-${ids.incrementAndGet()}"
                 if (flush) inFlight.clear()
-                inFlight += id
                 _speaking.value = true
-                val mode = if (flush) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
-                if (tts.speak(message.text, mode, null, id) != TextToSpeech.SUCCESS) finished(id)
+                // Une alerte critique est dite d'un trait : elle ne s'interrompt pas.
+                val parts = if (gaps() && !flush) SpeechStyle.sentences(message.text) else listOf(message.text)
+                parts.forEachIndexed { i, part ->
+                    val id = "pitwall-${ids.incrementAndGet()}"
+                    inFlight += id
+                    messages[id] = message
+                    val mode = if (flush && i == 0) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+                    if (tts.speak(part, mode, null, id) != TextToSpeech.SUCCESS) finished(id)
+                    if (i < parts.lastIndex) {
+                        val gap = "$GAP_PREFIX${ids.incrementAndGet()}"
+                        inFlight += gap
+                        if (tts.playSilentUtterance(SpeechStyle.GAP_MS, TextToSpeech.QUEUE_ADD, gap) != TextToSpeech.SUCCESS) finished(gap)
+                    }
+                }
             }
         }
     }
@@ -86,11 +135,26 @@ class TtsVoiceOutput(context: Context) : VoiceOutput, TextToSpeech.OnInitListene
     override fun stop() {
         tts.stop()
         inFlight.clear()
+        messages.clear()
+        current = null
+        _inGap.value = false
         _speaking.value = false
     }
 
     private fun finished(utteranceId: String?) {
-        if (utteranceId != null) inFlight -= utteranceId
-        if (inFlight.isEmpty()) _speaking.value = false
+        if (utteranceId != null) {
+            inFlight -= utteranceId
+            messages.remove(utteranceId)
+            if (utteranceId.startsWith(GAP_PREFIX)) _inGap.value = false
+        }
+        if (inFlight.isEmpty()) {
+            current = null
+            _inGap.value = false
+            _speaking.value = false
+        }
+    }
+
+    private companion object {
+        const val GAP_PREFIX = "pitwall-gap-"
     }
 }
