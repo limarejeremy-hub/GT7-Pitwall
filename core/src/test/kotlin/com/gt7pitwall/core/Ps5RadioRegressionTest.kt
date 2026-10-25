@@ -158,19 +158,3 @@ class Ps5RadioRegressionTest {
     }
 }
 
-class VoiceChoiceTest {
-    @Test
-    fun theBestInstalledLocalFrenchVoiceIsChosen() {
-        val c = com.gt7pitwall.core.radio.VoiceChoice
-        fun v(name: String, lang: String, q: Int, lat: Int = 300, net: Boolean = false, inst: Boolean = true) =
-            com.gt7pitwall.core.radio.VoiceChoice.Candidate(name, lang, q, lat, net, inst)
-        val voices = listOf(
-            v("fr-fr-x-default", "fr-FR", 300), v("fr-fr-x-net", "fr-FR", 500, net = true),
-            v("fr-fr-x-hq", "fr-FR", 400, lat = 200), v("fr-fr-x-hq-slow", "fr-FR", 400, lat = 400),
-            v("fr-fr-x-missing", "fr-FR", 500, inst = false), v("fr-ca-x-hq", "fr-CA", 500), v("en-us-x-hq", "en-US", 500),
-        )
-        assertEquals("fr-fr-x-hq", c.pick(voices)?.name)
-        assertEquals("fr-ca-x-hq", c.pick(voices.filter { it.language != "fr-FR" })?.name)
-        assertNull(c.pick(listOf(v("en", "en-US", 500), v("net", "fr-FR", 500, net = true))), "sinon : voix par défaut")
-    }
-}

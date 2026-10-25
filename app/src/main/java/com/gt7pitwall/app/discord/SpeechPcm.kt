@@ -3,7 +3,6 @@ package com.gt7pitwall.app.discord
 import android.content.Context
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
-import com.gt7pitwall.app.voice.useBestFrenchVoice
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
@@ -37,9 +36,6 @@ class SpeechPcm(context: Context) {
     @Volatile
     var speechRate: Float = 1.05f
 
-    @Volatile
-    private var voiceChosen = false
-
     private fun finish(id: String?, ok: Boolean) {
         synchronized(pending) { pending.remove(id) }?.complete(ok)
     }
@@ -47,13 +43,7 @@ class SpeechPcm(context: Context) {
     /** Phrase → échantillons 48 kHz mono, ou null si la synthèse échoue. */
     suspend fun synthesize(text: String): ShortArray? {
         if (withTimeoutOrNull(INIT_TIMEOUT_MS) { ready.await() } != true) return null
-        // Même voix que sur le Fold : la meilleure voix française installée (choisir la langue à chaque phrase
-        // reprendrait la voix par défaut).
-        if (!voiceChosen) {
-            voiceChosen = true
-            tts.language = Locale.FRANCE
-            tts.useBestFrenchVoice()
-        }
+        tts.language = Locale.FRANCE
         tts.setSpeechRate(speechRate)
         val id = UUID.randomUUID().toString()
         val file = File(cacheDir, "discord-$id.wav")

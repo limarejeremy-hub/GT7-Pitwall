@@ -878,9 +878,13 @@ class VoskVoiceInput(
                 _events.tryEmit(VoiceInputEvent.Utterance(rest, free, addressed = true))
                 keepListeningIfSilent()
             } else {
-                // « Radio » redit alors que la conversation est déjà ouverte : rien de nouveau, ni statut ni bip.
+                // « Radio » redit alors que la conversation est déjà ouverte : le pilote doit savoir qu'il est entendu
+                // (essai PS5 : « radio » semblait ne rien déclencher). Bip d'écoute, et le délai de silence repart.
                 if (conversation.open) {
                     conversation.utterance("radio", SystemClock.elapsedRealtime())
+                    log("Vosk", freeText ?: text, "« $wakeWord » redit : conversation déjà ouverte, à l'écoute")
+                    scope.launch { tones.play(RadioTone.READY) }
+                    _events.tryEmit(VoiceInputEvent.Listening)
                     return
                 }
                 // « Radio » seul : conversation ouverte, aucune phrase dite. Bip quand le micro écoute vraiment

@@ -281,7 +281,7 @@ réglée (8 s par défaut).
 |---|---|---|
 | Texte (moteur) | Phrases télégraphiques générées par gabarit (« Tour 4 : 37 secondes 8. Plus 11 centièmes… ») : c'est le contenu qui sonne machine, quelle que soit la voix | Moins de messages, plus courts. La reformulation naturelle (`Persona`) reste limitée aux réponses |
 | Gemini | Ne produit que du texte. Il n'a aucune prise sur l'intonation ; sa réponse est attendue en entier, vérifiée puis tronquée (`RadioAi`) avant d'être dite | Réponses limitées à 2 phrases sauf demande explicite |
-| Synthèse Android | Voix par défaut de la langue, pas forcément la meilleure installée. La prosodie n'est réglable que par débit et hauteur pour tout le message ; pas d'emphase ni de respiration | Choix automatique de la meilleure voix française **locale** installée (`VoiceChoice`), sur le Fold et pour Discord |
+| Synthèse Android | La prosodie n'est réglable que par débit et hauteur pour tout le message ; pas d'emphase ni de respiration | La voix reste celle choisie dans les réglages Android. Un choix automatique a été essayé (APK 165) puis retiré : il changeait la voix sans demander, et pouvait retarder la reprise du micro |
 | Architecture | Chaîne en série : reconnaissance → texte → synthèse. Rien n'est diffusé en flux. Pour Discord, la phrase entière est synthétisée dans un fichier avant d'être envoyée | Inchangé (voir le chemin ci-dessous) |
 
 ### Comparaison avec Cornelius
@@ -295,10 +295,10 @@ vocal payant.
 
 ### Chemin réaliste, sans service payant
 
-1. **Fait dans cette version** : moins de paroles, réponses courtes, et la meilleure voix française installée.
+1. **Fait dans cette version** : moins de paroles, réponses courtes.
 2. **À faire par toi, gratuit** : Paramètres Android → Synthèse vocale → Services vocaux Google → Installer les données
    vocales → Français (France). Choisis la voix la plus naturelle et vérifie qu'elle est téléchargée (hors ligne).
-   Pitwall la prendra automatiquement.
+   Pitwall utilise la voix choisie dans ces réglages.
 3. **Prochaine étape proposée, à valider** : voix neuronale locale avec `sherpa-onnx` (déjà dans l'APK) et une voix
    Piper française. Elle est gratuite et hors ligne, mais ajoute environ 60 Mo et demande un essai d'écoute ainsi que
    la vérification de sa licence (voir §4).
@@ -312,5 +312,5 @@ vocal payant.
 - Le double bip arrive environ 8 s après la dernière réponse, y compris avec le son du jeu fort.
 - Plus aucune place annoncée en retard. En course, l'ingénieur se tait sur les tours ordinaires.
 - « Combien d'essence ? » reçoit une réponse en deux phrases au plus ; « analyse complète » donne le détail.
-- La voix retenue s'affiche-t-elle mieux à l'écoute ? Comparer avant et après l'installation de la voix Google
-  haute qualité.
+- « Radio » redit pendant une conversation ouverte : bip d'écoute (avant : aucun signal, on croyait n'être pas entendu).
+- La voix est de nouveau celle des réglages Android.
