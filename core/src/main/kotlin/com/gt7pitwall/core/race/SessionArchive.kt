@@ -59,7 +59,14 @@ data class LapEntry(
  * Arrêt avec sa preuve (mesurée : ravitaillement ; déclarée ou confirmée par le pilote) et ce qui a été fait aux pneus
  * (déclaré ; inconnu si le pilote n'a pas répondu, ou pour les sessions archivées avant ce suivi).
  */
-data class StopEntry(val lap: Int, val evidence: StopEvidence, val fuelAdded: Float?, val tyres: TyreService = TyreService.UNKNOWN)
+data class StopEntry(
+    val lap: Int,
+    val evidence: StopEvidence,
+    val fuelAdded: Float?,
+    val tyres: TyreService = TyreService.UNKNOWN,
+    /** Verdict expérimental du Tyre Change Hunter (absent des sessions plus anciennes). */
+    val thermal: String? = null,
+)
 
 /** Pneus déclarés par le pilote (GT7 ne transmet pas la gomme). */
 data class TyreEntry(val lap: Int, val compound: TyreCompound?)

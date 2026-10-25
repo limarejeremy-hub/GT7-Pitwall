@@ -30,6 +30,8 @@ data class PitStopRecord(
     val evidence: StopEvidence,
     val fuelAdded: Float?,
     val tyres: TyreService = TyreService.UNKNOWN,
+    /** Diagnostic thermique Tyre Change Hunter de ce passage (indice expérimental, jamais une preuve), s'il a été fait. */
+    val thermal: String? = null,
 ) {
     /** Ravitaillement mesuré (le niveau d'essence a monté). */
     val refuelled: Boolean get() = (fuelAdded ?: 0f) > 0f
@@ -146,6 +148,12 @@ class PitLedger {
         awaitingTyreDeclaration = false
         awaitingTyreChangeAnswer = false
         markTyres(lap, TyreService.NOT_CHANGED)
+    }
+
+    /** Verdict du diagnostic thermique, noté sur l'arrêt de ce passage (sans rien changer aux pneus). */
+    fun setThermal(lap: Int, verdict: String) {
+        val i = stops.indexOfLast { lap - it.lap in 0..2 }
+        if (i >= 0) stops[i] = stops[i].copy(thermal = verdict)
     }
 
     private fun markTyres(lap: Int, service: TyreService) {

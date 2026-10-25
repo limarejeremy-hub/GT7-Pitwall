@@ -127,7 +127,7 @@ class PitVoiceAndTyreCallTest {
         s.say("oui")
         assertTrue("As-tu changé les pneus ?" in s.lastAnswer, s.lastAnswer)
         s.say("oui")
-        assertTrue("pneus neufs" in s.lastAnswer, s.lastAnswer)
+        assertTrue("Pneus neufs confirmés" in s.lastAnswer, s.lastAnswer)
         assertEquals(0, c.ledger.tyreAge(s.lap))
         assertTrue(c.plan!!.stops.isEmpty(), c.plan.toString())
         assertFalse(PlanWarning.TYRES_OVERDUE in c.plan!!.warnings)

@@ -114,7 +114,7 @@ object RaceJson {
         r.stops.forEach { s ->
             stops.put(
                 JSONObject().put("lap", s.lap).put("evidence", s.evidence.name).put("fuelAdded", s.fuelAdded?.toDouble() ?: -1.0)
-                    .put("tyres", s.tyres.name),
+                    .put("tyres", s.tyres.name).apply { s.thermal?.let { put("thermal", it) } },
             )
         }
         val tyres = JSONArray()
@@ -187,6 +187,7 @@ object RaceJson {
                 StopEntry(
                     s.optInt("lap"), ev, floatOrNull(s, "fuelAdded"),
                     com.gt7pitwall.core.strategy.TyreService.entries.firstOrNull { it.name == s.optString("tyres") } ?: com.gt7pitwall.core.strategy.TyreService.UNKNOWN,
+                    s.optString("thermal", "").ifEmpty { null },
                 )
             },
             startTyre = TyreCompound.parseCodes(o.optString("startTyre", "")).firstOrNull(),
