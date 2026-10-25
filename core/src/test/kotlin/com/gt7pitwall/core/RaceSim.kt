@@ -50,6 +50,12 @@ class FakeStorage(
     override fun loadJournal(sessionId: String): List<String> = journals[sessionId].orEmpty()
     override fun journalSessionIds(): List<String> = journals.keys.toList()
 
+    var driverBook: String? = null
+    override fun loadDriverBook(): String? = driverBook
+    override fun saveDriverBook(json: String) {
+        driverBook = json
+    }
+
     override fun loadMemory(): Map<String, CarTrackRecord> = memory
     override fun saveMemory(records: Collection<CarTrackRecord>) {
         memory.clear()
@@ -62,7 +68,7 @@ class FakeStorage(
  * La ligne de départ est à l'angle 0 ; la voie des stands longe la piste 15 m à l'extérieur autour de la ligne.
  */
 class RaceSim(
-    val controller: RaceController = RaceController(),
+    var controller: RaceController = RaceController(),
     val totalLaps: Int = 10,
     var fuel: Float = 100f,
     val capacity: Float = 100f,
@@ -70,6 +76,8 @@ class RaceSim(
     var perLap: Float = 5f,
     val carCode: Int = 3607,
 ) {
+    /** Deux courses simulées ne donnent jamais exactement les mêmes chronos (une rediffusion, si). */
+    var salt = (instances++ * 53) % 250
     val radius = 480f
     val circumference = (2 * PI * radius).toFloat()
     private var id = 0
@@ -107,13 +115,30 @@ class RaceSim(
             if (lap >= 1) {
                 // Quelques millisecondes d'écart d'un tour à l'autre, comme en vrai (GT7 ne change le
                 // « dernier tour » que si le chrono change).
-                lastLapMs = lapTicks * 1000 / 60 + (lap * 37) % 250
+                lastLapMs = lapTicks * 1000 / 60 + (lap * 37 + salt) % 250
                 if (bestLapMs < 0 || lastLapMs < bestLapMs) bestLapMs = lastLapMs
             }
             lap++
             lapTicks = 0
         }
         send(speed, r)
+    }
+
+    /** Coupure de la télémétrie (téléphone en veille, Wi-Fi) : la voiture roule [seconds] sans qu'aucun paquet n'arrive. */
+    fun blackout(seconds: Float, speed: Float = 80f) {
+        repeat((seconds * 60).toInt()) {
+            val d = speed / 60f
+            theta += d / radius
+            if (lap >= 1) fuel = (fuel - perLap * d / circumference).coerceAtLeast(0f)
+            lapTicks++
+            id++
+            if (theta >= 2 * PI) {
+                theta -= (2 * PI).toFloat()
+                if (lap >= 1) lastLapMs = lapTicks * 1000 / 60 + (lap * 37 + salt) % 250
+                lap++
+                lapTicks = 0
+            }
+        }
     }
 
     fun stand(seconds: Float, r: Float = radius, addFuel: Float = 0f, onTick: (Int) -> Unit = {}) {
@@ -194,6 +219,10 @@ class RaceSim(
         repeat(30) { step(20f - it * 0.66f) }
         stand(5f)
         repeat(240) { step(it / 3f) }
+    }
+
+    companion object {
+        private var instances = 0
     }
 
     fun say(text: String) {

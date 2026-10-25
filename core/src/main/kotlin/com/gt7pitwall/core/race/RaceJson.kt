@@ -123,7 +123,8 @@ object RaceJson {
         r.plans.forEach { p ->
             plans.put(
                 JSONObject().put("lap", p.lap).put("stops", JSONArray(p.stopLaps)).put("reason", p.reason ?: "")
-                    .put("fuelPerLap", p.fuelPerLap?.toDouble() ?: -1.0).put("fuelSource", p.fuelSource ?: ""),
+                    .put("fuelPerLap", p.fuelPerLap?.toDouble() ?: -1.0).put("fuelSource", p.fuelSource ?: "")
+                    .also { j -> p.pitLossMs?.let { j.put("pitLossMs", it) } },
             )
         }
         val notes = JSONArray()
@@ -141,6 +142,7 @@ object RaceJson {
             .put("tyres", tyres)
             .put("plans", plans)
             .put("notes", notes)
+            .also { j -> r.gridPosition?.let { j.put("grid", it) }; r.finishPosition?.let { j.put("finish", it) } }
             .toString()
     }
 
@@ -200,9 +202,12 @@ object RaceJson {
                     p.optString("reason", "").ifBlank { null },
                     floatOrNull(p, "fuelPerLap"),
                     p.optString("fuelSource", "").ifBlank { null },
+                    p.optInt("pitLossMs", -1).takeIf { it >= 0 },
                 )
             },
             notes = objects("notes").map { n -> DriverNote(n.optInt("lap"), n.optString("text", "")) },
+            gridPosition = o.optInt("grid", -1).takeIf { it > 0 },
+            finishPosition = o.optInt("finish", -1).takeIf { it > 0 },
         )
     } catch (e: Exception) {
         null
