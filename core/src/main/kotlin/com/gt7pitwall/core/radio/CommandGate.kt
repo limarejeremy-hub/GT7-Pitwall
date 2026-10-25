@@ -113,6 +113,8 @@ data class GateContext(
     val recentDeclaredStop: Int? = null,
     /** L'ingénieur vient de demander « As-tu changé les pneus ? ». */
     val awaitingTyreAnswer: Boolean = false,
+    /** L'ingénieur vient de demander quels pneus ont été montés. */
+    val awaitingTyreDeclaration: Boolean = false,
     /** Aucun arrêt ni changement de pneus depuis le départ : « je suis en durs » déclare les pneus de départ. */
     val noStopYet: Boolean = true,
     /** Position actuellement retenue. */
@@ -147,7 +149,7 @@ object CommandGate {
 
     private fun sensitive(c: DriverCommand) = when (c) {
         DriverCommand.DeclareStop, is DriverCommand.StopAndTyres, DriverCommand.CancelStop, is DriverCommand.Tyres,
-        DriverCommand.TyresChanged, is DriverCommand.Rule, is DriverCommand.ReportPosition, DriverCommand.ReportLast,
+        DriverCommand.TyresChanged, is DriverCommand.TyresKept, is DriverCommand.Rule, is DriverCommand.ReportPosition, DriverCommand.ReportLast,
         DriverCommand.Overtook, DriverCommand.Overtaken, is DriverCommand.SeveralPlaces, DriverCommand.Rain, DriverCommand.Dry,
         -> true
         else -> false
@@ -199,6 +201,7 @@ object CommandGate {
                 else -> Vetting.Execute(command)
             }
             is DriverCommand.Tyres, DriverCommand.TyresChanged -> tyres(command, mode, garbled, ctx)
+            is DriverCommand.TyresKept -> kept(command, mode, ctx)
             is DriverCommand.Rule -> rule(command, mode, t, garbled)
             is DriverCommand.ReportPosition, DriverCommand.ReportLast -> position(command, mode)
             DriverCommand.Rain, DriverCommand.Dry -> when (mode) {
@@ -215,6 +218,9 @@ object CommandGate {
         }
         // Gemini ne fait que reformuler : une modification proposée par lui attend toujours le « oui » du pilote.
         // Pneus de départ déclarés pendant la conversation : pas une intervention de course, aucune confirmation de plus.
+        // « Non, je les ai pas changés » en réponse à « As-tu changé les pneus ? » : la réponse attendue, pas une intervention.
+        val tyreAnswer = command is DriverCommand.TyresKept && (ctx.awaitingTyreAnswer || ctx.awaitingTyreDeclaration)
+        if (source == CommandSource.CONVERSATION && tyreAnswer && v is Vetting.Execute) return v
         val startTyres = command is DriverCommand.Tyres && (command.atStart || command.current) && ctx.noStopYet
         if (source == CommandSource.CONVERSATION && startTyres && v is Vetting.Execute) return v
         if ((source == CommandSource.GEMINI || source == CommandSource.CONVERSATION) && v is Vetting.Execute) {
@@ -248,6 +254,23 @@ object CommandGate {
             )
             garbled || !EXPLICIT_STOP.containsMatchIn(t) -> Vetting.Confirm(command, "Tu confirmes que tu as effectué ton arrêt ?")
             else -> Vetting.Execute(command)
+        }
+    }
+
+    /** Pneus conservés : une négation fait partie de la phrase, elle ne l'annule pas. */
+    private fun kept(command: DriverCommand.TyresKept, mode: StatementGuard.Mode, ctx: GateContext): Vetting = when (mode) {
+        StatementGuard.Mode.QUESTION -> Vetting.Redirect(DriverCommand.Ask(DriverQuery.TYRE_CHANGE))
+        StatementGuard.Mode.FUTURE, StatementGuard.Mode.WISH -> Vetting.Discuss(
+            mode,
+            "Compris, tu comptes garder ces pneus : je ne change rien pour l'instant.",
+            intention = "le pilote prévoit de garder les mêmes pneus",
+        )
+        StatementGuard.Mode.HYPOTHETICAL -> Vetting.Discuss(mode, "C'est une hypothèse : je ne change rien aux pneus.")
+        StatementGuard.Mode.ABOUT_OTHERS -> Vetting.Discuss(mode, "Noté pour l'adversaire : je ne change rien à tes pneus.")
+        else -> if (!command.explicit && !ctx.awaitingTyreAnswer && !ctx.awaitingTyreDeclaration) {
+            Vetting.Discuss(mode, "Tu parles des pneus ? Dis « mêmes pneus » et je le note.")
+        } else {
+            Vetting.Execute(command)
         }
     }
 
@@ -298,6 +321,7 @@ object CommandGate {
         DriverCommand.CancelStop -> "Tu confirmes que je retire le dernier arrêt ?"
         is DriverCommand.Tyres -> if (command.atStart || command.current) "Tu confirmes tes pneus ?" else "Tu confirmes ce changement de pneus ?"
         DriverCommand.TyresChanged -> "Tu confirmes que tu as changé les pneus ?"
+        is DriverCommand.TyresKept -> "Tu confirmes que tu as gardé les mêmes pneus ?"
         is DriverCommand.SetLaps -> "Tu confirmes : course de ${command.laps} tours ?"
         is DriverCommand.SetDuration -> "Tu confirmes : course de ${command.minutes} minutes ?"
         is DriverCommand.SetMandatoryStops ->

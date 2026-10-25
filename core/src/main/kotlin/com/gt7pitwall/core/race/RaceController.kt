@@ -492,6 +492,24 @@ class RaceController(
                 )
                 out += replanOrWait()
             }
+            is DriverCommand.TyresKept -> {
+                // Arrêt proposé sur une signature thermique : « mêmes pneus » y répond comme « non ».
+                if (pendingStopTyreSuspect && ledger.pending != null) return command(DriverCommand.No)
+                val recent = ledger.stopList.lastOrNull()?.takeIf { lap - it.lap in 0..2 }
+                val open = ledger.awaitingTyreChangeAnswer ||
+                    (ledger.awaitingTyreDeclaration && ledger.changeForPassage(lap.coerceAtLeast(1)) == null) ||
+                    recent?.tyres == TyreService.UNKNOWN
+                out += answer(
+                    if (open) {
+                        ledger.keepTyres(lap)
+                        labelThermal(changed = false)
+                        listOf(if (recent?.refuelled == true) "Plein terminé, on conserve le même train de pneus." else "D'accord, mêmes pneus : leur relais continue.")
+                    } else {
+                        listOf("D'accord, je ne note aucun changement de pneus.")
+                    },
+                )
+                out += replanOrWait()
+            }
             DriverCommand.TyresChanged -> {
                 out += answer(tyresChanged(lap))
                 out += replanOrWait()
@@ -560,6 +578,7 @@ class RaceController(
             ?.takeIf { it.evidence == StopEvidence.DRIVER_DECLARED && lap - it.lap in 0..1 }?.number
         return GateContext(
             telemetryLive(), recentDeclared, ledger.awaitingTyreChangeAnswer,
+            awaitingTyreDeclaration = ledger.awaitingTyreDeclaration,
             noStopYet = ledger.stopCount == 0 && ledger.changes.isEmpty(),
             position = engineer.driverPosition,
             finalPosition = engineer.measured.finalPosition ?: engineer.currentPosition?.takeIf { sessionFinished },
@@ -2137,7 +2156,9 @@ class RaceController(
         lastThermal = null
         val lap = (snapshot.packet?.currentLap ?: t.lap)
         if (lap - t.lap !in 0..2) return
-        val example = TyreHunterCalibration.Example(suspected = t.verdict == TyreChangeVerdict.SUSPECTED, changed = changed)
+        val example = TyreHunterCalibration.Example(
+            suspected = t.verdict == TyreChangeVerdict.SUSPECTED, changed = changed, stepC = t.step?.deltas.orEmpty(),
+        )
         sessionExamples += example
         journal.record(
             JournalType.PIT, JournalSource.ENGINE,
@@ -2176,6 +2197,7 @@ class RaceController(
                     TyreHunterCalibration.Example(
                         suspected = it.details["hunter_verdict"] == TyreChangeVerdict.SUSPECTED.name,
                         changed = it.details["hunter_etiquette"] == "pneus_changes",
+                        stepC = TyreHunterCalibration.parseStep(it.details["hunter_saut_c"]),
                     )
                 }
         }.getOrDefault(emptyList()).also { calibrationCache = it }
