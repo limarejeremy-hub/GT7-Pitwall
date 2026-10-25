@@ -25,6 +25,10 @@ object TestPackets {
         size: Int = GT7Crypto.PACKET_SIZE_A,
         /** Températures des pneus AVG, AVD, ARG, ARD (°C, 0x60 à 0x6C). */
         tyreTemps: FloatArray? = null,
+        brake: Int = 0,
+        throttle: Int = 0,
+        /** Vitesse de lacet (rad/s, axe Y de GT7). */
+        yawRate: Float = 0f,
     ): ByteArray {
         val b = ByteBuffer.allocate(size).order(ByteOrder.LITTLE_ENDIAN)
         b.putInt(0x00, GT7Crypto.MAGIC)
@@ -34,6 +38,9 @@ object TestPackets {
         b.putFloat(0x48, capacity)
         b.putFloat(0x4C, speedMps)
         tyreTemps?.forEachIndexed { i, t -> b.putFloat(0x60 + 4 * i, t) }
+        b.putFloat(0x30, yawRate)
+        b.put(0x91, throttle.toByte())
+        b.put(0x92, brake.toByte())
         b.putInt(0x70, packetId)
         b.putShort(0x74, lap.toShort())
         b.putShort(0x76, totalLaps.toShort())

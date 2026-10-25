@@ -30,6 +30,7 @@ import com.gt7pitwall.core.radio.CommandSource
 import com.gt7pitwall.core.radio.CommandGate
 import com.gt7pitwall.core.radio.DriverCommandParser
 import com.gt7pitwall.core.radio.DriverQuery
+import com.gt7pitwall.core.session.LapRecord
 import com.gt7pitwall.core.session.PitAssessment
 import com.gt7pitwall.core.session.SessionEvent
 import com.gt7pitwall.core.session.SessionSnapshot
@@ -137,6 +138,15 @@ class RaceController(
     private var sessionId: String? = null
     private var sessionStartMs = 0L
     private var sessionFinished = false
+
+    /**
+     * Rediffusion (replay) d'une course déjà archivée : GT7 renvoie la télémétrie de la course rejouée, tour par tour.
+     * Reconnue quand les deux premiers chronos reproduisent à la milliseconde près ceux d'une course archivée avec la même
+     * voiture : rien n'est alors archivé, appris ni annoncé.
+     */
+    var replay = false
+        private set
+    private var replaySuspect: SessionRecord? = null
     private val planLog = mutableListOf<PlanEntry>()
     private val driverNotes = mutableListOf<DriverNote>()
     private var rulesReminded = false
@@ -334,6 +344,8 @@ class RaceController(
         if (events.any { it is SessionEvent.SessionReset || it is SessionEvent.FirstData }) startSession()
         // Le journal ne s'ouvre qu'une fois la course lancée : un passage par la grille ou un menu ne crée pas de session.
         if (sessionId != null && journal.sessionId != sessionId && p.currentLap >= 1) beginJournal()
+        if (!replay) events.filterIsInstance<SessionEvent.LapCompleted>().forEach { checkReplay(it.lap) }
+        if (replay) return emptyList()
         journalPositions(positionChanges)
         val out = mutableListOf<EngineerMessage>()
         val windowWasOpen = pitWindowPackets > 0
@@ -420,7 +432,8 @@ class RaceController(
         if (events.any { it is SessionEvent.LapCompleted || it is SessionEvent.RaceFinished || it is SessionEvent.PitVisitEnded }) saveSession()
         // Messages non urgents différés pendant un gros freinage ou un virage (au plus quelques secondes).
         if (events.any { it is SessionEvent.SessionReset }) pacer.clear()
-        return deliver(pacer.pace(out, pacer.busy(p), nowMs))
+        val busy = pacer.busy(p)
+        return deliver(pacer.pace(out, busy, pacer.packetClockMs, p.currentLap))
     }
 
     private val pacer = com.gt7pitwall.core.radio.RadioPacer()
@@ -887,6 +900,8 @@ class RaceController(
     // ------------------------------------------------------------------ Archive des sessions
 
     private fun startSession() {
+        replay = false
+        replaySuspect = null
         sessionExamples.clear()
         calibrationCache = null
         sessionStartMs = clock()
@@ -964,7 +979,33 @@ class RaceController(
     }
 
     /** Enregistre la session au fil de l'eau : une fermeture brutale ne perd au plus que le tour en cours. */
+    /** Deux chronos identiques à la milliseconde à ceux d'une course archivée (même voiture) : c'est sa rediffusion. */
+    private fun checkReplay(lap: LapRecord) {
+        val t = lap.timeMs?.takeIf { it > 0 } ?: return
+        val car = snapshot.packet?.carCode
+        when (lap.lapNumber) {
+            1 -> replaySuspect = sessions.values.filter { it.id != sessionId && it.context.carCode == car }
+                .firstOrNull { r -> r.laps.firstOrNull { it.lap == 1 }?.timeMs == t }
+            2 -> {
+                val prev = replaySuspect ?: return
+                if (prev.laps.firstOrNull { it.lap == 2 }?.timeMs == t) {
+                    replay = true
+                    journal.record(
+                        JournalType.SESSION, JournalSource.TELEMETRY,
+                        "Rediffusion de la course ${prev.id} détectée : rien n'est archivé, appris ni annoncé",
+                    )
+                    sessions.remove(sessionId)
+                } else {
+                    replaySuspect = null
+                }
+            }
+            else -> replaySuspect = null
+        }
+    }
+
     private fun saveSession() {
+        // Premier tour identique à une course archivée : on attend le deuxième avant d'archiver quoi que ce soit.
+        if (replay || replaySuspect != null) return
         val r = currentRecord() ?: return
         sessions[r.id] = r
         storage?.saveSession(r)
@@ -975,6 +1016,7 @@ class RaceController(
      * version enregistrée (au dernier tour), complétée par le registre des arrêts, encore intact à ce moment.
      */
     private fun closeSession(outcome: SessionOutcome) {
+        if (replay) return
         val final = if (sessionFinished) SessionOutcome.FINISHED else outcome
         journal.end(
             when (final) {
