@@ -616,6 +616,8 @@ class RaceController(
         val echo = EngineerMessage("Toi : $text", Priority.INFO, MessageCategory.DRIVER)
         // « Course » seul, juste après « tendres : course, sport ou confort ? » : c'est la réponse.
         tyreFamilyAnswer(original)?.let { return listOf(echo) + voiceCommand(it, it.text, source) }
+        // « Moyens », « medium », « course tendres » juste après « Tu as monté quelle gomme ? » : c'est la réponse.
+        compoundAnswer(original)?.let { return listOf(echo) + voiceCommand(it, it.text, source) }
         val cmd = DriverCommandParser.parse(text)
         return listOf(echo) + if (cmd == null) deliver(listOf(engineer.notUnderstood(text))) else voiceCommand(cmd, original, source)
     }
@@ -2496,6 +2498,9 @@ class RaceController(
 
         /** Réponses gardées entières : détail demandé, secteurs, règlement. */
         val DETAILED_QUERIES = setOf(DriverQuery.DETAILS, DriverQuery.SECTORS, DriverQuery.OBLIGATIONS)
+
+        /** Réponse à « quelle gomme ? » : quelques mots (« course mediums », « les moyens »). */
+        const val COMPOUND_ANSWER_MAX_WORDS = 4
         const val AXLE_DIFF_C = 5f
         const val SIDE_DIFF_C = 5f
         const val TREND_DIFF_C = 8f
@@ -2639,6 +2644,21 @@ class RaceController(
     }
 
     /** Réponse d'un seul mot de famille (« course ») à la question sur la gomme. */
+    /**
+     * Gomme dite seule en réponse à « Tu as monté quelle gomme ? » (course du 25/10 : « moyens », puis « medium », restés
+     * sans effet faute de mot « pneus » dans la phrase). Seulement une réponse courte, pendant que la question est posée.
+     */
+    private fun compoundAnswer(text: String): DriverCommand.Tyres? {
+        if (!ledger.awaitingTyreDeclaration || pendingTyreFamily != null) return null
+        val t = DriverCommandParser.normalize(text).replace(Regex("[.,!?;:]"), " ").replace(Regex("\\s+"), " ").trim()
+        if (t.isEmpty() || t.split(' ').size > COMPOUND_ANSWER_MAX_WORDS) return null
+        if (DriverCommandParser.parse(t) is DriverCommand.Tyres) return null
+        val named = TyreCompound.hardnessIn(t) != null || TyreCompound.entries.any { Regex("(^|\\s)${it.name.lowercase()}($|\\s)").containsMatchIn(t) } ||
+            Regex("intermediaire|(^|\\s)(pluie|wet)($|\\s)").containsMatchIn(t)
+        if (!named) return null
+        return DriverCommand.Tyres(if (Regex("(^|\\s)(pluie|wet)($|\\s)").containsMatchIn(t)) "pneus $t" else t, atStart = false)
+    }
+
     private fun tyreFamilyAnswer(text: String): DriverCommand.Tyres? {
         val (c, hardness) = pendingTyreFamily ?: return null
         // Question expirée : un mot isolé n'est plus relu comme une gomme.

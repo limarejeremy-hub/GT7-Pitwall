@@ -219,7 +219,8 @@ object CommandGate {
         // Gemini ne fait que reformuler : une modification proposée par lui attend toujours le « oui » du pilote.
         // Pneus de départ déclarés pendant la conversation : pas une intervention de course, aucune confirmation de plus.
         // « Non, je les ai pas changés » en réponse à « As-tu changé les pneus ? » : la réponse attendue, pas une intervention.
-        val tyreAnswer = command is DriverCommand.TyresKept && (ctx.awaitingTyreAnswer || ctx.awaitingTyreDeclaration)
+        val tyreAnswer = (command is DriverCommand.TyresKept && (ctx.awaitingTyreAnswer || ctx.awaitingTyreDeclaration)) ||
+            (command is DriverCommand.Tyres && !command.atStart && ctx.awaitingTyreDeclaration)
         if (source == CommandSource.CONVERSATION && tyreAnswer && v is Vetting.Execute) return v
         val startTyres = command is DriverCommand.Tyres && (command.atStart || command.current) && ctx.noStopYet
         if (source == CommandSource.CONVERSATION && startTyres && v is Vetting.Execute) return v
