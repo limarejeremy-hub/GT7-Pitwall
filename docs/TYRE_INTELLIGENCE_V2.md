@@ -179,10 +179,38 @@ pneus » comme une question sur l'état des pneus ; « non je les ai pas changé
 
 Les mots nécessaires ont été ajoutés à la grammaire Vosk. Tests : `TyresKeptTest`.
 
+### Premier arrêt réel analysé (course du 25/10)
+
+Journal transmis par le pilote. Course : Porsche 963 '24, Le Mans, 7 tours, carburant ×4, pneus ×6. Arrêt au tour 4,
+plein de 43 % et pneus changés (« oui » du pilote). Séries mesurées, une valeur par seconde :
+
+| Seconde | Vitesse | Carburant | AVG | AVD | ARG | ARD |
+|---|---|---|---|---|---|---|
+| 50 | 0 | 22,4 | 70,0 | 69,7 | 74,9 | 76,6 |
+| **51** | 0 | 22,4 | **60,0** | **60,0** | **60,0** | **60,0** |
+| 53 | 0 | 34,1 (plein en cours) | 59,9 | 59,9 | 59,9 | 59,9 |
+| 60 | 132 (sortie) | 65,3 | 59,9 | 59,9 | 60,8 | 60,8 |
+
+Constat : pendant l'arrêt, les pneus refroidissent lentement, d'environ 0,1 à 0,2 °C par seconde, chacun à sa
+température. Puis, en une seconde, voiture immobile et avant le début du plein, **les quatre passent exactement à
+60,0 °C**. L'ancien critère a répondu « non déterminé » : le pneu avant droit n'a varié que de 10,0 °C, pile au seuil.
+
+Correction : nouveau critère « remise à niveau uniforme ». Il demande, d'une seconde à la suivante, voiture à l'arrêt :
+- un saut de 3 °C au moins sur chaque pneu, dans le même sens ;
+- une valeur commune aux quatre pneus à 0,3 °C près, tenue 3 s ;
+- des pneus nettement différents juste avant.
+
+Le verdict devient alors « suspecté » et le pilote reste interrogé (« pneus neufs ? »). Ce n'est qu'**un seul exemple
+réel** : il manque encore un arrêt avec pneus conservés pour vérifier que GT7 ne produit pas aussi ce saut. Tests :
+`RealRace2510Test`, avec les séries réelles du journal.
+
+Autre défaut relevé dans ce journal : à « Tu as monté quelle gomme ? », les réponses « moyens » puis « medium » n'ont
+rien enregistré, faute du mot « pneus » dans la phrase. Une gomme dite seule, en réponse à cette question, est
+maintenant comprise. Avec RH|RM|RS autorisés et le règlement confirmé, « moyens » donne course mediums.
+
 ### Signature thermique : ce qui est mesuré, ce qui ne l'est pas
 
-Aucun journal de l'essai PS5 n'a été transmis : **aucune signature réelle n'a pu être analysée**, rien n'est affirmé sur
-ce que GT7 envoie au changement. La calibration compare désormais, sur les arrêts étiquetés par le pilote, le **saut
+Un seul arrêt réel analysé, avec pneus changés (voir ci-dessus). La calibration compare désormais, sur les arrêts étiquetés par le pilote, le **saut
 de température le plus faible des quatre pneus** (`hunter_saut_c`) : un vrai changement doit toucher les quatre.
 Elle n'est « démontrée » que si, sur au moins 3 arrêts de chaque sorte, sans faux positif ni faux négatif, le plus
 petit saut « pneus changés » dépasse d'au moins 5 °C le plus grand saut « pneus conservés ». Même alors, **la

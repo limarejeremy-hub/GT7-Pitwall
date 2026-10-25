@@ -163,6 +163,13 @@ class TyreChangeHunter(val thresholdC: Float = DEFAULT_THRESHOLD_C) {
                 return result(null, TyreChangeVerdict.UNDETERMINED, "mesures insuffisantes pendant l'arrêt")
             }
             val step = bestStep(valid)
+            uniformReset(valid)?.let { (reset, level) ->
+                return result(
+                    reset, TyreChangeVerdict.SUSPECTED,
+                    "les quatre pneus repartent d'un coup à la même température (${level.toInt()} °C) pendant l'arrêt : signature de pneus " +
+                        "neufs relevée sur un arrêt réel, à confirmer par le pilote",
+                )
+            }
             return when {
                 step == null -> result(null, TyreChangeVerdict.UNDETERMINED, "aucune variation simultanée des quatre pneus")
                 step.minAbs < thresholdC || !step.sameSign ->
@@ -171,6 +178,46 @@ class TyreChangeHunter(val thresholdC: Float = DEFAULT_THRESHOLD_C) {
                 else -> result(step, TyreChangeVerdict.SUSPECTED, "variation brusque, simultanée et durable des quatre pneus pendant l'arrêt")
             }
         }
+
+        /**
+         * Remise à niveau uniforme : d'un échantillon au suivant, voiture à l'arrêt, les quatre pneus passent à une même
+         * température (écart entre eux ≤ [UNIFORM_SPREAD_C]) alors qu'ils étaient différents avant (≥ [UNIFORM_BEFORE_SPREAD_C]),
+         * et y restent. Course réelle du 25/10 (Porsche 963, Le Mans, pneus changés confirmés par le pilote) : 70,0 / 69,7 /
+         * 74,9 / 76,6 °C → 60,0 / 60,0 / 60,0 / 60,0 °C en une seconde, avant le plein. Des pneus conservés refroidissent
+         * peu à peu, chacun à sa température : ils ne devraient pas produire ce saut. Un seul exemple réel : c'est un indice
+         * fort, jamais une confirmation (le pilote répond toujours).
+         */
+        private fun uniformReset(valid: List<ThermalSample>): Pair<ThermalStep, Float>? {
+            for (j in 1 until valid.size - UNIFORM_HOLD) {
+                val now = valid[j]
+                if (now.phase != ThermalPhase.STOP || now.speedKmh > STILL_KMH) continue
+                val prev = valid[j - 1]
+                val spreadBefore = prev.temps.max() - prev.temps.min()
+                if (spreadBefore < UNIFORM_BEFORE_SPREAD_C) continue
+                val after = valid.subList(j, j + UNIFORM_HOLD)
+                if (after.any { it.temps.max() - it.temps.min() > UNIFORM_SPREAD_C }) continue
+                val deltas = (0 until 4).map { w -> now.temps[w] - prev.temps[w] }
+                val step = ThermalStep(now.second, deltas, persisted = true)
+                if (!step.sameSign || step.minAbs < UNIFORM_MIN_STEP_C) continue
+                return step to now.temps.average().toFloat()
+            }
+            return null
+        }
+
+        /** Les quatre pneus à la même température, à 0,3 °C près. */
+        const val UNIFORM_SPREAD_C = 0.3f
+
+        /** Avant le saut, des pneus roulés diffèrent nettement entre eux. */
+        const val UNIFORM_BEFORE_SPREAD_C = 1.5f
+
+        /** Saut minimal de chaque pneu (une seconde). */
+        const val UNIFORM_MIN_STEP_C = 3f
+
+        /** Le nouveau niveau, commun aux quatre pneus, tient au moins ce nombre d'échantillons. */
+        const val UNIFORM_HOLD = 3
+
+        /** Voiture immobilisée au stand. */
+        const val STILL_KMH = 3f
 
         /**
          * Plus grand saut simultané : pour chaque instant de l'arrêt, moyenne des [WINDOW] échantillons précédents contre
