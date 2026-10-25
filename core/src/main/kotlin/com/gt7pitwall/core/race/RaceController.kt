@@ -122,6 +122,19 @@ class RaceController(
         save = { storage?.saveDriverBook(it) },
     )
     private var lastPositionChangeClockMs: Long? = null
+
+    /** Place sur la grille (GT7) et à l'arrivée, pour le bilan de course. */
+    private var gridPosition: Int? = null
+    private var finishPosition: Int? = null
+    private var briefed = false
+
+    /** Bilan de la dernière course close (prévisions et erreurs, positions, coaching). */
+    var lastReview: com.gt7pitwall.core.strategy.RaceReview? = null
+        private set
+
+    /** Correction de consommation apprise des erreurs de prévision passées, appliquée au dernier plan (en %). */
+    var fuelCorrectionPct: Double? = null
+        private set
     private val gMeter = GForceMeter()
 
     /** Règlement par épreuve (Sport A, B, C, autre × qualification, course). */
@@ -445,6 +458,8 @@ class RaceController(
         // Retour au menu après une course finie : pas de « nouvelle session » annoncée.
         out.addAll(0, engineer.onUpdate(events, tracker.snapshot, fuel).filterNot { finishedBefore && it.text.startsWith("Nouvelle session détectée") })
         out += engineer.onPosition(positionChanges, nowMs)
+        if (events.any { it is SessionEvent.RaceFinished }) finishPosition = engineer.driverPosition
+        out += briefingIfDue(p)
         if (events.any { it is SessionEvent.LapCompleted || it is SessionEvent.RaceFinished || it is SessionEvent.PitVisitEnded }) saveSession()
         // Messages non urgents différés pendant un gros freinage ou un virage (au plus quelques secondes).
         if (events.any { it is SessionEvent.SessionReset }) pacer.clear()
@@ -756,6 +771,8 @@ class RaceController(
         strategyBrief?.let { lines += it.facts() }
         // Profil de pilotage (Driver DNA) : mesures répétées seulement, jamais un événement isolé.
         lines += runCatching { driverCoach.facts(driverKey) }.getOrDefault(emptyList())
+        forecastTrack().text()?.let { lines += "Justesse de mes prévisions sur les courses comparables : $it" }
+        lastReview?.lines()?.takeIf { it.isNotEmpty() }?.let { lines += "Bilan de la dernière course : ${it.joinToString(" ")}" }
         activeObservations.forEach { o -> lines += "Déclaré par le pilote au tour ${o.lap} (non mesuré) : ${o.kind.label}." }
         history.let { h -> lines += "Historique : ${h.comparable} session(s) comparable(s) archivée(s), dont ${h.sameEvent} avec le même règlement." }
         carName?.let { lines += "Voiture : $it." }
@@ -919,6 +936,9 @@ class RaceController(
 
     private fun startSession() {
         sessionId?.let { driverCoach.close(fuel?.perLap) }
+        gridPosition = null
+        finishPosition = null
+        briefed = false
         replay = false
         replaySuspect = null
         sessionExamples.clear()
@@ -969,6 +989,8 @@ class RaceController(
             tyres = ledger.changes.map { TyreEntry(it.lap, it.compound) },
             plans = planLog.toList(),
             notes = driverNotes.toList(),
+            gridPosition = gridPosition,
+            finishPosition = finishPosition,
         )
     }
 
@@ -1074,7 +1096,7 @@ class RaceController(
      */
     private fun closeSession(outcome: SessionOutcome) {
         if (replay) return
-        driverCoach.close(fuel?.perLap)
+        val dna = driverCoach.close(fuel?.perLap)
         val final = if (sessionFinished) SessionOutcome.FINISHED else outcome
         journal.end(
             when (final) {
@@ -1094,6 +1116,71 @@ class RaceController(
         ) ?: return
         sessions[r.id] = r
         storage?.saveSession(r)
+        // Bilan : ce que Pitwall avait prévu, ce qui s'est passé, et ce qui en sera retenu pour la prochaine fois.
+        val advice = dna?.advice?.filter { it.sessionId == r.id }.orEmpty()
+        val review = com.gt7pitwall.core.strategy.RaceReview.of(
+            r, advice.size, advice.count { a -> a.lossAfterMs?.let { it < a.lossBeforeMs - com.gt7pitwall.core.driver.DriverProfile.IMPROVED_MS } == true },
+        )
+        lastReview = review
+        review.lines().forEach { journal.record(JournalType.DECISION, JournalSource.ENGINE, "Bilan : $it", details = mapOf("session" to r.id)) }
+    }
+
+    /** Justesse des prévisions sur les courses comparables archivées (hors session en cours). */
+    fun forecastTrack(): com.gt7pitwall.core.strategy.ForecastTrack {
+        val ctx = sessionContext
+        val comparable = sessions.values.filter {
+            it.id != sessionId && it.context.profile.id == ctx.profile.id && Compatibility.compare(ctx, it.context).first != Comparability.INCOMPATIBLE
+        }
+        return com.gt7pitwall.core.strategy.ForecastTrack.of(comparable.map { com.gt7pitwall.core.strategy.RaceReview.of(it) })
+    }
+
+    /**
+     * Briefing avant une épreuve Sport (une fois, sur la grille) : règlement, circuit, historique, consommation, pneus,
+     * plan et fiabilité, profil de pilotage. Chaque phrase dit sur quoi elle repose.
+     */
+    fun briefing(): List<String> {
+        val out = mutableListOf<String>()
+        val gaps = ruleGaps
+        out += when {
+            !profile.confirmed -> "Briefing ${profile.id.label} : règlement non confirmé, vérifie-le dans la carte Course."
+            gaps.isNotEmpty() -> "Briefing ${profile.id.label} : règlement à compléter (${gaps.joinToString(", ") { it.label }})."
+            else -> "Briefing ${profile.id.label} : règlement confirmé."
+        }
+        if (rules.trackId == null) out += "Circuit non identifié : je ne peux pas utiliser ton historique."
+        val h = history
+        val learned = historyModel.fuelPerLap?.takeIf { it.confidence != Confidence.INSUFFICIENT }
+        out += if (h.comparable == 0) {
+            "Aucune course comparable : je me baserai sur tes premiers tours."
+        } else {
+            "${h.comparable} course${if (h.comparable > 1) "s" else ""} comparable${if (h.comparable > 1) "s" else ""}" +
+                (learned?.let { l ->
+                    ", consommation de référence ${String.format(java.util.Locale.FRANCE, "%.2f", l.mean)} par tour (${l.confidence.label})" +
+                        (fuelCorrectionPct?.let { c -> ", corrigée de ${if (c >= 0) "+" else "−"}${String.format(java.util.Locale.FRANCE, "%.1f", kotlin.math.abs(c))} % d'après mes erreurs passées" } ?: "")
+                } ?: "") + "."
+        }
+        val tyre = compoundBook[ledger.currentTyre(rules.startTyre)]
+        if (tyre != null && tyre.confidence != Confidence.INSUFFICIENT) out += "Pneus : ${tyre.summary()}."
+        strategy?.let { rep ->
+            val o = rep.recommendedOption
+            val gain = o.deltaMs?.takeIf { it < 0 }
+            out += when {
+                rep.indistinguishable -> "Plusieurs plans se valent : écarts inférieurs à l'incertitude."
+                gain != null && rep.uncertaintyMs != null -> "${o.kind.label.replaceFirstChar { it.uppercase() }} : environ ${StrategyOptions.seconds(-gain)} de gagnés, à ± ${StrategyOptions.seconds(rep.uncertaintyMs)}."
+                else -> null
+            } ?: return@let
+        }
+        if (!raceMode) driverCoach.known(driverKey)?.traits()?.text?.let { out += it }
+        return out
+    }
+
+    private fun briefingIfDue(p: TelemetryPacket): List<EngineerMessage> {
+        if (briefed || !profile.id.sport || profile.id.kind != SessionKind.RACE || p.currentLap != 0 || p.speedKmh > 1f) return emptyList()
+        briefed = true
+        val lines = briefing()
+        // Le briefing a déjà signalé le règlement non confirmé : pas de second rappel au premier tour.
+        if (!profile.confirmed) rulesReminded = true
+        journal.record(JournalType.STRATEGY, JournalSource.ENGINE, "Briefing : ${lines.joinToString(" ")}")
+        return listOf(EngineerMessage(lines.joinToString(" "), Priority.NORMAL, MessageCategory.FUEL, topic = "briefing"))
     }
 
     /** Événements mesurés du tracker inscrits au journal (tours, stands, arrivée, grille). */
@@ -1138,7 +1225,10 @@ class RaceController(
                 details = mapOf("analyse" to e.visit.assessment.name.lowercase(), "lieu_connu" to if (e.visit.locationKnown) "oui" else "non"),
             )
             is SessionEvent.RaceFinished -> journal.record(JournalType.SESSION, JournalSource.TELEMETRY, "Arrivée : ${e.totalLaps} tours")
-            is SessionEvent.GridPosition -> journal.record(JournalType.POSITION, JournalSource.TELEMETRY, "Grille : P${e.position} sur ${e.cars}")
+            is SessionEvent.GridPosition -> {
+                gridPosition = e.position
+                journal.record(JournalType.POSITION, JournalSource.TELEMETRY, "Grille : P${e.position} sur ${e.cars}")
+            }
             else -> {}
         }
     }
@@ -1209,9 +1299,11 @@ class RaceController(
         // Arrêt pneus retenu déjà passé : il sort de la liste.
         performanceTyreLaps = performanceTyreLaps.filter { it >= p.currentLap.coerceAtLeast(1) }
         val learnedFuel = model.fuelPerLap?.takeIf { it.confidence != Confidence.INSUFFICIENT }
+        // Prévision de départ tirée de l'historique : corrigée si les courses passées ont montré un écart net et répété.
+        fuelCorrectionPct = if (live?.perLap == null && learnedFuel != null) forecastTrack().fuelCorrection else null
         val (perLap, fuelSource) = when {
             live?.perLap != null -> live.perLap to DataSource.MEASURED
-            learnedFuel != null -> learnedFuel.mean.toFloat() to DataSource.HISTORY
+            learnedFuel != null -> (learnedFuel.mean * (1 + (fuelCorrectionPct ?: 0.0) / 100.0)).toFloat() to DataSource.HISTORY
             rec?.fuelPerLapX1 != null -> rec.fuelPerLapX1 * rules.fuelMultiplier to DataSource.HISTORY
             else -> null to null
         }
@@ -1280,7 +1372,8 @@ class RaceController(
         }
         val stopLaps = plan?.stops?.map { it.endOfLap } ?: emptyList()
         if (plan != null && planLog.lastOrNull()?.stopLaps != stopLaps) {
-            planLog += PlanEntry(p.currentLap, stopLaps, reason, fuelPerLap = plan?.perLap, fuelSource = plan?.fuelSource?.name)
+            val pitLoss = stopCosts(model, course?.pitLaneDeltaS?.let { it * 1000.0 })?.cost(StopKind.FUEL_ONLY)?.ms?.roundToInt()
+            planLog += PlanEntry(p.currentLap, stopLaps, reason, fuelPerLap = plan?.perLap, fuelSource = plan?.fuelSource?.name, pitLossMs = pitLoss)
             raceMemory.planProposed(p.currentLap, clock(), stopLaps, reason)
             journal.record(
                 JournalType.STRATEGY, JournalSource.ENGINE,

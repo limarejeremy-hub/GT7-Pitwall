@@ -82,6 +82,8 @@ data class PlanEntry(
     val fuelPerLap: Float? = null,
     /** MEASURED, HISTORY… (d'où venait la consommation). */
     val fuelSource: String? = null,
+    /** Temps perdu prévu pour un arrêt (ms), pour mesurer ensuite l'erreur de prévision. */
+    val pitLossMs: Int? = null,
 )
 
 /** Déclaration utile du pilote (« je perds l'avant », « on rentre au tour 8 »), jamais une mesure. */
@@ -103,6 +105,9 @@ data class SessionRecord(
     val tyres: List<TyreEntry> = emptyList(),
     val plans: List<PlanEntry> = emptyList(),
     val notes: List<DriverNote> = emptyList(),
+    /** Place sur la grille et à l'arrivée, telles que GT7 ou le pilote les ont données (absentes des anciennes sessions). */
+    val gridPosition: Int? = null,
+    val finishPosition: Int? = null,
 ) {
     val completedLaps: Int get() = laps.size
 
