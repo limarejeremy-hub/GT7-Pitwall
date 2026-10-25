@@ -2364,6 +2364,7 @@ class RaceController(
             }
             val age = ledger.tyreAge(lap)
             append("Tes pneus ont $age tour${if (age > 1) "s" else ""} sur $life.")
+            if (!ledger.tyreStint(lap, rules.startTyre).certain) append(" Âge incertain : un arrêt est resté sans réponse sur les pneus.")
             val next = plan?.stops?.firstOrNull { it.changeTyres && it.endOfLap >= lap }
             when {
                 next != null -> {

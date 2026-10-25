@@ -693,6 +693,8 @@ private fun TyreCard(state: PitwallUiState, rules: com.gt7pitwall.core.strategy.
         m.slopeMsPerLap?.takeIf { it.confidence != com.gt7pitwall.core.strategy.Confidence.INSUFFICIENT }?.let {
             DiagLine("Historique", "${com.gt7pitwall.core.tyres.GripDiagnosis.seconds(it.mean)} par tour d'âge (${it.confidence.label}, ${m.basis()})")
         }
+        state.lastThermal?.let { DiagLine("Dernier arrêt (températures)", "${it.label} — indice expérimental, seul ton « oui » remet l'âge à zéro") }
+        state.tyreScenario?.let { DiagLine("Scénarios", it) }
         val lap = (state.snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)
         val next = state.plan?.stops?.firstOrNull { it.changeTyres && it.endOfLap >= lap }
         Text(

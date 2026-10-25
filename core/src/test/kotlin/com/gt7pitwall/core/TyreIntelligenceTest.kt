@@ -307,4 +307,24 @@ class TyreIntelligenceTest {
         assertEquals(0, cal.falsePositives + cal.falseNegatives)
         assertFalse(cal.ready)
     }
+
+    /** Arrêt resté sans réponse sur les pneus : âge incertain, dit à la radio et gardé dans l'historique. */
+    @Test
+    fun anUnansweredStopMakesTheAgeUncertainAndItIsArchived() {
+        val storage = FakeStorage()
+        val (c, s) = race(storage = storage)
+        c.setRules(RaceRules(tyreStintLaps = 12))
+        s.start()
+        s.driveLaps(3)
+        s.pitStop(fuel = 30f)
+        s.driveLaps(2) // pas de réponse : la question expire
+        assertFalse(c.ledger.awaitingTyreChangeAnswer)
+        assertTrue(c.ledger.changes.isEmpty(), "jamais de pneus neufs supposés")
+        assertFalse(c.ledger.tyreStint(s.lap, null).certain)
+        val said = c.tyreChangeSentence()
+        assertTrue("Âge incertain" in said, said)
+        val laps = storage.sessions.single().laps
+        assertTrue(laps.last().tyreAgeCertain.not(), laps.last().toString())
+        assertTrue(laps.first { it.lap == 2 }.tyreAgeCertain, "les tours d'avant l'arrêt restent certains")
+    }
 }

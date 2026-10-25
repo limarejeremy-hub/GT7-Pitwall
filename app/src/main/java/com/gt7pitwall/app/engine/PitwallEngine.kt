@@ -110,6 +110,10 @@ data class PitwallUiState(
     val grip: com.gt7pitwall.core.tyres.GripReport = com.gt7pitwall.core.tyres.GripReport.NONE,
     /** Relais pneus en cours, indépendant du carburant. */
     val tyreStint: com.gt7pitwall.core.strategy.TyreStint? = null,
+    /** Conclusion des scénarios pneus (moteur, historique comparable). */
+    val tyreScenario: String? = null,
+    /** Verdict du Tyre Change Hunter au dernier arrêt (indice expérimental, jamais une confirmation). */
+    val lastThermal: com.gt7pitwall.core.tyres.TyreChangeVerdict? = null,
     /** Relais pneus comparables appris (estimations). */
     val tyreModel: com.gt7pitwall.core.tyres.TyreModel = com.gt7pitwall.core.tyres.TyreModel.EMPTY,
     /** Réponses stratégiques prêtes (recommandation, prolonger, autres qui rentrent, carburant pour finir). */
@@ -450,6 +454,8 @@ class PitwallEngine(
             grip = race.engineer.grip,
             tyreStint = race.ledger.tyreStint((snap.packet?.currentLap ?: 1).coerceAtLeast(1), race.rules.startTyre),
             tyreModel = race.tyreModel,
+            tyreScenario = race.tyreScenarios().reason,
+            lastThermal = race.ledger.stopList.lastOrNull()?.thermal?.let { v -> com.gt7pitwall.core.tyres.TyreChangeVerdict.entries.firstOrNull { it.name == v } },
             brief = if (force) race.strategyBrief else _state.value.brief ?: race.strategyBrief,
         )
     }
