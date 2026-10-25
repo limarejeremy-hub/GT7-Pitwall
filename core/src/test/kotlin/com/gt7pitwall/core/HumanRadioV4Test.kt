@@ -396,4 +396,16 @@ class HumanRadioV4Test {
         s.driveLaps(1)
         assertTrue(c.snapshot.laps.size >= 4)
     }
+
+    // « Oublie » retire la dernière déclaration même si deux phrases tombent dans la même milliseconde (CI rapide).
+    @Test
+    fun retractRemovesTheLastStatementEvenAtTheSameMillisecond() {
+        val m = com.gt7pitwall.core.ai.RaceMemory()
+        m.preference(3, 1_000, "préserver les pneus")
+        m.hypothesis(3, 1_000, "et si je mets les tendres")
+        assertEquals("et si je mets les tendres", m.retractLast(1_000))
+        assertEquals(1, m.preferenceList.size, "la préférence, plus ancienne, reste")
+        assertEquals("préserver les pneus", m.retractLast(1_000))
+        assertNull(m.retractLast(1_000))
+    }
 }

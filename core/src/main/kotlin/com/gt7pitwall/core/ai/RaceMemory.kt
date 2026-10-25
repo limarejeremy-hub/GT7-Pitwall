@@ -53,6 +53,9 @@ class RaceMemory {
     private val hypotheses = ArrayDeque<Item>()
     private val disagreements = ArrayDeque<Item>()
 
+    /** Ordre des déclarations du pilote (intentions, préférences, hypothèses) : la plus récente est retirée en premier. */
+    private val driverOrder = ArrayDeque<Pair<ArrayDeque<Item>, Item>>()
+
     /** Plan sur lequel le pilote a dit « d'accord » (sinon null : seul le moteur l'a proposé). */
     var agreedPlan: Plan? = null
         private set
@@ -60,12 +63,12 @@ class RaceMemory {
     @Synchronized
     fun clear() {
         intentions.clear(); facts.clear(); decisions.clear(); plans.clear(); exchanges.clear(); summary.clear()
-        preferences.clear(); hypotheses.clear(); disagreements.clear()
+        preferences.clear(); hypotheses.clear(); disagreements.clear(); driverOrder.clear()
         agreedPlan = null
     }
 
     @Synchronized
-    fun intention(lap: Int, atMs: Long, text: String) = push(intentions, Item(lap, atMs, text, Provenance.DRIVER), MAX_INTENTIONS)
+    fun intention(lap: Int, atMs: Long, text: String) = said(intentions, Item(lap, atMs, text, Provenance.DRIVER), MAX_INTENTIONS)
 
     /** Fait confirmé ou corrigé (gomme, arrêt, règlement) : [provenance] dit qui l'a établi. */
     @Synchronized
@@ -86,11 +89,11 @@ class RaceMemory {
 
     /** Préférence du pilote pour cette course (« je veux préserver les pneus ») : pas un réglage permanent. */
     @Synchronized
-    fun preference(lap: Int, atMs: Long, text: String) = push(preferences, Item(lap, atMs, text, Provenance.DRIVER), MAX_PREFERENCES)
+    fun preference(lap: Int, atMs: Long, text: String) = said(preferences, Item(lap, atMs, text, Provenance.DRIVER), MAX_PREFERENCES)
 
     /** Hypothèse discutée (« et si je mets les tendres ? ») : jamais un fait ni une décision. */
     @Synchronized
-    fun hypothesis(lap: Int, atMs: Long, text: String) = push(hypotheses, Item(lap, atMs, text, Provenance.DRIVER), MAX_HYPOTHESES)
+    fun hypothesis(lap: Int, atMs: Long, text: String) = said(hypotheses, Item(lap, atMs, text, Provenance.DRIVER), MAX_HYPOTHESES)
 
     /** Désaccord entre le pilote et la recommandation du moteur, avec ce que chacun a dit. */
     @Synchronized
@@ -106,11 +109,19 @@ class RaceMemory {
      */
     @Synchronized
     fun retractLast(nowMs: Long, windowMs: Long = RETRACT_WINDOW_MS): String? {
-        val lists = listOf(intentions, preferences, hypotheses)
-        val latest = lists.mapNotNull { q -> q.lastOrNull()?.let { q to it } }.maxByOrNull { it.second.atMs } ?: return null
-        if (nowMs - latest.second.atMs > windowMs) return null
-        latest.first.removeLast()
-        return latest.second.text
+        // Ordre d'arrivée, pas l'heure : deux phrases peuvent tomber dans la même milliseconde.
+        while (driverOrder.isNotEmpty()) {
+            val (q, item) = driverOrder.last()
+            if (q.none { it === item }) {
+                driverOrder.removeLast() // déjà sortie de sa liste (plus ancienne que la limite)
+                continue
+            }
+            if (nowMs - item.atMs > windowMs) return null
+            driverOrder.removeLast()
+            q.removeAll { it === item }
+            return item.text
+        }
+        return null
     }
 
     @get:Synchronized
@@ -180,6 +191,12 @@ class RaceMemory {
         section("RÉSUMÉ DES ÉCHANGES PLUS ANCIENS", summary.toList())
     }
 
+    private fun said(q: ArrayDeque<Item>, item: Item, max: Int) {
+        push(q, item, max)
+        driverOrder.addLast(q to item)
+        while (driverOrder.size > MAX_DRIVER_ORDER) driverOrder.removeFirst()
+    }
+
     private fun <T> push(q: ArrayDeque<T>, item: T, max: Int) {
         q.addLast(item)
         while (q.size > max) q.removeFirst()
@@ -198,6 +215,7 @@ class RaceMemory {
         const val MAX_HYPOTHESES = 4
         const val MAX_DISAGREEMENTS = 4
         const val RETRACT_WINDOW_MS = 90_000L
+        const val MAX_DRIVER_ORDER = 16
         const val TOPIC_WINDOW_MS = 120_000L
 
         fun stopsText(stops: List<Int>): String = when {
