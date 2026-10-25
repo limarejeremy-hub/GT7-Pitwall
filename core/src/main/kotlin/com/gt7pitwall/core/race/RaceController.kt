@@ -60,6 +60,13 @@ import com.gt7pitwall.core.strategy.StopCosts
 import com.gt7pitwall.core.strategy.StopKind
 import com.gt7pitwall.core.strategy.Cost
 import com.gt7pitwall.core.tyres.TyreModel
+import com.gt7pitwall.core.tyres.CompoundBook
+import com.gt7pitwall.core.tyres.TyreScenarioReport
+import com.gt7pitwall.core.tyres.TyreScenarios
+import com.gt7pitwall.core.tyres.ThermalCapture
+import com.gt7pitwall.core.tyres.TyreChangeHunter
+import com.gt7pitwall.core.tyres.TyreChangeVerdict
+import com.gt7pitwall.core.tyres.TyreHunterCalibration
 import com.gt7pitwall.core.tyres.GripLevel
 import com.gt7pitwall.core.tyres.GripDiagnosis
 import com.gt7pitwall.core.telemetry.TelemetryPacket
@@ -146,8 +153,23 @@ class RaceController(
         private set
 
     /** Relais pneus comparables appris (gomme actuelle), indépendants du carburant. */
+    /** Performance apprise par gomme (rythme, perte par tour d'âge, durée compétitive), courses comparables seulement. */
+    var compoundBook: CompoundBook = CompoundBook.EMPTY
+        private set
     var tyreModel: TyreModel = TyreModel.EMPTY
         private set
+
+    /** Tyre Change Hunter : diagnostic thermique expérimental des passages aux stands (n'agit jamais seul sur les pneus). */
+    val tyreHunter = TyreChangeHunter()
+
+    /** Diagnostic du dernier passage, en attente de l'étiquette du pilote (« pneus neufs » / « mêmes pneus »). */
+    private var lastThermal: ThermalCapture? = null
+
+    /** L'arrêt sans ravitaillement en attente a été proposé à cause d'une signature thermique : « oui » = pneus changés. */
+    private var pendingStopTyreSuspect = false
+    private var tyreDeclarationPackets = 0
+    private var calibrationCache: List<TyreHunterCalibration.Example>? = null
+    private val sessionExamples = mutableListOf<TyreHunterCalibration.Example>()
 
     /** Changements de pneus de performance retenus par la stratégie (fin de ces tours). */
     var performanceTyreLaps: List<Int> = emptyList()
@@ -286,6 +308,16 @@ class RaceController(
         // qui envoie des paquets hors chargement (voiture en piste, en mouvement, ou course en cours).
         lastPacketOnTrack = !p.isLoading && (p.isOnTrack || p.speedKmh > 1f || p.currentLap > 0)
         val events = tracker.update(p)
+        if (events.any { it is SessionEvent.SessionReset }) {
+            // Une transition de session ne reprend rien : ni capture thermique, ni diagnostic en attente d'étiquette.
+            tyreHunter.reset()
+            lastThermal = null
+            pendingStopTyreSuspect = false
+        }
+        // Mesure thermique seulement en course : ni pause, ni chargement, ni après l'arrivée (essai réel : tour 11/10).
+        val raceActive = p.currentLap >= 1 && !sessionFinished && (p.totalLaps <= 0 || p.currentLap <= p.totalLaps) &&
+            !p.isPaused && !p.isLoading
+        tyreHunter.onPacket(p, tracker.pitVisitOpen, raceActive)?.let(::journalThermal)
         gMeter.update(p)?.let { gForce = it }
         // Position mesurée (0x84) : seulement en course ; en qualification, elle n'a pas été validée.
         if (events.any { it is SessionEvent.SessionReset }) positionTracker.reset()
@@ -315,6 +347,15 @@ class RaceController(
             }
         } else {
             tyreQuestionPackets = 0
+        }
+        // « Tu as monté quelle gomme ? » sans réponse : la question expire, la gomme reste inconnue (jamais devinée).
+        if (ledger.awaitingTyreDeclaration && rules.requiredTyres.isEmpty()) {
+            if (++tyreDeclarationPackets > TYRE_QUESTION_PACKETS) {
+                ledger.awaitingTyreDeclaration = false
+                tyreDeclarationPackets = 0
+            }
+        } else {
+            tyreDeclarationPackets = 0
         }
         if (events.isNotEmpty()) {
             if (events.any { it is SessionEvent.SessionReset }) {
@@ -407,9 +448,13 @@ class RaceController(
                     pendingConfirmation = null
                     return command(pending)
                 }
+                val suspect = pendingStopTyreSuspect
+                pendingStopTyreSuspect = false
                 val confirmed = ledger.confirmPending()
                 out += answer(
                     when {
+                        // Arrêt proposé sur une signature thermique : « oui » répondait à « tu as changé les pneus ? ».
+                        confirmed != null && suspect -> stopRecorded(confirmed) + tyresChanged(lap)
                         confirmed != null -> stopRecorded(confirmed) + afterStopQuestions()
                         ledger.awaitingTyreChangeAnswer -> tyresChanged(lap)
                         else -> listOf("Je n'attendais pas de confirmation.")
@@ -424,12 +469,43 @@ class RaceController(
                 }
                 out += answer(
                     when {
-                        ledger.rejectPending() -> listOf("D'accord, je ne compte pas cet arrêt.")
-                        ledger.awaitingTyreDeclaration || ledger.awaitingTyreChangeAnswer -> {
+                        ledger.rejectPending() -> if (pendingStopTyreSuspect) {
+                            pendingStopTyreSuspect = false
+                            labelThermal(changed = false)
+                            listOf("D'accord, pas de changement de pneus : je ne compte pas cet arrêt. Dis « arrêt fait » si c'en était un.")
+                        } else {
+                            listOf("D'accord, je ne compte pas cet arrêt.")
+                        }
+                        ledger.awaitingTyreChangeAnswer || (ledger.awaitingTyreDeclaration && ledger.changeForPassage(lap.coerceAtLeast(1)) == null) -> {
                             ledger.keepTyres(lap)
-                            listOf("D'accord, mêmes pneus : leur relais continue.")
+                            labelThermal(changed = false)
+                            val refuel = ledger.stopList.lastOrNull()?.takeIf { lap - it.lap in 0..2 }?.refuelled == true
+                            listOf(if (refuel) "Plein terminé, on conserve le même train de pneus." else "D'accord, mêmes pneus : leur relais continue.")
+                        }
+                        ledger.awaitingTyreDeclaration -> {
+                            // « Tu as monté quelle gomme ? » → « non » : la gomme reste inconnue, le changement reste noté.
+                            ledger.awaitingTyreDeclaration = false
+                            listOf("D'accord, gomme non précisée : je ne la devine pas.")
                         }
                         else -> listOf("Je n'attendais pas de réponse.")
+                    },
+                )
+                out += replanOrWait()
+            }
+            is DriverCommand.TyresKept -> {
+                // Arrêt proposé sur une signature thermique : « mêmes pneus » y répond comme « non ».
+                if (pendingStopTyreSuspect && ledger.pending != null) return command(DriverCommand.No)
+                val recent = ledger.stopList.lastOrNull()?.takeIf { lap - it.lap in 0..2 }
+                val open = ledger.awaitingTyreChangeAnswer ||
+                    (ledger.awaitingTyreDeclaration && ledger.changeForPassage(lap.coerceAtLeast(1)) == null) ||
+                    recent?.tyres == TyreService.UNKNOWN
+                out += answer(
+                    if (open) {
+                        ledger.keepTyres(lap)
+                        labelThermal(changed = false)
+                        listOf(if (recent?.refuelled == true) "Plein terminé, on conserve le même train de pneus." else "D'accord, mêmes pneus : leur relais continue.")
+                    } else {
+                        listOf("D'accord, je ne note aucun changement de pneus.")
                     },
                 )
                 out += replanOrWait()
@@ -486,6 +562,8 @@ class RaceController(
         val echo = EngineerMessage("Toi : $text", Priority.INFO, MessageCategory.DRIVER)
         // « Course » seul, juste après « tendres : course, sport ou confort ? » : c'est la réponse.
         tyreFamilyAnswer(original)?.let { return listOf(echo) + voiceCommand(it, it.text, source) }
+        // « Moyens », « medium », « course tendres » juste après « Tu as monté quelle gomme ? » : c'est la réponse.
+        compoundAnswer(original)?.let { return listOf(echo) + voiceCommand(it, it.text, source) }
         val cmd = DriverCommandParser.parse(text)
         return listOf(echo) + if (cmd == null) deliver(listOf(engineer.notUnderstood(text))) else voiceCommand(cmd, original, source)
     }
@@ -502,6 +580,7 @@ class RaceController(
             ?.takeIf { it.evidence == StopEvidence.DRIVER_DECLARED && lap - it.lap in 0..1 }?.number
         return GateContext(
             telemetryLive(), recentDeclared, ledger.awaitingTyreChangeAnswer,
+            awaitingTyreDeclaration = ledger.awaitingTyreDeclaration,
             noStopYet = ledger.stopCount == 0 && ledger.changes.isEmpty(),
             position = engineer.driverPosition,
             finalPosition = engineer.measured.finalPosition ?: engineer.currentPosition?.takeIf { sessionFinished },
@@ -681,6 +760,9 @@ class RaceController(
             lines += "${AI_TOPICS[q]} : $text"
         }
         lines += "Arrêts aux stands enregistrés : ${ledger.stopCount}."
+        tyreScenarios().basis.takeIf { it.isNotEmpty() }?.let { b ->
+            lines += "Performance des gommes (estimée sur l'historique comparable, pas une mesure de cette course) : ${b.joinToString(" ; ")}."
+        }
         rules.tyreStintLaps?.let { life ->
             val age = ledger.tyreAge((snap.packet?.currentLap ?: 1).coerceAtLeast(1))
             lines += "Pneus : ils tiennent $life tours d'après toi ; $age tours faits avec le train actuel."
@@ -826,6 +908,8 @@ class RaceController(
     // ------------------------------------------------------------------ Archive des sessions
 
     private fun startSession() {
+        sessionExamples.clear()
+        calibrationCache = null
         sessionStartMs = clock()
         sessionId = "$sessionStartMs-${snapshot.packet?.carCode ?: 0}"
         sessionFinished = false
@@ -866,7 +950,7 @@ class RaceController(
             updatedAtMs = clock(),
             outcome = outcome,
             laps = laps.map(::lapEntry),
-            stops = ledger.stopList.map { StopEntry(it.lap, it.evidence, it.fuelAdded, it.tyres) },
+            stops = ledger.stopList.map { StopEntry(it.lap, it.evidence, it.fuelAdded, it.tyres, it.thermal) },
             startTyre = rules.startTyre,
             tyres = ledger.changes.map { TyreEntry(it.lap, it.compound) },
             plans = planLog.toList(),
@@ -924,7 +1008,7 @@ class RaceController(
         val r = currentRecord(final) ?: sessions[sessionId]?.copy(
             outcome = final,
             updatedAtMs = clock(),
-            stops = ledger.stopList.map { StopEntry(it.lap, it.evidence, it.fuelAdded, it.tyres) },
+            stops = ledger.stopList.map { StopEntry(it.lap, it.evidence, it.fuelAdded, it.tyres, it.thermal) },
             tyres = ledger.changes.map { TyreEntry(it.lap, it.compound) },
             plans = planLog.toList(),
             notes = driverNotes.toList(),
@@ -1042,6 +1126,7 @@ class RaceController(
         // Historique : sessions comparables archivées d'abord (avec leur niveau de confiance), sinon l'ancienne mémoire.
         val model = HistoryModel.learn(sessionContext, sessions.values, excludeId = sessionId).also { historyModel = it }
         tyreModel = TyreModel.learn(sessionContext, sessions.values, ledger.currentTyre(rules.startTyre), excludeId = sessionId)
+        compoundBook = CompoundBook.learn(sessionContext, sessions.values, excludeId = sessionId)
         // Arrêt pneus retenu déjà passé : il sort de la liste.
         performanceTyreLaps = performanceTyreLaps.filter { it >= p.currentLap.coerceAtLeast(1) }
         val learnedFuel = model.fuelPerLap?.takeIf { it.confidence != Confidence.INSUFFICIENT }
@@ -1288,6 +1373,37 @@ class RaceController(
         val res = xs.indices.sumOf { val e = ys[it] - (my + b * (xs[it] - mx)); e * e } / (xs.size - 2)
         val se = kotlin.math.sqrt(res / sxx)
         return if (kotlin.math.abs(b) >= 2 * se && kotlin.math.abs(b) >= 100) b to se else null
+    }
+
+    /**
+     * Continuer, tendres, mediums ou durs : temps total jusqu'à l'arrivée, arrêt compris, d'après les relais comparables
+     * archivés et les chronos propres du relais en cours. Sans données suffisantes, aucun scénario n'est recommandé.
+     */
+    fun tyreScenarios(): TyreScenarioReport {
+        val lap = (snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)
+        val total = plan?.totalLaps ?: rules.totalLaps ?: snapshot.packet?.totalLaps?.takeIf { it > 0 }
+            ?: return TyreScenarioReport(emptyList(), null, "Nombre de tours inconnu : je ne compare pas les gommes.", emptyList())
+        val ctx = tyreStintContext()
+        val stint = ledger.tyreStint(lap, rules.startTyre)
+        val live = snapshot.laps.filter {
+            it.lapNumber >= maxOf(2, ctx.startLap + 1) && it.lapNumber !in ctx.excludedLaps && !it.refuelled && (it.timeMs ?: 0) > 0
+        }.map { (it.lapNumber - stint.startLap) to it.timeMs!! }
+        return TyreScenarios.compare(
+            TyreScenarios.Input(
+                currentLap = lap,
+                totalLaps = total,
+                current = stint.compound,
+                tyreAge = stint.age,
+                ageCertain = ctx.certain,
+                liveLaps = live,
+                book = compoundBook,
+                costs = stopCosts(historyModel, course?.pitLaneDeltaS?.let { it * 1000.0 }),
+                plannedStops = plan?.stops?.filter { it.endOfLap >= lap }?.map { it.endOfLap }.orEmpty(),
+                allowed = rules.allowedTyres,
+                requiredMissing = missingTyres,
+                tyreLife = rules.tyreStintLaps,
+            ),
+        )
     }
 
     // ------------------------------------------------------------------ Dialogue stratégique
@@ -1895,6 +2011,25 @@ class RaceController(
 
     private fun onPitVisit(e: SessionEvent.PitVisitEnded): List<EngineerMessage> {
         val v = e.visit
+        val total = snapshot.packet?.totalLaps ?: 0
+        // Après l'arrivée (retour au stand, tour 11/10, transition vers une autre session) : aucun arrêt, aucun pneu.
+        if (sessionFinished || (total > 0 && v.lap > total)) {
+            journal.record(JournalType.PIT, JournalSource.TELEMETRY, "Passage ignoré : course terminée (tour ${v.lap})", lap = v.lap)
+            return emptyList()
+        }
+        val thermal = tyreHunter.conclude(v.lap, v.assessment)
+        lastThermal = thermal.takeIf { v.assessment != PitAssessment.TRACK_STOP }
+        journal.record(
+            JournalType.DECISION, JournalSource.ENGINE, "Tyre Change Hunter, tour ${v.lap} : ${thermal.verdict.label}",
+            decision = thermal.reason,
+            details = mapOf(
+                "hunter_verdict" to thermal.verdict.name,
+                "hunter_saut_c" to (thermal.step?.deltas?.joinToString(",") { String.format(java.util.Locale.ROOT, "%.1f", it) } ?: "aucun"),
+                "statut" to "indice expérimental : le pilote confirme, l'âge des pneus ne change pas sans lui",
+            ),
+            lap = v.lap,
+        )
+        val suspected = thermal.verdict == TyreChangeVerdict.SUSPECTED
         // Avec une durée de vie des pneus, un arrêt sans essence compte aussi : il peut s'agir d'un changement de pneus.
         // Un arrêt prévu par le plan (pneus seuls compris) rend aussi crédible un arrêt sans ravitaillement.
         val hasObligations = rules.mandatoryStops > 0 || rules.requiredTyres.isNotEmpty() || rules.tyreStintLaps != null ||
@@ -1902,13 +2037,21 @@ class RaceController(
         return when (v.assessment) {
             PitAssessment.REFUEL -> {
                 val rec = ledger.recordRefuel(v.lap, v.refuelAmount)
+                ledger.setThermal(v.lap, thermal.verdict.name)
                 info(stopRecorded(rec) + afterStopQuestions(), Priority.HIGH, expectsReply = awaitingAnswer)
             }
-            PitAssessment.PIT_LIKE_STOP -> if (hasObligations) {
+            // Arrêt sans ravitaillement : proposé s'il compte pour le règlement, ou si les quatre pneus ont changé de
+            // température d'un coup (pneus seuls possibles). Rien n'est enregistré sans le « oui » du pilote.
+            PitAssessment.PIT_LIKE_STOP -> if (hasObligations || suspected) {
                 ledger.propose(v.lap, v.locationKnown)
+                pendingStopTyreSuspect = suspected
                 listOf(
                     EngineerMessage(
-                        "Je t'ai vu immobilisé ${v.stoppedSeconds.roundToInt()} secondes sans ravitaillement. Tu as bien effectué ton arrêt ?",
+                        if (suspected) {
+                            "Arrêt de ${v.stoppedSeconds.roundToInt()} secondes sans ravitaillement, et les quatre pneus ont changé de température d'un coup. Tu as changé les pneus ?"
+                        } else {
+                            "Je t'ai vu immobilisé ${v.stoppedSeconds.roundToInt()} secondes sans ravitaillement. Tu as bien effectué ton arrêt ?"
+                        },
                         Priority.CRITICAL,
                         MessageCategory.ALERT,
                         expectsReply = true,
@@ -1974,9 +2117,14 @@ class RaceController(
             ledger.awaitingTyreDeclaration = true
             return listOf("Quels pneus as-tu montés ?")
         }
-        // Toujours demandé : un ravitaillement ne dit rien des pneus, et le suivi des pneus en dépend.
+        // Toujours demandé : un ravitaillement ne dit rien des pneus, et le suivi des pneus en dépend. Une signature
+        // thermique ne fait que changer la formulation : l'âge des pneus ne bouge pas sans la réponse du pilote.
         ledger.awaitingTyreChangeAnswer = true
-        return listOf("As-tu changé les pneus ?")
+        return if (lastThermal?.verdict == TyreChangeVerdict.SUSPECTED) {
+            listOf("Les quatre pneus ont changé de température d'un coup : pneus neufs ?")
+        } else {
+            listOf("As-tu changé les pneus ?")
+        }
     }
 
     /** Pneus neufs sans gomme précisée : l'âge des pneus repart de zéro. */
@@ -1985,20 +2133,78 @@ class RaceController(
         // la confirmation n'en crée pas un second et n'efface pas la gomme.
         ledger.changeForPassage(lap.coerceAtLeast(1))?.let { c ->
             ledger.fitTyres(lap.coerceAtLeast(1), null)
+            labelThermal(changed = true)
             return listOf("C'est noté : ${c.compound?.spoken ?: "pneus neufs, gomme non précisée,"} à cet arrêt.")
         }
         ledger.fitTyres(lap.coerceAtLeast(1), null)
+        labelThermal(changed = true)
         performanceTyreLaps = emptyList()
         engineer.onTyresChanged(lap.coerceAtLeast(1))
-        val out = mutableListOf("Noté : pneus neufs au tour ${lap.coerceAtLeast(1)}.")
-        if (rules.requiredTyres.isNotEmpty()) {
-            ledger.awaitingTyreDeclaration = true
-            out += "Quelle gomme as-tu montée ?"
-        }
+        val out = mutableListOf("Pneus neufs confirmés : je repars sur un nouveau relais.")
+        // GT7 ne transmet pas la gomme : on la demande une fois, on ne la devine jamais.
+        ledger.awaitingTyreDeclaration = true
+        out += "Tu as monté quelle gomme ?"
         return out
     }
 
     private var tyreQuestionPackets = 0
+
+    /**
+     * Le pilote a dit ce qu'il a fait des pneus à ce passage : son étiquette accompagne le diagnostic thermique dans le
+     * journal (exemple pour la calibration). Une seule étiquette par passage ; un diagnostic ancien n'est jamais étiqueté.
+     */
+    private fun labelThermal(changed: Boolean) {
+        val t = lastThermal ?: return
+        lastThermal = null
+        val lap = (snapshot.packet?.currentLap ?: t.lap)
+        if (lap - t.lap !in 0..2) return
+        val example = TyreHunterCalibration.Example(
+            suspected = t.verdict == TyreChangeVerdict.SUSPECTED, changed = changed, stepC = t.step?.deltas.orEmpty(),
+        )
+        sessionExamples += example
+        journal.record(
+            JournalType.PIT, JournalSource.ENGINE,
+            "Tyre Change Hunter, étiquette du pilote au tour ${t.lap} : ${if (changed) "pneus changés" else "pneus conservés"} " +
+                "(diagnostic : ${t.verdict.label})",
+            details = mapOf(
+                "hunter_etiquette" to if (changed) "pneus_changes" else "pneus_conserves",
+                "origine_etiquette" to "réponse du pilote",
+                "hunter_verdict" to t.verdict.name,
+                "hunter_saut_c" to (t.step?.deltas?.joinToString(",") { String.format(java.util.Locale.ROOT, "%.1f", it) } ?: "aucun"),
+            ),
+            lap = t.lap,
+        )
+    }
+
+    /** Séries complètes d'un passage (sortie comprise), pour l'export du Tyre Change Hunter. */
+    private fun journalThermal(c: ThermalCapture) {
+        journal.record(
+            JournalType.PIT, JournalSource.TELEMETRY,
+            "Tyre Change Hunter, séries du tour ${c.lap} : ${c.samples.size} s mesurées, ${c.verdict.label}",
+            details = TyreChangeHunter.exportDetails(c),
+            lap = c.lap,
+        )
+    }
+
+    /**
+     * Fiabilité du diagnostic sur tous les arrêts étiquetés par le pilote (journaux archivés et session en cours). Tant
+     * qu'elle n'est pas démontrée, le pilote confirme toujours ; même démontrée, cette version ne confirme rien seule.
+     */
+    fun tyreHunterCalibration(): TyreHunterCalibration.Status {
+        val archived = calibrationCache ?: runCatching {
+            val s = storage ?: return@runCatching emptyList()
+            s.journalSessionIds().filter { it != sessionId }.flatMap { id -> SessionJournal.load(s, id) }
+                .filter { it.details["hunter_etiquette"] != null && it.details["hunter_verdict"] != null }
+                .map {
+                    TyreHunterCalibration.Example(
+                        suspected = it.details["hunter_verdict"] == TyreChangeVerdict.SUSPECTED.name,
+                        changed = it.details["hunter_etiquette"] == "pneus_changes",
+                        stepC = TyreHunterCalibration.parseStep(it.details["hunter_saut_c"]),
+                    )
+                }
+        }.getOrDefault(emptyList()).also { calibrationCache = it }
+        return TyreHunterCalibration.evaluate(archived + sessionExamples)
+    }
 
     /** Relais pneus en cours pour le diagnostic d'adhérence : indépendant des ravitaillements. */
     private fun tyreStintContext(): com.gt7pitwall.core.tyres.StintContext {
@@ -2012,6 +2218,9 @@ class RaceController(
     private companion object {
         val INCIDENT_NOTE = Regex("(?i)accident|accroch|t[eê]te.?[aà].?queue|sortie de piste|touch[eé]|crash|abîm|abim")
         const val TYRE_QUESTION_PACKETS = 60 * 60
+
+        /** Réponse à « quelle gomme ? » : quelques mots (« course mediums », « les moyens »). */
+        const val COMPOUND_ANSWER_MAX_WORDS = 4
         const val AXLE_DIFF_C = 5f
         const val SIDE_DIFF_C = 5f
         const val TREND_DIFF_C = 8f
@@ -2066,9 +2275,12 @@ class RaceController(
         const val FROZEN_PACKETS = 30
     }
 
-    /** Réponse attendue qui change le plan (la question sur les pneus ne compte que si leur durée de vie est connue). */
+    /**
+     * Réponse attendue qui change le plan (la question sur les pneus ne compte que si leur durée de vie est connue ; celle
+     * sur la gomme montée, que si des gommes sont imposées).
+     */
     private val awaitingPlanAnswer: Boolean
-        get() = pendingConfirmation != null || ledger.awaitingTyreDeclaration || ledger.pending != null ||
+        get() = pendingConfirmation != null || (ledger.awaitingTyreDeclaration && rules.requiredTyres.isNotEmpty()) || ledger.pending != null ||
             (ledger.awaitingTyreChangeAnswer && (rules.tyreStintLaps != null || performanceTyreLaps.isNotEmpty() || plan?.stops?.any { it.forTyres } == true))
 
     private val awaitingAnswer: Boolean
@@ -2095,6 +2307,7 @@ class RaceController(
         } else {
             val passage = ledger.changeForPassage(lap)
             val replaced = ledger.fitTyres(lap, compound)
+            labelThermal(changed = true)
             performanceTyreLaps = emptyList()
             if (passage == null) engineer.onTyresChanged(lap)
             out += when {
@@ -2147,6 +2360,21 @@ class RaceController(
     }
 
     /** Réponse d'un seul mot de famille (« course ») à la question sur la gomme. */
+    /**
+     * Gomme dite seule en réponse à « Tu as monté quelle gomme ? » (course du 25/10 : « moyens », puis « medium », restés
+     * sans effet faute de mot « pneus » dans la phrase). Seulement une réponse courte, pendant que la question est posée.
+     */
+    private fun compoundAnswer(text: String): DriverCommand.Tyres? {
+        if (!ledger.awaitingTyreDeclaration || pendingTyreFamily != null) return null
+        val t = DriverCommandParser.normalize(text).replace(Regex("[.,!?;:]"), " ").replace(Regex("\\s+"), " ").trim()
+        if (t.isEmpty() || t.split(' ').size > COMPOUND_ANSWER_MAX_WORDS) return null
+        if (DriverCommandParser.parse(t) is DriverCommand.Tyres) return null
+        val named = TyreCompound.hardnessIn(t) != null || TyreCompound.entries.any { Regex("(^|\\s)${it.name.lowercase()}($|\\s)").containsMatchIn(t) } ||
+            Regex("intermediaire|(^|\\s)(pluie|wet)($|\\s)").containsMatchIn(t)
+        if (!named) return null
+        return DriverCommand.Tyres(if (Regex("(^|\\s)(pluie|wet)($|\\s)").containsMatchIn(t)) "pneus $t" else t, atStart = false)
+    }
+
     private fun tyreFamilyAnswer(text: String): DriverCommand.Tyres? {
         val (c, hardness) = pendingTyreFamily ?: return null
         // Question expirée : un mot isolé n'est plus relu comme une gomme.
@@ -2178,6 +2406,7 @@ class RaceController(
             }
             val age = ledger.tyreAge(lap)
             append("Tes pneus ont $age tour${if (age > 1) "s" else ""} sur $life.")
+            if (!ledger.tyreStint(lap, rules.startTyre).certain) append(" Âge incertain : un arrêt est resté sans réponse sur les pneus.")
             val next = plan?.stops?.firstOrNull { it.changeTyres && it.endOfLap >= lap }
             when {
                 next != null -> {
@@ -2196,7 +2425,19 @@ class RaceController(
      * confirmé), les pneus montés, les tours restants et la durée de vie donnée par le pilote. GT7 ne transmet pas
      * l'usure : sans durée de vie, l'ingénieur le dit et pose une seule question courte.
      */
-    fun nextTyreSentence(): String {
+    fun nextTyreSentence(): String = nextTyreFacts() + tyreScenarioSentence()
+
+    /** Chiffres du moteur seulement (historique comparable) : jamais une gomme recommandée sans eux. */
+    private fun tyreScenarioSentence(): String {
+        val sc = tyreScenarios()
+        return when {
+            sc.recommended != null || sc.changeAdvised -> " D'après tes courses comparables : ${sc.reason}"
+            sc.scenarios.count { it.estimable } >= 2 -> " ${sc.reason}"
+            else -> " Pas assez d'historique comparable pour chiffrer les gommes."
+        }
+    }
+
+    private fun nextTyreFacts(): String {
         val lap = (snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)
         val total = plan?.totalLaps ?: rules.totalLaps ?: snapshot.packet?.totalLaps?.takeIf { it > 0 }
         val nextStop = plan?.stops?.firstOrNull { it.endOfLap >= lap }

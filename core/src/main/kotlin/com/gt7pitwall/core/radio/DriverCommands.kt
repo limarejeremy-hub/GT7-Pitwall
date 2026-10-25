@@ -56,6 +56,13 @@ sealed interface DriverCommand {
     /** "J'ai changé les pneus" (gomme non précisée). */
     data object TyresChanged : DriverCommand
 
+    /**
+     * « Je n'ai pas changé les pneus », « mêmes pneus », « j'ai gardé les pneus » : le même train continue.
+     * [explicit] : la phrase nomme les pneus. Sinon (« non je les ai pas changés », « c'est les mêmes ») elle n'a de
+     * sens qu'en réponse à une question sur les pneus.
+     */
+    data class TyresKept(val explicit: Boolean = true) : DriverCommand
+
     /** "Il pleut" : le pilote signale la pluie (GT7 ne transmet pas la météo). */
     data object Rain : DriverCommand
 
@@ -143,6 +150,7 @@ object DriverCommandParser {
         if (has(t, "repete", "repeter", "redis")) return DriverCommand.Repeat
         if (t == "oui" || t == "affirmatif" || t == "confirme" || t == "c'est ca" || t == "exact") return DriverCommand.Yes
         if (t == "non" || t == "negatif" || t == "non non") return DriverCommand.No
+        keptIn(t)?.let { return it }
         // « Quand est-ce que je dois changer mes pneus ? » : une question, pas une déclaration de changement.
         val tyreWords = has(t, "pneu", "gomme")
         val changeWords = has(t, "changer", "change", "changement", "remplacer", "neufs")
@@ -249,6 +257,28 @@ object DriverCommandParser {
         val done = Regex("(^|\\s)(fait|faite|effectue|passe|sorti|sors|sortie|termine|fini|ravitaille|arrete|fais)($|\\s)").containsMatchIn(t) ||
             has(t, "plein fait", "fait le plein", "j'ai ravitaille")
         return if (done) DriverCommand.DeclareStop else null
+    }
+
+    /**
+     * Pneus conservés. Essai PS5 : « je n'ai pas changé les pneus » était lu comme un changement nié, « mêmes pneus » ou
+     * « j'ai pas touché aux pneus » comme une question sur les pneus, « non je les ai pas changés » pas compris du tout.
+     */
+    private fun keptIn(t: String): DriverCommand? {
+        val tyreWords = has(t, "pneu", "gomme", "meme train")
+        val notChanged = Regex("(^|\\s)(pas|rien|jamais|aucun)( de| d'| les| aux| au| a)? ?(change|changes|changee|changees|changement|touche|touches|remplace|remplaces|bouge)($|\\s)")
+            .containsMatchIn(t) || has(t, "sans changer", "sans changement", "aucun changement")
+        // « Quand même » n'est pas « les mêmes ».
+        val kept = Regex("(^|\\s)(garde|gardes|conserve|conserves|memes|(le|les|la|du) meme|meme (train|pneus?|gommes?)|toujours les)($|\\s)").containsMatchIn(t)
+        // Une autre pièce que les pneus (« pas changé de stratégie », « garde le même rythme ») : pas une réponse pneus.
+        val other = has(t, "strategie", "plan", "rythme", "essence", "carburant", "reglage", "position", "place", "trajectoire", "freinage",
+            "reglement", "arret", "stand", "meteo", "pluie")
+        if ((other && !tyreWords) || has(t, "neufs", "nouveaux", "nouvelles")) return null
+        if (tyreWords && (notChanged || kept)) return DriverCommand.TyresKept(explicit = true)
+        // Sans le mot pneus : seulement une réponse courte et sans ambiguïté, à confirmer par le contexte.
+        if (t.split(' ').size <= 7 && (notChanged || has(t, "c'est les memes", "ce sont les memes", "les memes", "pareil"))) {
+            return DriverCommand.TyresKept(explicit = false)
+        }
+        return null
     }
 
     /** Gommes déclarées : il faut un mot de dureté / type de gomme ET un verbe ou le mot pneus. */
@@ -370,6 +400,8 @@ object DriverCommandParser {
             "n'ai", "ai", "ne", "jamais", "encore", "vais", "va", "vas", "veux", "voudrais", "pense", "crois", "peut-être",
             "si", "on", "quoi", "doit", "faut", "sont", "celui", "ceux", "ils", "autres", "devant", "derrière", "moi", "nous",
             "rentrer", "rentrent", "maintenant", "mettre", "prolonger", "relais", "son", "leur",
+            // Pneus conservés (essai PS5) : « j'ai gardé les mêmes pneus », « pas touché aux pneus », « rien changé ».
+            "gardé", "garde", "conservé", "même", "touché", "rien", "changés", "changement", "train", "c'est", "les", "aux", "pareil", "sans",
             // Fin de la conversation continue : « terminé », « fin de communication », « merci, terminé ».
             "merci", "fin", "communication", "transmission", "terminée",
         )

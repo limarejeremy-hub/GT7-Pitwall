@@ -79,6 +79,8 @@ class RaceSim(
     private var lastLapMs = -1
     private var bestLapMs = -1
     private var lapTicks = 0
+    /** Températures des pneus envoyées dans chaque paquet (AVG, AVD, ARG, ARD, °C). */
+    var tyreTemps = floatArrayOf(82f, 84f, 78f, 79f)
     val said = mutableListOf<EngineerMessage>()
     val texts: List<String> get() = said.map { it.text }
     val lastAnswer: String get() = said.last { it.category == com.gt7pitwall.core.engineer.MessageCategory.ANSWER }.text
@@ -88,7 +90,7 @@ class RaceSim(
         val plain = TestPackets.plain(
             lap = lap, totalLaps = totalLaps, fuel = fuel, capacity = capacity, speedMps = speed,
             lastLapMs = lastLapMs, bestLapMs = bestLapMs, carCode = carCode, packetId = ++id, flags = flags,
-            posX = r * cos(theta), posZ = r * sin(theta),
+            posX = r * cos(theta), posZ = r * sin(theta), tyreTemps = tyreTemps,
         )
         val p: TelemetryPacket = TelemetryParser.parseDecrypted(plain)!!
         said += controller.onPacket(p)
@@ -114,9 +116,10 @@ class RaceSim(
         send(speed, r)
     }
 
-    fun stand(seconds: Float, r: Float = radius, addFuel: Float = 0f) {
+    fun stand(seconds: Float, r: Float = radius, addFuel: Float = 0f, onTick: (Int) -> Unit = {}) {
         val n = (seconds * 60).toInt()
         repeat(n) {
+            onTick(it)
             fuel = (fuel + addFuel / n).coerceAtMost(capacity)
             lapTicks++
             send(0f, r)
@@ -147,7 +150,7 @@ class RaceSim(
      * Arrêt au stand réaliste : entrée 400 m avant la ligne, 72 km/h dans la voie (15 m à l'extérieur),
      * franchit la ligne, s'arrête 60 m après, ravitaille [fuel] (unités GT7), ressort et accélère.
      */
-    fun pitStop(fuel: Float, stopSeconds: Float = 6f) {
+    fun pitStop(fuel: Float, stopSeconds: Float = 6f, changeTyres: Boolean = false, freshTemps: FloatArray = floatArrayOf(55f, 56f, 52f, 53f), onStand: (Int) -> Unit = {}) {
         val pitR = radius + 15f
         val entry = (2 * PI - 400.0 / radius).toFloat()
         while (theta < entry) step(80f)
@@ -156,7 +159,12 @@ class RaceSim(
         while (lap == startLap) step(20f, pitR)
         while (theta < 60f / radius) step(20f, pitR)
         repeat(30) { step(20f - it * 0.66f, pitR) }
-        stand(stopSeconds, pitR, addFuel = fuel)
+        val half = (stopSeconds * 30).toInt()
+        // Pneus changés : les quatre températures chutent d'un coup, au milieu de l'arrêt (pneus neufs plus froids).
+        stand(stopSeconds, pitR, addFuel = fuel) {
+            if (changeTyres && it == half) tyreTemps = freshTemps.copyOf()
+            onStand(it)
+        }
         repeat(240) { step(5f + it * 0.25f, pitR) } // sortie et ré-accélération
         repeat(120) { step(65f) }
     }

@@ -303,7 +303,7 @@ class RaceEngineer {
             }
             // Confirmations, arrêts et gommes sont traités par le contrôleur de course, qui connaît le registre.
             DriverCommand.Yes, DriverCommand.No, DriverCommand.DeclareStop, DriverCommand.CancelStop, is DriverCommand.Tyres, DriverCommand.TyresChanged,
-            is DriverCommand.StopAndTyres ->
+            is DriverCommand.TyresKept, is DriverCommand.StopAndTyres ->
                 "Je n'ai pas de registre de course pour enregistrer ça."
             DriverCommand.Repeat -> return lastSpoken?.copy(timestampMs = System.currentTimeMillis())
                 ?: msg("Je n'ai encore rien dit.", Priority.HIGH, MessageCategory.ANSWER)
