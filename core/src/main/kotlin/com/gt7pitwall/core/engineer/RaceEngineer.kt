@@ -234,7 +234,10 @@ class RaceEngineer {
             // Pendant un ravitaillement, le niveau bas est en train d'être corrigé : pas d'alerte (course réelle du 21/10,
             // « moins de deux tours » répété au stand pendant le plein).
             if (!snapshot.refuelledThisLap) fuelAlert(fuel)?.let { out += it }
-            snapshot.packet?.let { p -> tyres.onPacket(p)?.let { out += msg(it.text, it.priority, MessageCategory.LAP) } }
+            // Course silencieuse : une simple information (« températures stabilisées ») n'est pas dite, un avis l'est.
+            snapshot.packet?.let { p ->
+                tyres.onPacket(p)?.takeIf { !(quietLaps && it.priority == Priority.INFO) }?.let { out += msg(it.text, it.priority, MessageCategory.LAP) }
+            }
         }
         val result = RadioFilter.criticalFirst(out.filter { RadioFilter.allowed(radioLevel, it) })
         result.lastOrNull()?.let { lastSpoken = it }
@@ -404,7 +407,11 @@ class RaceEngineer {
         return msg(text, Priority.HIGH, MessageCategory.ANSWER)
     }
 
-    private val quietLaps: Boolean get() = quietRace && shortLapReports && measured.enabled
+    /**
+     * Course réelle du 25/10 : rapports détaillés activés, chaque tour était encore annoncé en entier. Le silence en course
+     * s'applique quel que soit ce réglage ; « détaillé » ne change plus que le contenu des tours qui méritent d'être dits.
+     */
+    private val quietLaps: Boolean get() = quietRace && measured.enabled
 
     private fun lapMessage(
         e: SessionEvent.LapCompleted,
@@ -450,8 +457,10 @@ class RaceEngineer {
         if (finished) return msg(sb.toString().trim(), Priority.NORMAL, MessageCategory.LAP).also { lastLapDetails = it.text; lapNoteworthy = true }
 
         currentPosition?.let {
-            sb.append("Tu es P$it. ")
-            if (!quietLaps) short.append("P$it. ")
+            if (!quietLaps) {
+                sb.append("Tu es P$it. ")
+                short.append("P$it. ")
+            }
         }
 
         val totalLaps = snapshot.packet?.totalLaps?.takeIf { it > 0 } ?: plan?.totalLaps ?: 0
@@ -723,7 +732,7 @@ class RaceEngineer {
         val pos = measured.position
         if (pos != null && measured.settled && !raceOver && snapshotLap >= 1 && pos != announcedPosition &&
             lastMoveMs?.let { nowMs - it >= POSITION_GROUP_MS } != false &&
-            lastPositionAnnounceMs?.let { nowMs - it >= POSITION_ANNOUNCE_MS } != false
+            lastPositionAnnounceMs?.let { nowMs - it >= if (quietLaps) QUIET_POSITION_ANNOUNCE_MS else POSITION_ANNOUNCE_MS } != false
         ) {
             val before = announcedPosition
             announcedPosition = pos
@@ -895,6 +904,12 @@ class RaceEngineer {
 
         /** Au plus une annonce de position toutes les 8 s. */
         const val POSITION_ANNOUNCE_MS = 8_000L
+
+        /**
+         * Course silencieuse : au plus une place toutes les 30 s (course du 25/10 : 30 annonces de place en 7 tours, parfois
+         * deux d'affilée). La place exacte reste à l'écran et sur « position ? ».
+         */
+        const val QUIET_POSITION_ANNOUNCE_MS = 30_000L
 
         /** Position inchangée depuis 3 s (en plus des 3 s de stabilité de la mesure) : dépassements multiples regroupés. */
         const val POSITION_GROUP_MS = 3_000L

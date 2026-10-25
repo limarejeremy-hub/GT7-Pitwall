@@ -266,7 +266,12 @@ réglée (8 s par défaut).
   - un avis sur les pneus ;
   - l'appel au stand et toutes les alertes critiques, toujours prioritaires.
 
-  En qualification et avec « rapports de tour détaillés », rien ne change.
+  En qualification, rien ne change. Avec « rapports de tour détaillés », seul le contenu des tours annoncés change :
+  la course du 25/10 a montré que ce réglage contournait le silence (chaque tour annoncé en entier).
+- **Course du 25/10 (journal réel)** : 30 annonces de place en 7 tours, parfois deux d'affilée (« P6. P5. »).
+  - En course silencieuse, au plus une place toutes les 30 s, toujours celle du moment. Elle reste à l'écran et
+    s'obtient aussi par « position ? ».
+  - « Températures des pneus stabilisées » n'est plus dit ; les avis (« tes pneus chauffent ») le restent.
 - **Positions périmées** : une place annoncée est remplacée par la plus récente si elle attend encore. Elle expire après
   4 s, et n'est jamais mise en file derrière une phrase déjà en cours. La place n'est plus répétée dans le message du
   tour.
