@@ -402,9 +402,10 @@ class VoskVoiceInput(
         val now = SystemClock.elapsedRealtime()
         val thinking = isThinking()
         conversation.thinking(thinking, now)
-        val busy = googleSpeech?.listening == true || pendingCommand != null || now - lastVoiceActivityMs < VOICE_GRACE_MS || thinking
-        if (busy) return
-        if (conversation.tick(now) != null) closeConversation(byDriver = false)
+        // Le pilote parle (ou sa phrase est en cours de traitement) : prolongation bornée par la fenêtre elle-même, pour que
+        // le double bip vienne toujours après le silence prévu (essai PS5 : le bruit du jeu le repoussait sans fin).
+        val talking = googleSpeech?.listening == true || pendingCommand != null || now - lastVoiceActivityMs < VOICE_GRACE_MS
+        if (conversation.tick(now, driverTalking = talking) != null) closeConversation(byDriver = false)
     }
 
     /** Ouvre la conversation (« radio » dit seul, ou en tête d'une demande). */
@@ -523,7 +524,8 @@ class VoskVoiceInput(
                     val text = textOf(rec.result)
                     if (text.isNotBlank()) lastSpeechEndMs = SystemClock.elapsedRealtime()
                     withContext(Dispatchers.Main) { onCommandText(text) }
-                } else if (partialOf(rec.partialResult).isNotBlank()) {
+                } else if (ConversationWindow.isIntelligible(partialOf(rec.partialResult))) {
+                    // Un « [unk] » du bruit du jeu n'est pas le pilote qui parle.
                     val now = SystemClock.elapsedRealtime()
                     // Le pilote est en train de parler : la conversation ne se referme pas au milieu de sa phrase.
                     if (now - lastVoiceActivityMs > VOICE_GRACE_MS) lastSpeechStartMs = now

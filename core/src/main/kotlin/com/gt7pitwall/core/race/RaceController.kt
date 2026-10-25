@@ -574,7 +574,16 @@ class RaceController(
                 out += answer(tyres(command, lap))
                 out += replanOrWait()
             }
-            is DriverCommand.Ask -> out += if (command.query == DriverQuery.OBLIGATIONS) {
+            is DriverCommand.Ask -> out += if (command.query == DriverQuery.DETAILS && engineer.quietRace) {
+                // Analyse complète, seulement sur demande : tour, carburant, pneus et plan.
+                answer(
+                    listOfNotNull(
+                        engineer.answer(DriverQuery.DETAILS, snapshot, fuel).text,
+                        tyreSummary().takeIf { snapshot.packet != null },
+                        plan?.let { engineer.answer(DriverQuery.PLAN, snapshot, fuel).text },
+                    ),
+                )
+            } else if (command.query == DriverQuery.OBLIGATIONS) {
                 answer(listOf(obligationsSentence()))
             } else if (command.query == DriverQuery.TYRE_CHANGE) {
                 answer(listOf(tyreChangeSentence()))
@@ -584,6 +593,13 @@ class RaceController(
                 answer(listOf(tyreSummary()))
             } else {
                 listOf(engineer.handle(command, snapshot, fuel))
+            }.map { m ->
+                // Question simple en course : une ou deux phrases ; le détail reste sur « détails ».
+                if (engineer.quietRace && command.query !in DETAILED_QUERIES && m.category == MessageCategory.ANSWER) {
+                    m.copy(text = com.gt7pitwall.core.radio.Brevity.short(m.text))
+                } else {
+                    m
+                }
             }
             else -> out += engineer.handle(command, snapshot, fuel)
         }
@@ -2477,6 +2493,9 @@ class RaceController(
     private companion object {
         val INCIDENT_NOTE = Regex("(?i)accident|accroch|t[eê]te.?[aà].?queue|sortie de piste|touch[eé]|crash|abîm|abim")
         const val TYRE_QUESTION_PACKETS = 60 * 60
+
+        /** Réponses gardées entières : détail demandé, secteurs, règlement. */
+        val DETAILED_QUERIES = setOf(DriverQuery.DETAILS, DriverQuery.SECTORS, DriverQuery.OBLIGATIONS)
         const val AXLE_DIFF_C = 5f
         const val SIDE_DIFF_C = 5f
         const val TREND_DIFF_C = 8f

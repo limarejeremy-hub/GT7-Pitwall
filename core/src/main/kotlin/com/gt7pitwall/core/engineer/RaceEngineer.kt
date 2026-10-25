@@ -152,6 +152,17 @@ class RaceEngineer {
      */
     var shortLapReports: Boolean = true
 
+    /**
+     * Course : silence par défaut (essai PS5, l'ingénieur parlait trop). Un tour ordinaire n'est pas annoncé (le chrono
+     * reste à l'écran et sur « détails ») ; seuls un meilleur tour, le dernier tour, un carburant juste, un avis pneus
+     * ou une question passent. La position n'est plus répétée dans le message du tour : l'annonce de position, fraîche,
+     * suffit. Sans effet en qualification et avec les rapports détaillés.
+     */
+    var quietRace: Boolean = false
+
+    /** Le dernier message de tour mérite d'être dit (voir [quietRace]). */
+    private var lapNoteworthy = true
+
     fun onUpdate(events: List<SessionEvent>, snapshot: SessionSnapshot, fuel: FuelReport?): List<EngineerMessage> {
         snapshot.packet?.let { fuelCapacity = it.fuelCapacity.takeIf { c -> c > 0f } }
         val out = mutableListOf<EngineerMessage>()
@@ -215,7 +226,7 @@ class RaceEngineer {
                     if (!finishedNow) boxMessage(event.lap.lapNumber + 1, fuel)?.let { out += it }
                     // À l'arrivée, seul « course terminée » est annoncé ; le détail du dernier tour reste sur « détails ».
                     val lapMsg = lapMessage(event, snapshot, fuel, finalLapNext, finishedNow)
-                    if (!finishedNow) out += lapMsg
+                    if (!finishedNow && (lapNoteworthy || !quietLaps)) out += lapMsg
                 }
             }
         }
@@ -393,6 +404,8 @@ class RaceEngineer {
         return msg(text, Priority.HIGH, MessageCategory.ANSWER)
     }
 
+    private val quietLaps: Boolean get() = quietRace && shortLapReports && measured.enabled
+
     private fun lapMessage(
         e: SessionEvent.LapCompleted,
         snapshot: SessionSnapshot,
@@ -403,6 +416,7 @@ class RaceEngineer {
         val lap = e.lap
         val sb = StringBuilder()
         val time = lap.timeMs
+        var noteworthy = finalLapNext
         if (time != null) {
             sb.append("Tour ${lap.lapNumber} : ${lapTimeSpeech(time)}. ")
             // Sous la pluie, on compare aux tours sous la pluie, pas au meilleur tour sur le sec.
@@ -414,7 +428,7 @@ class RaceEngineer {
             when {
                 best == null && raining -> sb.append("Premier tour de référence sous la pluie. ")
                 best == null -> Unit
-                time < best -> sb.append("Meilleur tour, ${deltaSpeech(best - time)} de mieux ! ")
+                time < best -> sb.append("Meilleur tour, ${deltaSpeech(best - time)} de mieux ! ").also { noteworthy = true }
                 time == best -> sb.append("Égalité avec ton meilleur. ")
                 time - best < 10 -> sb.append("À moins d'un centième de ton meilleur. ")
                 else -> sb.append("Plus ${deltaSpeech(time - best)} sur ton meilleur. ")
@@ -431,12 +445,13 @@ class RaceEngineer {
         tyres.onLap(snapshot.laps, stintContext.copy(raining = raining))?.let {
             sb.append(it).append(' ')
             short.append(it).append(' ')
+            noteworthy = true
         }
-        if (finished) return msg(sb.toString().trim(), Priority.NORMAL, MessageCategory.LAP).also { lastLapDetails = it.text }
+        if (finished) return msg(sb.toString().trim(), Priority.NORMAL, MessageCategory.LAP).also { lastLapDetails = it.text; lapNoteworthy = true }
 
         currentPosition?.let {
             sb.append("Tu es P$it. ")
-            short.append("P$it. ")
+            if (!quietLaps) short.append("P$it. ")
         }
 
         val totalLaps = snapshot.packet?.totalLaps?.takeIf { it > 0 } ?: plan?.totalLaps ?: 0
@@ -475,11 +490,12 @@ class RaceEngineer {
                         is FuelAdvice.Comfortable -> a.marginLaps < 1f
                         else -> false
                     }
-                    if (tight) short.append(fuelSentence(fuel, verbose = false))
+                    if (tight) short.append(fuelSentence(fuel, verbose = false)).also { noteworthy = true }
                 }
             }
         }
         val priority = if (finalLapNext) Priority.HIGH else Priority.NORMAL
+        lapNoteworthy = noteworthy || (askPositionEachLap && radioLevel == RadioLevel.FULL && measured.position == null)
         lastLapDetails = sb.toString().trim()
         if (shortLapReports) {
             sb.setLength(0)
@@ -714,7 +730,12 @@ class RaceEngineer {
             lastPositionAnnounceMs = nowMs
             if (before != null) {
                 // Clé propre à l'annonce : la même phrase plus tard dans la course n'est pas un doublon.
-                out += EngineerMessage("P$pos.", Priority.NORMAL, MessageCategory.RADIO, dedupKey = "position:$nowMs")
+                // Sujet commun : une place plus récente remplace celle qui attend encore ; validité courte (essai PS5 :
+                // des places dites avec retard, déjà fausses).
+                out += EngineerMessage(
+                    "P$pos.", Priority.NORMAL, MessageCategory.RADIO, dedupKey = "position:$nowMs",
+                    topic = POSITION_TOPIC, ttlMs = POSITION_TTL_MS,
+                )
             }
         }
         return out
@@ -877,5 +898,11 @@ class RaceEngineer {
 
         /** Position inchangée depuis 3 s (en plus des 3 s de stabilité de la mesure) : dépassements multiples regroupés. */
         const val POSITION_GROUP_MS = 3_000L
+
+        /** Sujet des annonces de position (voir [com.gt7pitwall.core.radio.RadioPacer]). */
+        const val POSITION_TOPIC = "position"
+
+        /** Une place annoncée plus de 4 s après sa mesure est périmée : elle n'est plus dite. */
+        const val POSITION_TTL_MS = 4_000L
     }
 }

@@ -215,7 +215,9 @@ class RadioConversation(
         val reply = outcome.text?.let {
             RadioAi.parse(
                 it, turn.question, ctx.facts, history, previousAnswers = emptyList(), extraSource = EngineerPrompt.source(ctx),
-                maxSentences = CLOUD_SENTENCES, maxChars = CLOUD_CHARS,
+                // Question simple : la conclusion seule ; l'explication quand le pilote la demande (essai PS5).
+                maxSentences = if (com.gt7pitwall.core.radio.Brevity.wantsDetail(turn.question)) CLOUD_SENTENCES else com.gt7pitwall.core.radio.Brevity.SIMPLE_SENTENCES,
+                maxChars = CLOUD_CHARS,
             )
         }
         val latency = outcome.attempts.sumOf { it.latencyMs }

@@ -236,3 +236,81 @@ remplacent pas un essai réel** avec le casque PS5 et le Fold.
 8. **Alertes** : en pleine conversation, l'alerte carburant critique passe toujours, sans être coupée.
 9. **Latence** : lis les lignes `Latence :` du journal (étape la plus lente).
 10. **Non-régression** : bips, Discord, Vosk et Google, écran éteint, Fold, pneus, carburant, positions, plans d'arrêt.
+
+## 8. Retour d'essai PS5 : corrections
+
+Aucun journal de l'essai n'a été transmis. Les défauts ci-dessous viennent du compte rendu du pilote ; chacun est
+reproduit par un test (`Ps5RadioRegressionTest`, `TyresKeptTest`), sans données de course inventées.
+
+### Bip de fermeture absent (corrigé)
+
+Cause trouvée dans le code : l'application interroge la fenêtre de conversation toutes les 250 ms et lui signale à
+chaque fois « pas de réflexion en cours ». Chaque signal repoussait l'échéance de 8 s : la conversation ne se
+refermait donc jamais d'elle-même, et le double bip n'arrivait pas. Deux autres causes possibles ont aussi été fermées :
+
+- le bruit du jeu reconnu comme une phrase en cours prolongeait l'écoute sans limite. Désormais, un fragment `[unk]`
+  ne compte pas, et la prolongation est limitée à 6 s après l'échéance ;
+- un état « l'ingénieur parle » ou « réflexion » resté coincé suspendait tout. La suspension est maintenant bornée à
+  45 s.
+
+Une vraie réflexion (Gemini) ou une phrase de l'ingénieur suspend toujours le délai, qui repart ensuite pour la durée
+réglée (8 s par défaut).
+
+### Ingénieur trop bavard (corrigé)
+
+- **Course : silence par défaut** (`quietRace`, activé dans l'application). Un tour ordinaire n'est plus annoncé : le
+  chrono reste à l'écran et dans « détails ». Restent annoncés :
+  - un meilleur tour ;
+  - le dernier tour et l'arrivée ;
+  - un carburant juste ;
+  - un avis sur les pneus ;
+  - l'appel au stand et toutes les alertes critiques, toujours prioritaires.
+
+  En qualification et avec « rapports de tour détaillés », rien ne change.
+- **Positions périmées** : une place annoncée est remplacée par la plus récente si elle attend encore. Elle expire après
+  4 s, et n'est jamais mise en file derrière une phrase déjà en cours. La place n'est plus répétée dans le message du
+  tour.
+- **Questions simples : une ou deux phrases** (carburant, pneus, stratégie, rythme…). Le rappel du règlement, le détail
+  du calcul et les « pas encore assez de tours » sont retirés. L'IA est limitée à 2 phrases, et à 4 si le pilote
+  demande le détail (« pourquoi », « explique », « analyse complète », « bilan complet », « détails »). « Analyse
+  complète » donne alors tour, carburant, pneus et plan.
+
+### Pourquoi la voix reste robotique : limites identifiées
+
+| Maillon | Limite précise | Ce qui a été fait |
+|---|---|---|
+| Texte (moteur) | Phrases télégraphiques générées par gabarit (« Tour 4 : 37 secondes 8. Plus 11 centièmes… ») : c'est le contenu qui sonne machine, quelle que soit la voix | Moins de messages, plus courts. La reformulation naturelle (`Persona`) reste limitée aux réponses |
+| Gemini | Ne produit que du texte. Il n'a aucune prise sur l'intonation ; sa réponse est attendue en entier, vérifiée puis tronquée (`RadioAi`) avant d'être dite | Réponses limitées à 2 phrases sauf demande explicite |
+| Synthèse Android | Voix par défaut de la langue, pas forcément la meilleure installée. La prosodie n'est réglable que par débit et hauteur pour tout le message ; pas d'emphase ni de respiration | Choix automatique de la meilleure voix française **locale** installée (`VoiceChoice`), sur le Fold et pour Discord |
+| Architecture | Chaîne en série : reconnaissance → texte → synthèse. Rien n'est diffusé en flux. Pour Discord, la phrase entière est synthétisée dans un fichier avant d'être envoyée | Inchangé (voir le chemin ci-dessous) |
+
+### Comparaison avec Cornelius
+
+Cornelius utilise un modèle **parole vers parole** en temps réel (OpenAI Live, payant, clé côté serveur). La voix est
+générée directement par le modèle, en flux, avec l'intonation du sens de la phrase. Ce qui le rend naturel tient
+surtout à ce modèle, pas à son code. Ses mécanismes de conversation, eux, ont été repris dans Pitwall par des principes
+réimplémentés : minuterie de silence qui ne compte que si personne ne parle ni ne réfléchit, garde anti-écho,
+consignes dédupliquées, mémoire des seuls faits explicites. Sa voix, elle, ne peut pas être reprise sans un service
+vocal payant.
+
+### Chemin réaliste, sans service payant
+
+1. **Fait dans cette version** : moins de paroles, réponses courtes, et la meilleure voix française installée.
+2. **À faire par toi, gratuit** : Paramètres Android → Synthèse vocale → Services vocaux Google → Installer les données
+   vocales → Français (France). Choisis la voix la plus naturelle et vérifie qu'elle est téléchargée (hors ligne).
+   Pitwall la prendra automatiquement.
+3. **Prochaine étape proposée, à valider** : voix neuronale locale avec `sherpa-onnx` (déjà dans l'APK) et une voix
+   Piper française. Elle est gratuite et hors ligne, mais ajoute environ 60 Mo et demande un essai d'écoute ainsi que
+   la vérification de sa licence (voir §4).
+4. **Diffusion en flux** : dire la première phrase de Gemini dès qu'elle arrive. Cela réduirait l'attente, sans coût
+   supplémentaire, mais n'est pas fait.
+5. **Parole vers parole** (Gemini Live ou OpenAI Live) : ce serait le plus naturel, mais c'est payant ou limité par
+   quota. Rien n'est activé : ton accord est nécessaire avant tout essai.
+
+### À valider sur PS5
+
+- Le double bip arrive environ 8 s après la dernière réponse, y compris avec le son du jeu fort.
+- Plus aucune place annoncée en retard. En course, l'ingénieur se tait sur les tours ordinaires.
+- « Combien d'essence ? » reçoit une réponse en deux phrases au plus ; « analyse complète » donne le détail.
+- La voix retenue s'affiche-t-elle mieux à l'écoute ? Comparer avant et après l'installation de la voix Google
+  haute qualité.

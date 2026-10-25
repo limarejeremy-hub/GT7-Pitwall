@@ -227,7 +227,8 @@ object DriverCommandParser {
             has(t, "pneu", "gomme", "temperature") -> DriverQuery.TYRES
             has(t, "strategie", "plan") -> DriverQuery.PLAN
             has(t, "obligation", "reglement") -> DriverQuery.OBLIGATIONS
-            has(t, "detail") -> DriverQuery.DETAILS
+            // « Analyse complète », « bilan complet », « fais-moi le point complet » : le détail, seulement sur demande.
+            has(t, "detail", "analyse", "bilan", "point complet") -> DriverQuery.DETAILS
             has(t, "meilleur", "record") -> DriverQuery.BEST_LAP
             has(t, "dernier tour", "chrono", "temps") -> DriverQuery.LAST_LAP
             has(t, "rythme", "regularite", "regulier", "reguliere", "constant", "moyenne") -> DriverQuery.PACE
@@ -401,7 +402,7 @@ object DriverCommandParser {
             "si", "on", "quoi", "doit", "faut", "sont", "celui", "ceux", "ils", "autres", "devant", "derrière", "moi", "nous",
             "rentrer", "rentrent", "maintenant", "mettre", "prolonger", "relais", "son", "leur",
             // Pneus conservés (essai PS5) : « j'ai gardé les mêmes pneus », « pas touché aux pneus », « rien changé ».
-            "gardé", "garde", "conservé", "même", "touché", "rien", "changés", "changement", "train", "c'est", "les", "aux", "pareil", "sans",
+            "analyse", "bilan", "complet", "complète", "point", "gardé", "garde", "conservé", "même", "touché", "rien", "changés", "changement", "train", "c'est", "les", "aux", "pareil", "sans",
             // Fin de la conversation continue : « terminé », « fin de communication », « merci, terminé ».
             "merci", "fin", "communication", "transmission", "terminée",
         )

@@ -123,6 +123,13 @@ class RadioPacer(
     }
 
     companion object {
+        /**
+         * Annonce à ne pas mettre dans la file de la voix : une place dite derrière une autre phrase arrive déjà fausse
+         * (essai PS5). Elle reste affichée ; la prochaine place stable sera annoncée.
+         */
+        fun dropBeforeSpeech(m: EngineerMessage, voiceBusy: Boolean): Boolean =
+            voiceBusy && m.topic == com.gt7pitwall.core.engineer.RaceEngineer.POSITION_TOPIC
+
         /** Frein à plus de 25 % de la course de la pédale. */
         const val BRAKE_BUSY = 64
         const val STEER_BUSY_RAD = 0.35f

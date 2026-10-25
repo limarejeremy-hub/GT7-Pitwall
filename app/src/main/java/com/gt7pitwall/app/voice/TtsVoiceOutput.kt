@@ -53,6 +53,11 @@ class TtsVoiceOutput(context: Context) : VoiceOutput, TextToSpeech.OnInitListene
 
     private val messages = ConcurrentHashMap<String, EngineerMessage>()
 
+    /** Voix française retenue (la meilleure installée), ou null : voix par défaut du moteur. */
+    @Volatile
+    var voiceName: String? = null
+        private set
+
     private val ids = AtomicInteger()
     private val pending = mutableListOf<EngineerMessage>()
     private val tts = TextToSpeech(context.applicationContext, this)
@@ -92,6 +97,7 @@ class TtsVoiceOutput(context: Context) : VoiceOutput, TextToSpeech.OnInitListene
                 .build(),
         )
         val result = tts.setLanguage(Locale.FRANCE)
+        voiceName = tts.useBestFrenchVoice()
         _state.value = if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
             VoiceState.FRENCH_MISSING
         } else {

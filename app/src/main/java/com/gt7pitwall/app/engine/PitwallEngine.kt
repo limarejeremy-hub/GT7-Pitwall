@@ -137,6 +137,14 @@ class PitwallEngine(
     private val mutex = Mutex()
     private val conversation = RadioConversation(race, mutex)
 
+    init {
+        // Course : silence par défaut, seuls les tours qui comptent sont annoncés (essai PS5).
+        race.engineer.quietRace = true
+    }
+
+    /** L'ingénieur parle déjà (téléphone ou Discord) : une place mise en file serait périmée à son tour. */
+    var voiceBusy: () -> Boolean = { false }
+
     private val _rules = MutableStateFlow(race.rules)
     val rules: StateFlow<RaceRules> = _rules.asStateFlow()
 
@@ -552,7 +560,11 @@ class PitwallEngine(
         journalMessage(message)
         _radio.update { (listOf(message) + it).take(MAX_RADIO_LOG) }
         // Les paroles du pilote sont seulement affichées.
-        if (voiceEnabled && message.category != MessageCategory.DRIVER) voice.speak(message)
+        if (voiceEnabled && message.category != MessageCategory.DRIVER &&
+            !com.gt7pitwall.core.radio.RadioPacer.dropBeforeSpeech(message, voiceBusy())
+        ) {
+            voice.speak(message)
+        }
         if (message.expectsReply) voiceInput?.expectReply()
     }
 

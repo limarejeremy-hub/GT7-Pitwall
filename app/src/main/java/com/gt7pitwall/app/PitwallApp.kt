@@ -104,6 +104,7 @@ class PitwallApp : Application() {
             discord.onAudible = it::onAudible
             it.voiceEnabled = settings.voiceEnabled
             it.detailedLapReports = settings.detailedLapReports
+            it.voiceBusy = { speaking.value }
             it.askPositionEachLap = { settings.askPositionEachLap && voiceInput.isRunning }
             it.languageModel = gemini
         }
