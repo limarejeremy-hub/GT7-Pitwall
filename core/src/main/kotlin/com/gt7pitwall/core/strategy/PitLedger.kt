@@ -79,8 +79,25 @@ class PitLedger {
         awaitingTyreChangeAnswer = false
     }
 
-    fun recordRefuel(lap: Int, amount: Float): PitStopRecord {
+    /**
+     * Rapproche une déclaration faite *pendant le passage au stand* du ravitaillement GT7 qui arrive
+     * quelques secondes plus tard. Le contrôleur donne l'identifiant de la déclaration de CETTE visite ;
+     * on ne fusionne jamais deux arrêts distincts au seul motif que leurs tours sont voisins.
+     */
+    fun recordRefuel(lap: Int, amount: Float, declaredInThisVisitNumber: Int? = null): PitStopRecord {
         pending = null
+        if (declaredInThisVisitNumber != null) {
+            val i = stops.indexOfLast {
+                it.number == declaredInThisVisitNumber && it.evidence == StopEvidence.DRIVER_DECLARED &&
+                    it.lap - lap in 0..1
+            }
+            if (i >= 0) {
+                val previous = stops[i]
+                val measured = previous.copy(lap = lap, evidence = StopEvidence.REFUEL, fuelAdded = amount)
+                stops[i] = measured
+                return measured
+            }
+        }
         return add(lap, StopEvidence.REFUEL, amount)
     }
 
