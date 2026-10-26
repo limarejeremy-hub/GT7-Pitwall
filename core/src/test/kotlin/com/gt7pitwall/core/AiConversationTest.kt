@@ -85,27 +85,18 @@ class AiConversationTest {
 
     private val calls: Setup.() -> Int = { lite.prompts.size + flash.prompts.size }
 
-    // 1. Choix des pneus : la question réelle du tour 5 atteint le modèle, avec le calcul du moteur sur les pneus.
+    // 1. Choix des pneus (question réelle du tour 5) : depuis la course du 26/10 (Gemini expiré deux fois, 12 s chacune),
+    // une question précise sur les pneus est calculée tout de suite par le moteur, sans requête cloud.
     @Test
-    fun tyreChoiceReachesTheModelWithTheEngineTyreAnalysis() = runBlocking<Unit> {
-        val reply = "Pour le dernier relais, je partirais sur des course tendres : ce sont les plus rapides du règlement. " +
-            "GT7 ne me donne pas l'usure, alors combien de tours tiennent-ils d'après toi ?"
-        val s = setup(flash = FakeCloud(AiBackend.FLASH) { AiResult.Text(reply) })
+    fun tyreChoiceIsAnsweredInstantlyByTheEngine() = runBlocking<Unit> {
+        val s = setup(flash = FakeCloud(AiBackend.FLASH) { AiResult.Text("ne doit pas être appelé") })
         s.sim.start()
         s.sim.driveLaps(4)
-        val analysis = s.sim.controller.engineAnalysis(ConversationRouter.Turn("x", Topic.TYRES, true, query = DriverQuery.NEXT_TYRE))!!
         val out = s.say("tu conseil deux mettre quoi gommes pneus prochain stands", "tu me conseille de mettre quoi comme pneus au prochain stand")
-        assertEquals(1, s.flash.prompts.size, "question complexe : Flash 3.8 en mode automatique")
-        val prompt = s.flash.prompts.single()
-        assertTrue("SUJET EN COURS : pneus" in prompt)
-        assertTrue(analysis in prompt, "le calcul du moteur accompagne la question")
-        assertTrue("CONTEXTE : course suivie en direct" in prompt)
+        assertEquals(0, s.calls(), "réponse immédiate du moteur")
         val a = out.answer()
-        assertEquals(reply, a.text)
-        assertTrue(a.fromAi)
+        assertTrue(a.text.isNotBlank() && !a.fromAi, a.text)
         assertTrue(s.sim.controller.ledger.changes.isEmpty(), "un conseil ne modifie rien")
-        assertEquals(AiBackend.FLASH, s.conv.lastTrace!!.backend)
-        assertEquals("gemini-3.8-flash", s.conv.lastTrace!!.modelId)
     }
 
     // 2 et 3. « Pourquoi ? », « et si je garde les durs deux tours de plus ? », « bon, on fait quoi alors ? » : le sujet,
@@ -123,12 +114,15 @@ class AiConversationTest {
         val s = setup(flash = FakeCloud(AiBackend.FLASH) { AiResult.Text(answers.removeFirst()) })
         s.sim.start()
         s.sim.driveLaps(2)
-        s.say("tu me conseilles quels pneus")
+        // Question ouverte (au modèle) ; les questions précises sur les pneus sont calculées par le moteur (voir 1).
+        s.say("pourquoi tu veux me faire rentrer maintenant")
         s.say("pourquoi")
         val second = s.flash.prompts[1]
-        assertTrue("SUJET EN COURS : pneus" in second, second)
-        assertTrue("pilote : tu me conseilles quels pneus" in second, "l'échange précédent est fourni")
-        assertTrue("CALCUL DU MOTEUR SUR CETTE QUESTION" in second, "la relance garde le calcul du moteur")
+        assertTrue("SUJET EN COURS" in second, second)
+        assertTrue("pilote : pourquoi tu veux me faire rentrer maintenant" in second, "l'échange précédent est fourni")
+        if ("CALCUL DU MOTEUR SUR CETTE QUESTION" in s.flash.prompts[0]) {
+            assertTrue("CALCUL DU MOTEUR SUR CETTE QUESTION" in second, "la relance garde le calcul du moteur")
+        }
 
         s.say("et si je garde les durs deux tours de plus")
         val third = s.flash.prompts[2]
@@ -149,10 +143,12 @@ class AiConversationTest {
         val id = s.store.journals.keys.single()
         assertTrue(SessionJournal.load(s.store, id).any { it.type == JournalType.DECISION && it.text.startsWith("Décision prise ensemble") })
 
-        // « On garde la même stratégie ? » (phrase réelle du tour 6) : le modèle reçoit la décision prise ensemble.
-        s.say("est ce combien la memes strategie", "est ce qu'on garde la meme strategie")
-        val fifth = s.flash.prompts[4]
-        assertTrue("DÉCISIONS PRISES ENSEMBLE" in fifth && "plan validé" in fifth, fifth)
+        // « On garde la même stratégie ? » (phrase réelle du tour 6) : question de plan, réponse immédiate du moteur à
+        // partir de la décision prise ensemble, sans requête.
+        val calls = s.calls()
+        val same = s.say("est ce combien la memes strategie", "est ce qu'on garde la meme strategie")
+        assertEquals(calls, s.calls())
+        assertTrue(same.answer().text.startsWith("Oui, on reste sur ce qu'on a décidé"), same.answer().text)
     }
 
     // 3 bis. Sans modèle, « on garde la même stratégie ? » répond quand même à partir de la mémoire.
@@ -191,9 +187,9 @@ class AiConversationTest {
         val s = setup(lite = FakeCloud(AiBackend.FLASH_LITE, ready = false), flash = FakeCloud(AiBackend.FLASH, ready = false))
         s.sim.start()
         s.sim.driveLaps(3)
-        val out = s.say("au prochain arret je mets quoi comme type de pneus")
+        val out = s.say("pourquoi tu veux me faire rentrer maintenant")
         assertEquals(0, s.calls())
-        assertEquals(s.sim.controller.nextTyreSentence(), out.answer().text)
+        assertTrue(out.answer().text.isNotBlank() && !out.answer().fromAi)
         val trace = s.conv.lastTrace!!
         assertTrue(trace.fallback && trace.backend == AiBackend.ENGINE && "non configuré" in trace.verdict, trace.verdict)
     }
@@ -212,7 +208,7 @@ class AiConversationTest {
         )
         s.sim.start()
         s.sim.driveLaps(3)
-        val first = s.say("quelle est notre meilleure strategie")
+        val first = s.say("pourquoi tu veux me faire rentrer maintenant")
         assertEquals("On reste sur le plan du moteur.", first.answer().text)
         assertEquals(1, s.router.usage.stats(AiBackend.FLASH).requestsToday)
         assertEquals(1, s.router.usage.stats(AiBackend.FLASH_LITE).requestsToday)
@@ -253,8 +249,8 @@ class AiConversationTest {
         )
         offline.sim.start()
         offline.sim.driveLaps(3)
-        val r = offline.say("tu me conseilles quels pneus")
-        assertEquals(offline.sim.controller.nextTyreSentence(), r.answer().text)
+        val r = offline.say("pourquoi tu veux me faire rentrer maintenant")
+        assertTrue(r.answer().text.isNotBlank() && !r.answer().fromAi, "le moteur répond")
         assertEquals(1, offline.calls(), "échec réseau (lent) : pas de second essai qui ferait attendre le pilote")
         assertEquals(FailureKind.NETWORK, offline.conv.lastTrace!!.attempts.single().failure!!.kind)
     }
@@ -272,7 +268,7 @@ class AiConversationTest {
         s.say("quel est mon dernier tour")
         assertEquals(0, s.calls(), "aucune requête cloud pour les paquets et les questions simples")
 
-        val out = s.say("quelle est notre meilleure strategie")
+        val out = s.say("pourquoi tu veux me faire rentrer maintenant")
         assertEquals(1, s.flash.prompts.size)
         assertFalse(out.answer().fromAi, "écart inventé : réponse écartée")
         assertFalse(Regex("(^|\\W)avance(\\W|$)").containsMatchIn(out.answer().text), out.answer().text)

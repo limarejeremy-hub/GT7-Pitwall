@@ -94,6 +94,10 @@ interface RaceStorage {
     fun loadJournal(sessionId: String): List<String> = emptyList()
     fun journalSessionIds(): List<String> = emptyList()
 
+    /** Circuits appris par Pitwall (absents de la base communautaire), JSON ; null au premier lancement. */
+    fun loadLearnedTracks(): String? = null
+    fun saveLearnedTracks(json: String) {}
+
     /** Persisted Driver DNA profiles; independent from race session archives. */
     fun loadDriverBook(): String? = null
     fun saveDriverBook(json: String) {}
@@ -211,6 +215,10 @@ class RaceController(
     var trackCandidates: List<Course> = emptyList()
         private set
     private var candidatesAnnounced = false
+
+    init {
+        database.restoreLearned(Gt7Database.learnedFrom(storage?.loadLearnedTracks()))
+    }
 
     /**
      * Paquets restants pendant lesquels le plan est gelé après la ligne d'un tour d'arrêt prévu : selon le circuit,
@@ -2674,6 +2682,9 @@ class RaceController(
     private companion object {
         val INCIDENT_NOTE = Regex("(?i)accident|accroch|t[eê]te.?[aà].?queue|sortie de piste|touch[eé]|crash|abîm|abim")
         const val TYRE_QUESTION_PACKETS = 60 * 60
+
+        /** Un tour plus court n'est pas un circuit (tour incomplet, chargement). */
+        const val MIN_LEARN_LAP_M = 1_000f
         const val POSITION_CALM_MS = 30_000L
 
         /** Réponses gardées entières : détail demandé, secteurs, règlement. */
@@ -2975,6 +2986,19 @@ class RaceController(
 
     // ------------------------------------------------------------------ Mémoire et circuit
 
+    /** Nouveau circuit appris, enregistré sur le téléphone et retenu pour l'épreuve en cours. */
+    private fun learnTrack(name: String, distM: Float): List<EngineerMessage> {
+        val c = database.learn(name, distM.roundToInt())
+        storage?.saveLearnedTracks(Gt7Database.learnedJson(database.learned))
+        applyRules(rules.copy(trackId = c.id))
+        journal.record(
+            JournalType.DECISION, JournalSource.ENGINE, "Circuit appris : ${c.name}",
+            decision = "absent de la base communautaire ; longueur mesurée sur un tour complet",
+            details = mapOf("longueur_m" to c.lengthM.toString(), "identifiant" to c.id.toString()),
+        )
+        return listOf(EngineerMessage("Nouveau circuit enregistré : ${c.name}.", Priority.INFO, MessageCategory.RADIO))
+    }
+
     private fun learn(events: List<SessionEvent>): List<EngineerMessage> {
         val out = mutableListOf<EngineerMessage>()
         val p = tracker.snapshot.packet ?: return out
@@ -2991,6 +3015,29 @@ class RaceController(
                 continue
             }
             val dist = e.lap.distanceM ?: continue
+            if (dist < MIN_LEARN_LAP_M) continue
+            // Épreuve Sport dont le circuit publié manque à la base (SUGO à sa sortie, le 15/10) : la longueur seule
+            // désignerait à tort un circuit voisin (Laguna Seca, 3,6 km, pour SUGO, 3,7 km). Le circuit est appris sous
+            // son nom publié, avec la longueur mesurée.
+            val published = edition?.takeIf { profile.id.series != Series.OTHER }?.trackName?.value
+            if (published != null) {
+                val named = com.gt7pitwall.core.sport.ScheduleBuilder.matchTrack(published, database)
+                val byLength = database.coursesMatching(dist)
+                val pick = when {
+                    named.size == 1 -> named[0]
+                    named.size > 1 -> named.filter { n -> byLength.any { it.id == n.id } }.singleOrNull()
+                    else -> null
+                }
+                if (pick != null) {
+                    applyRules(rules.copy(trackId = pick.id))
+                    out += EngineerMessage("Circuit reconnu : ${pick.label}.", Priority.NORMAL, MessageCategory.RADIO)
+                    continue
+                }
+                if (named.isEmpty()) {
+                    out += learnTrack(published, dist)
+                    continue
+                }
+            }
             val found = database.coursesMatching(dist)
             when {
                 found.size == 1 -> {

@@ -56,6 +56,11 @@ class SportScheduleRepository(context: Context, private val database: Gt7Databas
         }
     }
 
+    /** Base de voitures et circuits mise à jour : les noms de circuits publiés sont rapprochés de nouveau. */
+    fun rebuildNow() {
+        scope.launch { rebuild() }
+    }
+
     /** Bouton « Actualiser » : lecture immédiate (toujours limitée à une requête à la fois). */
     fun refreshNow() {
         scope.launch { fetch() }
