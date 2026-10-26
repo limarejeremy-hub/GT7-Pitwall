@@ -650,7 +650,7 @@ class RaceController(
         // « Course » seul, juste après « tendres : course, sport ou confort ? » : c'est la réponse.
         tyreFamilyAnswer(original)?.let { return listOf(echo) + voiceCommand(it, it.text, source) }
         // « Moyens », « medium », « course tendres » juste après « Tu as monté quelle gomme ? » : c'est la réponse.
-        compoundAnswer(original)?.let { return listOf(echo) + voiceCommand(it, it.text, source) }
+        (compoundAnswer(original) ?: compoundAnswer(text))?.let { return listOf(echo) + voiceCommand(it, it.text, source) }
         val cmd = DriverCommandParser.parse(text)
         return listOf(echo) + if (cmd == null) deliver(listOf(engineer.notUnderstood(text))) else voiceCommand(cmd, original, source)
     }
@@ -2764,6 +2764,7 @@ class RaceController(
 
     private fun tyres(c: DriverCommand.Tyres, lap: Int): List<String> {
         val compound = TyreCompound.fromSpeech(c.text, rules.allowedTyres, rules.requiredTyres, rulesConfirmed = profile.confirmed)
+            ?: familyFromContext(c, lap)
             ?: return ambiguousTyres(c)
         pendingTyreFamily = null
         val out = mutableListOf<String>()
@@ -2825,6 +2826,22 @@ class RaceController(
         return out
     }
 
+    /**
+     * « J'ai mis des mediums » en réponse à la question sur la gomme, ou « non, finalement des tendres » juste après une
+     * déclaration (course du 26/10) : la famille est celle des pneus actuels, sans seconde question. Hors de ce contexte,
+     * ou si le règlement l'exclut, la famille est demandée.
+     */
+    private fun familyFromContext(c: DriverCommand.Tyres, lap: Int): TyreCompound? {
+        if (c.atStart) return null
+        val t = DriverCommandParser.normalize(c.text)
+        val hardness = TyreCompound.hardnessIn(t) ?: return null
+        if (TyreCompound.familyIn(t) != null) return null
+        val answering = ledger.awaitingTyreDeclaration || ledger.changeForPassage(lap.coerceAtLeast(1)) != null
+        if (!answering) return null
+        val family = (ledger.currentTyre(rules.startTyre) ?: rules.startTyre)?.family ?: return null
+        return TyreCompound.of(family, hardness)?.takeIf { rules.allowedTyres.isEmpty() || it in rules.allowedTyres }
+    }
+
     /** Dureté dite sans famille, en attente de précision : « tendres » → « course, sport ou confort ? ». */
     private var pendingTyreFamily: Pair<DriverCommand.Tyres, TyreCompound.Hardness>? = null
     private var pendingTyreFamilyMs = 0L
@@ -2859,12 +2876,29 @@ class RaceController(
         if (!ledger.awaitingTyreDeclaration || pendingTyreFamily != null) return null
         val t = DriverCommandParser.normalize(text).replace(Regex("[.,!?;:]"), " ").replace(Regex("\\s+"), " ").trim()
         if (t.isEmpty() || t.split(' ').size > COMPOUND_ANSWER_MAX_WORDS) return null
-        if (DriverCommandParser.parse(t) is DriverCommand.Tyres) return null
         val named = TyreCompound.hardnessIn(t) != null || TyreCompound.entries.any { Regex("(^|\\s)${it.name.lowercase()}($|\\s)").containsMatchIn(t) } ||
             Regex("intermediaire|(^|\\s)(pluie|wet)($|\\s)").containsMatchIn(t)
         if (!named) return null
-        return DriverCommand.Tyres(if (Regex("(^|\\s)(pluie|wet)($|\\s)").containsMatchIn(t)) "pneus $t" else t, atStart = false)
+        if (Regex("(^|\\s)(pluie|wet)($|\\s)").containsMatchIn(t)) return DriverCommand.Tyres("pneus $t", atStart = false)
+        // Course du 26/10 : « medium » seul, réponse à la question sur la gomme. Sans famille dite, celle des pneus
+        // actuels (RS au départ → course) : la réponse ne relance pas une seconde question ; le pilote peut corriger
+        // (« non, sport mediums »). Famille inconnue ou contraire au règlement : la question de famille reste posée.
+        val hardness = TyreCompound.hardnessIn(t)
+        if (hardness != null && TyreCompound.familyIn(t) == null) {
+            val family = (ledger.currentTyre(rules.startTyre) ?: rules.startTyre)?.family
+            val guess = family?.let { TyreCompound.of(it, hardness) }
+            if (guess != null && (rules.allowedTyres.isEmpty() || guess in rules.allowedTyres)) {
+                return DriverCommand.Tyres("${family.spoken} ${hardness.spoken}", atStart = false)
+            }
+        }
+        return DriverCommand.Tyres(t, atStart = false)
     }
+
+    /**
+     * La phrase répond-elle à une question que l'ingénieur vient de poser (gomme montée, famille de gomme) ? Elle va
+     * alors directement au moteur, jamais écartée comme bout de phrase par la conversation (course du 26/10).
+     */
+    fun answersPendingQuestion(text: String): Boolean = compoundAnswer(text) != null || tyreFamilyAnswer(text) != null
 
     private fun tyreFamilyAnswer(text: String): DriverCommand.Tyres? {
         val (c, hardness) = pendingTyreFamily ?: return null

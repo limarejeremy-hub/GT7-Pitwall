@@ -84,6 +84,11 @@ class RadioConversation(
             mutex.withLock { race.raceMemory.retractLast(clock()) }
             return onUtterance(c.rest, c.rest, model, onThinking, addressed)
         }
+        // Réponse à une question en attente (« Tu as monté quelle gomme ? » → « medium ») : au moteur, sans détour.
+        // Course du 26/10 : « medium » était écarté comme bout de phrase et la gomme n'était jamais enregistrée.
+        if (mutex.withLock { race.answersPendingQuestion(heardFree) || race.answersPendingQuestion(text) }) {
+            return mutex.withLock { race.utterance(text, heardFree, source) }
+        }
         // Actes de dialogue (oubli, identité, préférence, désaccord, décision, hypothèse) : l'ingénieur répond lui-même.
         val cloudReady = cloud?.let { it.mode.cloudOrder(false).isNotEmpty() && it.available(false) } == true
         mutex.withLock { race.dialogue(heardFree, clock(), cloudReady) }?.let { return it }
