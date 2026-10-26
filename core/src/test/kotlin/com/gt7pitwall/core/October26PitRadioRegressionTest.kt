@@ -76,6 +76,10 @@ class October26PitRadioRegressionTest {
         assertNull(DriverCommandParser.parse("un"))
         assertEquals(DriverCommand.ReportPosition(1), DriverCommandParser.parse("je suis premier"))
         assertEquals(DriverCommand.ReportPosition(12), DriverCommandParser.parse("je suis douzieme"))
+        assertEquals(DriverCommand.Ask(com.gt7pitwall.core.radio.DriverQuery.PLAN),
+            DriverCommandParser.parse("pourquoi je m\u0027arrete au prochain tour"))
+        assertEquals(DriverCommand.Ask(com.gt7pitwall.core.radio.DriverQuery.PLAN),
+            DriverCommandParser.parse("pourquoi je rends au prochain tour"))
     }
 
     @Test
