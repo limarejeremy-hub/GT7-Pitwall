@@ -91,6 +91,16 @@ fun Gt7CareerPanel(store: Gt7ProfileStore, editable: Boolean) {
                         ((it * 1000).roundToInt() / 10.0).toString() + " %"
                     } ?: "—")
                 }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    CareerValue("Poles", stats.poles?.toString() ?: "—")
+                    CareerValue("Top 5", stats.top5?.toString() ?: "—")
+                    CareerValue("Courses propres", stats.cleanRaces?.toString() ?: "—")
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    CareerValue("Meilleurs tours", stats.fastestLaps?.toString() ?: "—")
+                    CareerValue("Voitures garage", stats.garageCars?.toString() ?: "—")
+                    CareerValue("Niveau collection", stats.collectorLevel?.toString() ?: "—")
+                }
                 val delta = profile.drPointsChange
                 if (delta != null) Text(
                     "Évolution DR : " + (if (delta >= 0) "+" else "") + delta + " points",
@@ -100,8 +110,9 @@ fun Gt7CareerPanel(store: Gt7ProfileStore, editable: Boolean) {
                     SimpleDateFormat("dd/MM/yyyy HH:mm",Locale.FRANCE).format(Date(sample.capturedAtMs)),
                     color = PitColors.Muted, fontSize = 11.sp)
             } else {
-                Text("Statistiques DR/SR à importer ou à renseigner. Les valeurs absentes restent inconnues.",
-                    color = PitColors.Muted, fontSize = 12.sp)
+                Text("Identifiant enregistré, mais aucune statistique GT7 sauvegardée. " +
+                    "Un ID PSN seul ne permet pas de récupérer automatiquement DR, SR et victoires.",
+                    color = PitColors.Yellow, fontSize = 12.sp)
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (Gt7PlayerProfile.validOfficialUrl(profile.officialProfileUrl)) {
