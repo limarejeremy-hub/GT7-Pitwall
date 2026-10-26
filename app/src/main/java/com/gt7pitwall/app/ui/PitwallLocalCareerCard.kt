@@ -54,9 +54,15 @@ fun PitwallLocalCareerCard(stats: PitwallLocalCareer) {
                     " des " + stats.verifiedSportRaces + " courses Sport terminées.",
                     color=PitColors.Muted,fontSize=11.sp)
                 stats.netPositionsGained?.let { gained ->
-                    Text("Places gagnées sur les courses avec grille ET arrivée mesurées : " +
-                        (if (gained >= 0) "+" else "") + gained,
-                        color=PitColors.Green,fontSize=12.sp)
+                    val summary = when {
+                        gained > 0 -> "Bilan positions : " + gained + " places gagnées"
+                        gained < 0 -> "Bilan positions : " + -gained + " places perdues"
+                        else -> "Bilan positions : aucune place gagnée ni perdue"
+                    }
+                    Text(summary + " (courses avec grille et arrivée mesurées)",
+                        color=if (gained > 0) PitColors.Green else if (gained < 0)
+                            PitColors.Yellow else PitColors.Muted,
+                        fontSize=12.sp)
                 }
             }
             Text(when {
@@ -64,7 +70,7 @@ fun PitwallLocalCareerCard(stats: PitwallLocalCareer) {
                     "Aucune course locale archivée pour le moment. Démarre la télémétrie depuis Atelier, puis roule dans GT7."
                 stats.verifiedSportRaces==0 ->
                     "Les sessions existent. Impossible de les compter comme courses Sport officielles sans mode confirmé."
-                else -> "Ces chiffres progressent avec tes courses. Les 71 courses de ton profil PSN sont un historique différent."
+                else -> "Ces chiffres reflètent uniquement les sessions observées par Pitwall. L'historique officiel GT7 reste séparé tant qu'il n'est pas disponible depuis une source vérifiée."
             }, color=PitColors.Muted,fontSize=11.sp)
         }
     }

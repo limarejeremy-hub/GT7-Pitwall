@@ -159,6 +159,7 @@ val downloadSherpaAar by tasks.registering {
 
 dependencies {
     implementation(project(":core"))
+    implementation("org.jsoup:jsoup:1.18.3") // public player HTML only, no authentication
 
     // Banc d'essai de reconnaissance locale (sherpa-onnx) : modèles téléchargés à la demande depuis les archives
     // .tar.bz2 du projet, extraites au fil du téléchargement (commons-compress, Apache 2.0).

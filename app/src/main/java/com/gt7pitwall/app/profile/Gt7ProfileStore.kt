@@ -83,5 +83,41 @@ class Gt7ProfileStore(context: Context) {
         return persist(current.add(stats,ProfileEvidence.USER_IMPORT,System.currentTimeMillis()))
     }
 
-    fun clear(): Gt7PlayerProfile = persist(Gt7PlayerProfile())
+
+    /**
+     * Opt-in is tied to the active PSN ID. Another PSN cannot reuse consent.
+     */
+    fun publicSyncEnabled(): Boolean =
+        read().psnId.isNotBlank() &&
+            prefs.getString("gridstats_public_psn", null)
+                ?.equals(read().psnId, ignoreCase = true) == true
+
+    fun enablePublicSync() {
+        require(Gt7PlayerProfile.validPsnId(read().psnId)) { "Identifiant PSN requis" }
+        prefs.edit().putString("gridstats_public_psn", read().psnId)
+            .putLong("gridstats_public_attempt_ms", 0L).apply()
+    }
+
+    fun disablePublicSync() {
+        prefs.edit().remove("gridstats_public_psn")
+            .remove("gridstats_public_attempt_ms").apply()
+    }
+
+    fun publicRefreshDue(now: Long = System.currentTimeMillis()): Boolean =
+        publicSyncEnabled() &&
+            now - prefs.getLong("gridstats_public_attempt_ms", 0L) >= 6L * 60 * 60 * 1000
+
+    fun markPublicAttempt(now: Long = System.currentTimeMillis()) {
+        prefs.edit().putLong("gridstats_public_attempt_ms", now).apply()
+    }
+
+    fun recordPublicRating(stats: Gt7CareerStats): Gt7PlayerProfile {
+        require(stats.dr != null && stats.sr != null) { "Classements DR/SR absents" }
+        return persist(read().add(stats, ProfileEvidence.GRIDSTATS_PUBLIC, System.currentTimeMillis()))
+    }
+
+    fun clear(): Gt7PlayerProfile {
+        disablePublicSync()
+        return persist(Gt7PlayerProfile())
+    }
 }
