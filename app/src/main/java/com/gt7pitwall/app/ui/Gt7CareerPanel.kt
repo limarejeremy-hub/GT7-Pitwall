@@ -5,6 +5,8 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.widget.Toast
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -46,16 +48,26 @@ import kotlin.math.roundToInt
  */
 @Composable
 fun Gt7CareerPanel(store: Gt7ProfileStore, editable: Boolean) {
-    var profile by remember(store) { mutableStateOf(store.read()) }
+    val profile by store.profile.collectAsStateWithLifecycle()
     var editing by rememberSaveable { mutableStateOf(false) }
     var feedback by remember { mutableStateOf("") }
     val context = LocalContext.current
+    fun acknowledge(text: String) {
+        feedback=text
+        Toast.makeText(context,text,Toast.LENGTH_LONG).show()
+    }
 
     Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
         Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("MON PILOTE GT7", color = PitColors.Orange,
                 fontWeight = FontWeight.ExtraBold, fontSize = 18.sp)
+            // Always show the save result directly below the title, rather than
+            // after a long editor that can extend below the Fold viewport.
+            if (feedback.isNotEmpty()) {
+                Text(feedback, color = if (feedback.startsWith("Enregistr")) PitColors.Green
+                    else PitColors.Yellow, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            }
             if (profile.psnId.isBlank()) {
                 Text("Profil PSN à associer • aucune connexion requise pour jouer.",
                     color = PitColors.Muted)
@@ -114,33 +126,31 @@ fun Gt7CareerPanel(store: Gt7ProfileStore, editable: Boolean) {
             }
             if (editable && editing) {
                 CareerEditor(profile,
-                    onIdentity = { id,nick,url ->
-                        runCatching { store.saveIdentity(id,nick,url) }
-                            .onSuccess { profile=it;feedback="Identité enregistrée sur ce téléphone." }
-                            .onFailure { feedback=it.message ?: "Identifiant refusé" }
-                    },
-                    onStats = { s ->
-                        runCatching { store.recordManual(s) }
-                            .onSuccess { profile=it;feedback="Statistiques enregistrées." }
-                            .onFailure { feedback=it.message ?: "Valeurs invalides" }
+                    onSave = { id,nick,url,stats ->
+                        runCatching { store.saveCompleteProfile(id,nick,url,stats) }
+                            .onSuccess {
+                                acknowledge(if (stats != null)
+                                    "Enregistré : profil et chiffres GT7. Ouvre Briefing pour les voir."
+                                else "Enregistré : identité PSN. Ajoute tes chiffres GT7 pour afficher les statistiques.")
+                            }
+                            .onFailure { acknowledge(it.message ?: "Enregistrement refusé") }
                     },
                     onImport = { json ->
                         runCatching { store.importUserJson(json) }
-                            .onSuccess { profile=it;feedback="Import vérifié et enregistré." }
-                            .onFailure { feedback=it.message ?: "Import non reconnu" }
+                            .onSuccess { acknowledge("Enregistré : statistiques importées.") }
+                            .onFailure { acknowledge(it.message ?: "Import non reconnu") }
                     }
                 )
                 var deletionRequested by remember { mutableStateOf(false) }
                 TextButton(onClick = {
                     if (deletionRequested) {
-                        profile = store.clear()
-                        feedback = "Profil local effacé."
+                        store.clear()
+                        acknowledge("Profil local effacé.")
                         deletionRequested = false
                     } else deletionRequested = true
                 }) { Text(if (deletionRequested) "Confirmer la suppression" else "Effacer mon profil local") }
             }
-            if (feedback.isNotEmpty()) Text(feedback,color=PitColors.Yellow,fontSize=12.sp)
-        }
+         }
     }
 }
 
@@ -155,8 +165,7 @@ private fun CareerValue(label:String,value:String) {
 @Composable
 private fun CareerEditor(
     profile: Gt7PlayerProfile,
-    onIdentity:(String,String,String)->Unit,
-    onStats:(Gt7CareerStats)->Unit,
+    onSave:(String,String,String,Gt7CareerStats?)->Unit,
     onImport:(String)->Unit,
 ) {
     var psn by rememberSaveable(profile.psnId) { mutableStateOf(profile.psnId) }
@@ -169,9 +178,6 @@ private fun CareerEditor(
         label={Text("Nom de pilote")},modifier=Modifier.fillMaxWidth())
     OutlinedTextField(value=url,onValueChange={url=it.trim()},maxLines=2,
         label={Text("Lien officiel GT7 (facultatif)")},modifier=Modifier.fillMaxWidth())
-    Button(onClick={onIdentity(psn,nick,url)},enabled=Gt7PlayerProfile.validPsnId(psn)) {
-        Text("Enregistrer mon identité")
-    }
     Text("2 · Statistiques Sport",fontWeight=FontWeight.Bold)
     Text("Copie les chiffres visibles dans ton profil GT7, sans mot de passe PSN.",
         color=PitColors.Muted,fontSize=12.sp)
@@ -200,16 +206,26 @@ private fun CareerEditor(
     NumericCareerField("Meilleurs tours",fastest,{fastest=it})
     NumericCareerField("Voitures au garage",garage,{garage=it})
     fun optionalNumber(raw:String):Int?=if(raw.isBlank())null else raw.toIntOrNull()
+    // One button prevents typing ID + DR/SR together then inadvertently losing
+    // stats when the old identity-only save reset rememberSaveable fields.
+    val hasStats = listOf(dr,sr,points,races,wins,poles,top5,clean,fastest,garage)
+        .any { it.isNotBlank() }
     Button(onClick={
-        onStats(Gt7CareerStats(dr=dr.trim().uppercase().takeIf{it.isNotBlank()},
+        val stats = if (!hasStats) null else Gt7CareerStats(
+            dr=dr.trim().uppercase().takeIf{it.isNotBlank()},
             sr=sr.trim().uppercase().takeIf{it.isNotBlank()},
             drPoints=optionalNumber(points),races=optionalNumber(races),
             wins=optionalNumber(wins),poles=optionalNumber(poles),
             top5=optionalNumber(top5),cleanRaces=optionalNumber(clean),
-            fastestLaps=optionalNumber(fastest),garageCars=optionalNumber(garage)))
-    },enabled=Gt7PlayerProfile.validPsnId(profile.psnId)) {
-        Text("Enregistrer mes chiffres")
+            fastestLaps=optionalNumber(fastest),garageCars=optionalNumber(garage))
+        onSave(psn,nick,url,stats)
+    },enabled=Gt7PlayerProfile.validPsnId(psn),modifier=Modifier.fillMaxWidth()) {
+        Text("ENREGISTRER MON PROFIL ET MES CHIFFRES")
     }
+    Text("Le profil et les chiffres sont enregistrés ensemble sur le téléphone. " +
+        "Un message de confirmation apparaît immédiatement.",
+        color=PitColors.Muted,fontSize=12.sp)
+
     Text("3 · Import JSON (facultatif)",fontWeight=FontWeight.Bold)
     Text("Colle uniquement un export de statistiques qui t'appartient. Il doit inclure ton identifiant PSN.",
         color=PitColors.Muted,fontSize=12.sp)
@@ -217,7 +233,7 @@ private fun CareerEditor(
     OutlinedTextField(value=json,onValueChange={json=it.take(120000)},
         label={Text("JSON de mes statistiques")},minLines=3,maxLines=5,
         modifier=Modifier.fillMaxWidth())
-    OutlinedButton(onClick={onImport(json);json=""},enabled=json.isNotBlank()&&profile.psnId.isNotBlank()) {
+    OutlinedButton(onClick={onImport(json)},enabled=json.isNotBlank()&&profile.psnId.isNotBlank()) {
         Text("Importer mes statistiques")
     }
     Text("Pas de connexion PSN officielle sans autorisation de Sony. Ne partage jamais de cookie, code NPSSO ou mot de passe.",
