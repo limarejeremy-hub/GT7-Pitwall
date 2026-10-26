@@ -55,10 +55,10 @@ class PitwallApp : Application() {
 
     /** Programme hebdomadaire des courses Sport A/B/C (flux public GTPlanet, en cache). */
     lateinit var sport: SportScheduleRepository
+        private set
 
     /** Mise à jour automatique des voitures et circuits. */
     lateinit var database: DatabaseRepository
-        private set
         private set
 
     /** Voix de l'ingénieur : Discord quand le bot est dans le salon, sinon le haut-parleur du Fold. */
