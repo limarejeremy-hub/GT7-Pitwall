@@ -107,17 +107,21 @@ data class Gt7PlayerProfile(
 object Gt7CareerImport {
     fun fromRacerJson(raw: String, expectedPsn: String): Gt7CareerStats {
         require(Gt7PlayerProfile.validPsnId(expectedPsn)) { "Configure ton ID PSN" }
-        val obj = JSONObject(raw.takeIf { it.length <= 120_000 } ?: error("Import trop volumineux"))
+        require(raw.length <= 120_000) { "Import trop volumineux" }
+        // Never process or inadvertently retain a PlayStation session secret.
+        require(!Regex("""(?i)"(?:npsso|access_token|refresh_token|password|cookie|authorization)"\\s*:""")
+            .containsMatchIn(raw)) { "Import contenant un secret de connexion : refusé" }
+        val obj = JSONObject(raw)
         val driver = when {
             obj.has("drivers") -> {
-                val drivers = obj.optJSONArray("drivers") ?: error("Liste pilotes invalide")
+                val drivers = obj.optJSONArray("drivers") ?: throw IllegalArgumentException("Liste pilotes invalide")
                 val matching = (0 until drivers.length()).mapNotNull { drivers.optJSONObject(it) }
                     .filter { it.optString("PSN_ID").equals(expectedPsn, ignoreCase = true) }
                 require(matching.size == 1) { "Aucun pilote unique pour cet ID PSN" }
                 matching.single()
             }
             obj.optString("PSN_ID").equals(expectedPsn, ignoreCase = true) -> obj
-            else -> error("Le profil importé ne correspond pas à ton ID PSN")
+            else -> throw IllegalArgumentException("Le profil importé ne correspond pas à ton ID PSN")
         }
         val s = driver.optJSONObject("stats") ?: JSONObject()
         fun num(o: JSONObject, key: String): Int? = if (o.has(key) && !o.isNull(key))
