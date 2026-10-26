@@ -15,6 +15,12 @@ Le premier vrai arrêt avec changement confirmé, le 25/10 au Mans, a montré un
 
 **Les verdicts restent SUSPECTED ou UNDETERMINED**. Le pilote doit toujours confirmer le changement ; l'âge du relais n'est jamais remis à zéro à partir de températures seules.
 
+## Calibration terrain : 26/10/2026, Interlagos
+
+L'essai de la Porsche 911 GT3 R (992) '22, course de 14 tours, session `1793017813739-3600`, fournit un vrai positif **étiqueté après la course par le pilote**. L'arrêt du tour 7 n'a comporté aucun ravitaillement, mais bien le remplacement des quatre pneus course durs (RH) par des course mediums (RM). Le Tyre Change Hunter avait indiqué `SUSPECTED` avec les sauts AVG/AVD/ARG/ARD `−29,2 / −20,2 / −18,5 / −13,4 °C` et un retour autour de 60 °C. Le journal vocal ne contient **pas** la confirmation du pilote ; celle-ci a été fournie ultérieurement dans la conversation de calibration.
+
+Fixture machine-readable : `core/src/test/resources/tyre_calibration/2026-10-26-interlagos-t7.json`, vérifiée par `TyreSignatureTest.realInterlagosPositiveConfirmsThermalSignatureButNotAutomaticCalibration`. **Un seul positif** n'est pas une démonstration de spécificité ni un motif d'activer la confirmation automatique. Il faut plusieurs arrêts de contrôle en gardant réellement les mêmes pneus et des positifs sur différentes voitures/circuits.
+
 ## Tests et vérifications requises
 1. CI `:core:test` et build APK verts sur cette branche.
 2. Sur PS5 : au moins 8 tours d'entraînement GT7 (virage répété lentement, puis amélioré), journaliser coaching et validation de la consigne.
