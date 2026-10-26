@@ -149,7 +149,7 @@ class PitDetectionTest {
 
         // Règlement non confirmé : il ne choisit jamais la famille. Hypothèse : celle des pneus actuels (course).
         s.say("j'ai mis les durs")
-        assertTrue("course, sport ou confort ? Course durs, comme tes pneus actuels ?" in s.lastAnswer, s.lastAnswer)
+        assertTrue("Tu confirmes des pneus course durs" in s.lastAnswer, s.lastAnswer)
         assertEquals(setOf(TyreCompound.RH), s.controller.missingTyres)
         s.say("oui")
         assertTrue(s.controller.missingTyres.isEmpty())

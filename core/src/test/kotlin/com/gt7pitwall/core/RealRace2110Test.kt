@@ -65,7 +65,8 @@ class RealRace2110Test {
         // Tour 6, au stand : Vosk a transcrit « je les pneus tendres ».
         s.say("je les pneus tendres")
         assertTrue(s.controller.ledger.changes.isEmpty(), "rien n'est noté sur une gomme ambiguë")
-        assertEquals("Tendres : course, sport ou confort ? Course tendres, comme tes pneus actuels ?", s.lastAnswer)
+        // Une seule question (26/10) : l'hypothèse de la famille des pneus actuels, à confirmer.
+        assertEquals("Tu confirmes des pneus course tendres actuellement ?", s.lastAnswer)
         assertTrue(s.said.last().expectsReply)
         s.say("course tendres")
         assertEquals(listOf(TyreChange(6, TyreCompound.RS)), s.controller.ledger.changes)
