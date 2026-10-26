@@ -92,8 +92,12 @@ object DgEdgeFeed {
 
         val settings = description.substringAfter("Race settings:", "")
             .substringBefore("Live leaderboard", "").trim().trimEnd('.', ' ')
-        val compulsory = Regex("""(?i)Required:\s*((?:R[HMS]|S[HMS]|C[HMS]|IM|W|D)(?:\s*[,/]\s*(?:R[HMS]|S[HMS]|C[HMS]|IM|W|D))*)""")
-            .find(description)?.groupValues?.get(1)
+        // Some pages truncate the SEO description but include "Required: RM, RS" in
+        // the visible race header. Read both, limited to this race's settings section.
+        val requirementPattern = Regex("""(?i)\bRequired:\s*((?:R[HMS]|S[HMS]|C[HMS]|IM|W|D)(?:\s*[,/]\s*(?:R[HMS]|S[HMS]|C[HMS]|IM|W|D))*)""")
+        val detailHeader = visible.substringBefore("Event stats").take(2500)
+        val compulsory = requirementPattern.find(description)?.groupValues?.get(1)
+            ?: requirementPattern.find(detailHeader)?.groupValues?.get(1)
         val required = compulsory?.let { TyreCompound.parseCodes(it).toSet().takeIf { c -> c.isNotEmpty() } }
         val stops = Regex("""(?i)(\d{1,2})\s+(?:mandatory\s+)?(?:pit\s+)?stops?\b""")
             .find(settings)?.groupValues?.get(1)?.toIntOrNull()?.takeIf { it in 0..10 }
