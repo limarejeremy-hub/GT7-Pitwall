@@ -106,6 +106,8 @@ data class SessionRecord(
     val notes: List<DriverNote> = emptyList(),
     val gridPosition: Int? = null,
     val finishPosition: Int? = null,
+    /** Bilan de pilotage de fin de course (absent des anciennes sessions et des courses interrompues). */
+    val report: List<String> = emptyList(),
 ) {
     val completedLaps: Int get() = laps.size
 

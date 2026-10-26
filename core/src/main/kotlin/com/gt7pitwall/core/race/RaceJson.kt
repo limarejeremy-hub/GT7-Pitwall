@@ -143,6 +143,7 @@ object RaceJson {
             .put("plans", plans)
             .put("notes", notes)
             .also { o -> r.gridPosition?.let { o.put("grid", it) }; r.finishPosition?.let { o.put("finish", it) } }
+            .also { o -> if (r.report.isNotEmpty()) o.put("report", JSONArray(r.report)) }
             .toString()
     }
 
@@ -208,6 +209,7 @@ object RaceJson {
             notes = objects("notes").map { n -> DriverNote(n.optInt("lap"), n.optString("text", "")) },
             gridPosition = o.optInt("grid", -1).takeIf { it > 0 },
             finishPosition = o.optInt("finish", -1).takeIf { it > 0 },
+            report = o.optJSONArray("report")?.let { a -> (0 until a.length()).map { a.getString(it) } }.orEmpty(),
         )
     } catch (e: Exception) {
         null

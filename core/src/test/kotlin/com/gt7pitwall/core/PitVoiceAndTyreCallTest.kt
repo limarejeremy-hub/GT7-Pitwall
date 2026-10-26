@@ -101,8 +101,10 @@ class PitVoiceAndTyreCallTest {
         assertEquals(1, texts.count(planAnnounce), texts.filter(planAnnounce).toString())
         assertEquals(1, texts.count { it.startsWith("Box, box") })
         assertTrue(texts.none { it.startsWith("Tour 15 :") }, "pas de commentaire sur le dernier chrono")
-        val finish = texts.last()
+        // L'arrivée reste courte ; le bilan de pilotage (une phrase) la suit.
+        val finish = texts.last { it.startsWith("Course terminée") }
         assertTrue(Regex("Course terminée ! Meilleur tour : .+\\. Tu termines P5\\.").matches(finish), finish)
+        assertTrue(texts.last().startsWith("Bilan"), texts.last())
         assertFalse("Beau boulot" in finish)
     }
 

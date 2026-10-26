@@ -484,7 +484,10 @@ class RaceController(
         // Retour au menu après une course finie : pas de « nouvelle session » annoncée.
         out.addAll(0, engineer.onUpdate(events, tracker.snapshot, fuel).filterNot { finishedBefore && it.text.startsWith("Nouvelle session détectée") })
         out += celebrate(engineer.onPosition(positionChanges, nowMs), nowMs)
-        if (events.any { it is SessionEvent.RaceFinished }) finishPosition = engineer.measured.finalPosition ?: engineer.driverPosition
+        if (events.any { it is SessionEvent.RaceFinished }) {
+            finishPosition = engineer.measured.finalPosition ?: engineer.driverPosition
+            out += drivingReportAtFinish()
+        }
         out += briefingIfDue(p)
         updateMood(events, positionChanges, p)
         if (events.any { it is SessionEvent.LapCompleted || it is SessionEvent.RaceFinished || it is SessionEvent.PitVisitEnded }) saveSession()
@@ -1010,6 +1013,7 @@ class RaceController(
         finishPosition = null
         internalErrors.clear()
         trackInconsistencyNoted = false
+        lastDrivingReport = null
         briefed = false
         lastPositionChangeClockMs = null
         replay = false
@@ -1066,6 +1070,7 @@ class RaceController(
             plans = planLog.toList(),
             notes = driverNotes.toList(),
             gridPosition = gridPosition,
+            report = lastDrivingReport?.lines.orEmpty(),
             finishPosition = finishPosition,
         )
     }
@@ -1195,6 +1200,7 @@ class RaceController(
             plans = planLog.toList(),
             notes = driverNotes.toList(),
             gridPosition = gridPosition,
+            report = lastDrivingReport?.lines.orEmpty(),
             finishPosition = finishPosition,
         ) ?: return
         sessions[r.id] = r
@@ -2164,6 +2170,30 @@ class RaceController(
         if (internalErrors.put(module, what) == null) {
             runCatching { journal.record(JournalType.SESSION, JournalSource.SYSTEM, "Erreur interne ($module) : $what", decision = "module ignoré pour cette mesure, course non interrompue") }
         }
+    }
+
+    /** Bilan de pilotage de la dernière course terminée (rapport complet : écran et archive ; synthèse : radio). */
+    var lastDrivingReport: com.gt7pitwall.core.engineer.DrivingReport? = null
+        private set
+
+    private fun drivingReportAtFinish(): List<EngineerMessage> {
+        val r = runCatching {
+            val total = snapshot.packet?.totalLaps?.takeIf { it > 0 } ?: rules.totalLaps
+            val d = driverCoach.diagnostics()
+            com.gt7pitwall.core.engineer.DrivingReport.of(
+                laps = snapshot.laps.filter { total == null || it.lapNumber <= total },
+                stopLaps = ledger.stopList.map { it.lap },
+                tyreChanges = ledger.changes.map { it.lap to it.compound?.spoken },
+                grid = engineer.measured.startPosition ?: gridPosition,
+                finish = engineer.measured.finalPosition ?: finishPosition,
+                cornerFindings = cornerFindings(),
+                adviceGiven = d.adviceGiven,
+                adviceImproved = d.adviceImproved,
+            )
+        }.getOrElse { diagnostic("bilan de pilotage", it); return emptyList() }
+        lastDrivingReport = r
+        r.lines.forEach { journal.record(JournalType.DECISION, JournalSource.ENGINE, "Bilan pilotage : $it") }
+        return listOf(EngineerMessage(r.radio, Priority.HIGH, MessageCategory.RADIO, dedupKey = "bilan:$sessionId"))
     }
 
     /** « Qu'est-ce que Pitwall a appris sur mon pilotage ? » : uniquement les données mesurées et enregistrées. */

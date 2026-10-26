@@ -226,6 +226,7 @@ fun PitwallScreen(
         )
         CloudAiCard(cloudAi, onAiMode)
         HumanRadioCard(engine, settings)
+        DrivingCard(engine)
         AiCard(
             on = aiOn,
             state = aiState,
@@ -1196,6 +1197,22 @@ private fun HumanRadioCard(engine: PitwallEngine, settings: com.gt7pitwall.app.s
             }
             OutlinedButton(onClick = { engine.clearPilotMemory() }, modifier = Modifier.fillMaxWidth()) { Text("Tout effacer") }
         }
+    }
+}
+
+/** Pilotage : bilan de la dernière course et ce que Pitwall a réellement appris (mesures vérifiables, pas l'IA). */
+@Composable
+private fun DrivingCard(engine: PitwallEngine) {
+    val state by engine.state.collectAsStateWithLifecycle()
+    PitCard("Pilotage") {
+        if (state.drivingReport.isNotEmpty()) {
+            Text("Bilan de la dernière course", style = MaterialTheme.typography.bodyMedium)
+            state.drivingReport.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall) }
+        } else {
+            Text("Aucun bilan : il est produit à l'arrivée d'une course.", style = MaterialTheme.typography.bodySmall, color = PitColors.Muted)
+        }
+        Text("Ce que Pitwall a appris", style = MaterialTheme.typography.bodyMedium)
+        state.learning.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall) }
     }
 }
 
