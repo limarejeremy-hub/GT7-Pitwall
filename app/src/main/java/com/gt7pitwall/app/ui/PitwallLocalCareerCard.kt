@@ -53,9 +53,9 @@ fun PitwallLocalCareerCard(stats: PitwallLocalCareer) {
                 Text("Places d'arrivée connues sur " + stats.sportFinishPositionsMeasured +
                     " des " + stats.verifiedSportRaces + " courses Sport terminées.",
                     color=PitColors.Muted,fontSize=11.sp)
-                if(stats.netPositionsGained!=null) {
+                stats.netPositionsGained?.let { gained ->
                     Text("Places gagnées sur les courses avec grille ET arrivée mesurées : " +
-                        (if(stats.netPositionsGained>=0)"+" else "") + stats.netPositionsGained,
+                        (if (gained >= 0) "+" else "") + gained,
                         color=PitColors.Green,fontSize=12.sp)
                 }
             }
