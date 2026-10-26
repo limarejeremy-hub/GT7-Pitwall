@@ -848,7 +848,7 @@ class RaceEngineer {
             val isLastStop = next == planned.stops.last()
             return when (next.endOfLap) {
                 currentLap -> buildString {
-                    append("BOX, BOX ! Tour $currentLap : rentre à la FIN DE CE TOUR.")
+                    append("Box, box ! Rentre au stand à la fin de ce tour (tour $currentLap)")
                     when {
                         next.tyresOnly && next.forTyres -> append(" pour les pneus uniquement, pas besoin d'essence.")
                         next.mandatoryOnly -> append(", arrêt obligatoire, pas besoin d'essence.")
@@ -866,7 +866,7 @@ class RaceEngineer {
                     }
                 }
                 currentLap + 1 -> buildString {
-                    append("Prépare le stand : nous sommes au tour $currentLap. Reste en piste à la fin de celui-ci. BOX à la FIN du tour ${next.endOfLap}.")
+                    append("Stand au prochain tour : box à la fin du tour ${next.endOfLap}. Reste en piste pendant le tour $currentLap, ne rentre pas à la fin de celui-ci.")
                     if (next.changeTyres && next.tyreToFit == null) append(" On changera les pneus.")
                     if (isLastStop && missingTyres.isNotEmpty()) {
                         append(" C'est ton dernier arrêt prévu et il te manque les ${missingTyres.joinToString(" et ") { it.spoken }}.")
@@ -877,8 +877,8 @@ class RaceEngineer {
         }
         val a = fuel?.advice as? FuelAdvice.PitRequired ?: return null
         return when (currentLap) {
-            a.latestPitLap -> "BOX, BOX ! Tour $currentLap : rentre à la FIN DE CE TOUR, ajoute environ ${fuelText(a.fuelToAdd)}."
-            a.latestPitLap - 1 -> "Prépare le stand : tour $currentLap maintenant, reste en piste ce tour-ci. BOX à la FIN du tour ${a.latestPitLap}."
+            a.latestPitLap -> "Box, box ! Rentre au stand à la fin de ce tour (tour $currentLap), ajoute environ ${fuelText(a.fuelToAdd)}."
+            a.latestPitLap - 1 -> "Stand au prochain tour : box à la fin du tour ${a.latestPitLap}. Reste en piste pendant le tour $currentLap, ne rentre pas à la fin de celui-ci."
             else -> null
         }
     }
