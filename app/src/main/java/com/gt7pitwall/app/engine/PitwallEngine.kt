@@ -160,6 +160,7 @@ class PitwallEngine(
     /** L'ingénieur parle déjà (téléphone ou Discord) : une place mise en file serait périmée à son tour. */
     var voiceBusy: () -> Boolean = { false }
 
+    @Volatile private var lastCarPacketAtMs = 0L
     private var lastGarageComputeMs = 0L
     private var lastGarageCode: Int? = null
     private var lastGarageEditionId: String? = null
@@ -512,6 +513,7 @@ class PitwallEngine(
 
     private suspend fun onPacket(p: TelemetryPacket) {
         val now = System.currentTimeMillis()
+        if (p.carCode > 0) lastCarPacketAtMs = now
         runCatching {
             positionProbe.onPacket(p, now)
             if (now - lastProbeMs >= PROBE_REFRESH_MS) {
@@ -554,7 +556,9 @@ class PitwallEngine(
             lastGarageTrack = trackId
             DriverGarage.resolve(
                 telemetryCarCode = currentCarCode,
-                telemetryConnected = race.telemetryLive(),
+                // A valid car packet may already arrive in the lobby/loading screen,
+                // before the on-track flag required by the driving coach becomes true.
+                telemetryConnected = currentCarCode != null && now - lastCarPacketAtMs <= 2_000L,
                 profile = race.profile,
                 trackId = trackId,
                 edition = race.edition,
