@@ -125,11 +125,19 @@ class SportScheduleRepository(context: Context, private val database: Gt7Databas
                 runCatching { fetchGridStats(token) }
                     .onFailure { sourceErrors += "GT GridStats : ${it.message ?: "indisponible"}" }
             }
-            val current = hasWeek(cache, week) || hasWeek(fallbackCache, week) ||
-                readDg().any { it.validFrom == week } || runCatching {
-                    gridCache.isFile && GridStatsDailyFeed.parse(gridCache.readText(), gridCache.lastModified())
-                        .any { it.validFrom == week }
-                }.getOrDefault(false)
+            val currentSources = listOfNotNull(cache, fallbackCache).flatMap { file ->
+                runCatching { if (file.isFile) GtPlanetFeed.parse(file.readText(), file.lastModified()) else emptyList() }
+                    .getOrDefault(emptyList())
+            } + readDg() + runCatching {
+                if (gridCache.isFile) GridStatsDailyFeed.parse(gridCache.readText(), gridCache.lastModified()) else emptyList()
+            }.getOrDefault(emptyList())
+            val complete = currentSources.filter { ScheduleBuilder.weekStart(it.validFrom) == week }
+                .flatMap { it.races.keys }.toSet()
+            val current = complete.containsAll(listOf(
+                com.gt7pitwall.core.race.Series.DAILY_A,
+                com.gt7pitwall.core.race.Series.DAILY_B,
+                com.gt7pitwall.core.race.Series.DAILY_C,
+            ))
             val diagnostic = if (current) null else
                 "Aucune fiche A/B/C exploitable pour la semaine du $week" +
                     sourceErrors.takeIf { it.isNotEmpty() }?.joinToString(" • ", prefix = " : ").orEmpty()
@@ -143,8 +151,16 @@ class SportScheduleRepository(context: Context, private val database: Gt7Databas
     }
 
     private fun hasWeek(file: File, week: LocalDate): Boolean = runCatching {
-        file.isFile && GtPlanetFeed.parse(file.readText(), file.lastModified())
-            .any { ScheduleBuilder.weekStart(it.validFrom) == week && it.races.isNotEmpty() }
+        if (!file.isFile) false else {
+            val races = GtPlanetFeed.parse(file.readText(), file.lastModified())
+                .filter { ScheduleBuilder.weekStart(it.validFrom) == week }
+                .flatMap { it.races.keys }.toSet()
+            races.containsAll(listOf(
+                com.gt7pitwall.core.race.Series.DAILY_A,
+                com.gt7pitwall.core.race.Series.DAILY_B,
+                com.gt7pitwall.core.race.Series.DAILY_C,
+            ))
+        }
     }.getOrDefault(false)
 
     /** Local cache, usable offline only during its actual week. */
