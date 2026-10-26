@@ -420,7 +420,18 @@ private fun WeeklyEditionSection(
         )
     }
     if (ed != null) {
-        line("Circuit", database.course(rules.trackId ?: -1)?.label ?: ed.trackName.value, RuleField.TRACK)
+        // The name may be verified by sources even before the new circuit appears in
+        // the local GT7 database. This does NOT establish a telemetry track ID.
+        if (rules.trackId == null && ed.trackName.known) {
+            Text(
+                "Circuit : "+ ed.trackName.value + " (nom " + ed.trackName.status.label +
+                    ", reconnaissance PS5 en attente)",
+                color = PitColors.Yellow,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        } else {
+            line("Circuit", database.course(rules.trackId ?: -1)?.label ?: ed.trackName.value, RuleField.TRACK)
+        }
         if (rules.trackId == null && ed.trackCandidates.isNotEmpty()) {
             ed.trackCandidates.mapNotNull(database::course).take(3).forEach { c ->
                 OutlinedButton(onClick = { onRules(rules.copy(trackId = c.id)) }, modifier = Modifier.fillMaxWidth()) { Text(c.label) }
@@ -438,12 +449,13 @@ private fun WeeklyEditionSection(
             line(
                 "Pneus imposés",
                 (if (rules.requiredTyres.isEmpty()) "aucun" else rules.requiredTyres.joinToString(", ") { it.name })
-                    .takeIf { status[RuleField.REQUIRED_TYRES].known() || rules.allowedTyres.size == 1 },
+                    .takeIf { status[RuleField.REQUIRED_TYRES].known() },
                 RuleField.REQUIRED_TYRES,
             )
         }
         line("BoP / réglages", listOfNotNull(ed.bop.value, ed.settings.value).joinToString(" • ").ifEmpty { null }, null)
-        listOf(ed.laps, ed.mandatoryStops, ed.fuelMultiplier, ed.tyreMultiplier, ed.trackName).mapNotNull { it.note }.forEach {
+        listOf(ed.laps, ed.mandatoryStops, ed.fuelMultiplier, ed.tyreMultiplier, ed.trackName,
+            ed.cars, ed.requiredTyres).mapNotNull { it.note }.forEach {
             Text("Sources en désaccord : $it", color = PitColors.Red, style = MaterialTheme.typography.bodySmall)
         }
     } else {
