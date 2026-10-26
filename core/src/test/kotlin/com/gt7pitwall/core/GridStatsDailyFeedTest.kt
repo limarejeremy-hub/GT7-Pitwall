@@ -75,9 +75,8 @@ class GridStatsDailyFeedTest {
         assertTrue(GridStatsDailyFeed.parse("""{"status":"error","data":[]}""", 1).isEmpty())
         val wrong = sample.replace("2026-10-26 00:00:00", "2026-10-27 00:00:00")
         assertTrue(GridStatsDailyFeed.parse(wrong, 1).isEmpty())
-        val missing = sample.replace("\"required_compounds\":[\"Medium\",\"Soft\"]", "")
-        val json = missing.replace(",,", ",").replace(",}", "}")
-        val c = GridStatsDailyFeed.parse(json, 1).single().races.getValue(Series.DAILY_C)
+        val missing = sample.replace("\"required_compounds\":[\"Medium\",\"Soft\"]", "\"no_required_field\":null")
+        val c = GridStatsDailyFeed.parse(missing, 1).single().races.getValue(Series.DAILY_C)
         assertNull(c.requiredTyres) // absent != aucun
     }
 
