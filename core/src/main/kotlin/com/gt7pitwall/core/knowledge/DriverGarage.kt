@@ -50,13 +50,13 @@ object DriverGarage {
     ): GarageCar {
         val matching = sessions.filter {
             val p = it.context.profile
-            p.id.series == profile.id.series && p.id.kind == profile.id.kind &&
+            p.id.series == profile.id.series && p.id.kind == profile.id.kind && p.id.mode == profile.id.mode &&
                 it.context.carCode?.let { code -> code > 0 && db.car(code) != null } == true &&
                 (trackId == null || it.context.rules.trackId == trackId)
         }
         val currentEvent = matching.filter { s ->
             // Never mistake a session from a previous weekly rotation for this one.
-            if (profile.id.series == Series.OTHER) true
+            if (profile.id.series == Series.OTHER) false
             else edition != null && s.context.profile.eventDate == edition.validFrom.toString() &&
                 (trackId != null || s.context.rules.trackId == edition.trackId)
         }
