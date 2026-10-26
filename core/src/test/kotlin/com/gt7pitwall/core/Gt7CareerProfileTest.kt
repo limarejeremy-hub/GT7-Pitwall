@@ -14,7 +14,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class Gt7CareerProfileTest {
-    private val psn="PTIJEY27"
+    private val psn="TestRacer42"
 
     @Test fun identityChangeNeverLeaksAnotherDriversHistory() {
         val mine = Gt7PlayerProfile().changeIdentity(psn)
@@ -50,7 +50,7 @@ class Gt7CareerProfileTest {
     }
 
     @Test fun importRejectsAnUnrelatedPsnIdAndInvalidNumbers() {
-        val valid="""{"PSN_ID":"PTIJEY27","DR":"C","SR":"S","stats":{"dr_points":5313,"total_races":71,"victories":4,"poles":0}}"""
+        val valid="""{"PSN_ID":"TestRacer42","DR":"C","SR":"S","stats":{"dr_points":5313,"total_races":71,"victories":4,"poles":0}}"""
         val data=Gt7CareerImport.fromRacerJson(valid,psn)
         assertEquals(71,data.races)
         assertEquals(4,data.wins)
@@ -59,15 +59,15 @@ class Gt7CareerProfileTest {
             Gt7CareerImport.fromRacerJson(valid,"SomebodyElse")
         }
         assertFailsWith<IllegalArgumentException> {
-            Gt7CareerImport.fromRacerJson("""{"PSN_ID":"PTIJEY27","stats":{"total_races":7,"victories":9}}""",psn)
+            Gt7CareerImport.fromRacerJson("""{"PSN_ID":"TestRacer42","stats":{"total_races":7,"victories":9}}""",psn)
         }
     }
 
     @Test fun acceptsMultipleDriversOnlyWhenExactlyOneMatches() {
-        val raw="""{"drivers":[{"PSN_ID":"OtherAccount","stats":{"total_races":100}},{"PSN_ID":"PTIJEY27","stats":{"total_races":71,"victories":4}}]}"""
+        val raw="""{"drivers":[{"PSN_ID":"OtherAccount","stats":{"total_races":100}},{"PSN_ID":"TestRacer42","stats":{"total_races":71,"victories":4}}]}"""
         assertEquals(4,Gt7CareerImport.fromRacerJson(raw,psn).wins)
         assertFailsWith<IllegalArgumentException> {
-            Gt7CareerImport.fromRacerJson("""{"drivers":[{"PSN_ID":"PTIJEY27","stats":{"total_races":1}},{"PSN_ID":"PTIJEY27","stats":{"total_races":2}}]}""",psn)
+            Gt7CareerImport.fromRacerJson("""{"drivers":[{"PSN_ID":"TestRacer42","stats":{"total_races":1}},{"PSN_ID":"TestRacer42","stats":{"total_races":2}}]}""",psn)
         }
     }
 
