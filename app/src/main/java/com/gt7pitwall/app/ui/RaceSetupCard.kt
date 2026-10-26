@@ -87,6 +87,7 @@ fun RaceSetupCard(
                 Text(it, style = MaterialTheme.typography.bodySmall, color = if (it.startsWith("Épreuve à confirmer")) PitColors.Yellow else PitColors.Cyan)
             }
             EventProfileSection(state, onProfile, onProfileInfo, onConfirmRules)
+            MyCarBriefingCard(state)
             WeeklyEditionSection(state, rules, database, onRules, onRefreshSchedule, onDeclareRules)
             var preRaceOpen by rememberSaveable { mutableStateOf(false) }
             OutlinedButton(onClick = { preRaceOpen = !preRaceOpen }, modifier = Modifier.fillMaxWidth()) {
