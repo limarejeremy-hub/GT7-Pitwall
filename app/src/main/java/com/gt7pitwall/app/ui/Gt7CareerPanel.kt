@@ -45,6 +45,8 @@ import com.gt7pitwall.core.profile.PitwallLocalCareer
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.text.NumberFormat
+import com.gt7pitwall.core.profile.ProfileEvidence
 import kotlin.math.roundToInt
 
 /**
@@ -76,8 +78,9 @@ fun Gt7CareerPanel(store: Gt7ProfileStore, editable: Boolean, localCareer: Pitwa
                 feedback = "Le compte PSN a changé pendant la lecture : résultat ignoré."
             } else {
                 store.recordPublicRating(stats)
-                feedback = "Classements DR/SR lus depuis la page publique GridStats. " +
-                    "Les autres chiffres de carrière restent inconnus."
+                feedback = "Profil actualisé : " +
+                    (if (stats.races != null) "carrière Sport recoupée (" + stats.races + " courses)."
+                    else "DR/SR lus, bilan Sport indisponible ou non vérifiable.")
             }
         } catch (ex: Exception) {
             feedback = "GridStats public indisponible : " +
@@ -100,7 +103,7 @@ fun Gt7CareerPanel(store: Gt7ProfileStore, editable: Boolean, localCareer: Pitwa
             // Always show the save result directly below the title, rather than
             // after a long editor that can extend below the Fold viewport.
             if (feedback.isNotEmpty()) {
-                Text(feedback, color = if (feedback.startsWith("Enregistr")) PitColors.Green
+                Text(feedback, color = if (feedback.startsWith("Enregistr") || feedback.startsWith("Profil actualisé")) PitColors.Green
                     else PitColors.Yellow, fontSize = 13.sp, fontWeight = FontWeight.Bold)
             }
             if (profile.psnId.isBlank()) {
@@ -114,27 +117,47 @@ fun Gt7CareerPanel(store: Gt7ProfileStore, editable: Boolean, localCareer: Pitwa
             val sample = profile.latest
             val stats = sample?.stats
             if (stats != null) {
+                // Show facts, not a wall of em dashes. Missing public data is unknown.
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    CareerValue("Classement DR", stats.dr ?: "—")
-                    CareerValue("Fair-play SR", stats.sr ?: "—")
-                    CareerValue("Points DR", stats.drPoints?.toString() ?: "—")
+                    stats.dr?.let { CareerValue("Classement DR", it) }
+                    stats.sr?.let { CareerValue("Fair-play SR", it) }
+                    stats.drPoints?.let {
+                        CareerValue("Points DR", NumberFormat.getIntegerInstance(Locale.FRANCE).format(it))
+                    }
                 }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    CareerValue("Courses", stats.races?.toString() ?: "—")
-                    CareerValue("Victoires", stats.wins?.toString() ?: "—")
-                    CareerValue("Ratio victoires", stats.victoryRate?.let {
-                        ((it * 1000).roundToInt() / 10.0).toString() + " %"
-                    } ?: "—")
+                if (stats.races != null || stats.wins != null) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        stats.races?.let { CareerValue("Courses Sport", NumberFormat.getIntegerInstance(Locale.FRANCE).format(it)) }
+                        stats.wins?.let { CareerValue("Victoires", NumberFormat.getIntegerInstance(Locale.FRANCE).format(it)) }
+                        stats.victoryRate?.let {
+                            CareerValue("Taux de victoire", "%.1f %%".format(Locale.FRANCE, it * 100.0))
+                        }
+                    }
                 }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    CareerValue("Poles", stats.poles?.toString() ?: "—")
-                    CareerValue("Top 5", stats.top5?.toString() ?: "—")
-                    CareerValue("Courses propres", stats.cleanRaces?.toString() ?: "—")
+                if (stats.poles != null || stats.top5 != null || stats.cleanRaces != null) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        stats.poles?.let { CareerValue("Pole positions", it.toString()) }
+                        stats.top5?.let { CareerValue("Top 5", NumberFormat.getIntegerInstance(Locale.FRANCE).format(it)) }
+                        stats.cleanRaces?.let { CareerValue("Courses propres", it.toString()) }
+                    }
                 }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    CareerValue("Meilleurs tours", stats.fastestLaps?.toString() ?: "—")
-                    CareerValue("Voitures garage", stats.garageCars?.toString() ?: "—")
-                    CareerValue("Niveau collection", stats.collectorLevel?.toString() ?: "—")
+                if (stats.garageCars != null || stats.collectorLevel != null ||
+                    stats.fastestLaps != null) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        stats.garageCars?.let { CareerValue("Mon garage", it.toString() + " voitures") }
+                        stats.collectorLevel?.let { CareerValue("Niv. collectionneur", it.toString()) }
+                        stats.fastestLaps?.let { CareerValue("Meilleurs tours", it.toString()) }
+                    }
+                }
+                stats.distanceKm?.let {
+                    Text("Distance de carrière : " +
+                        NumberFormat.getIntegerInstance(Locale.FRANCE).format(it) + " km",
+                        fontSize = 13.sp, color = PitColors.Muted)
+                }
+                if (sample.evidence == ProfileEvidence.GRIDSTATS_PUBLIC && stats.races == null) {
+                    Text("Bilan Sport non vérifiable sur cette lecture publique. " +
+                        "Pitwall conserve « inconnu » plutôt que d'afficher de faux zéros.",
+                        fontSize = 12.sp, color = PitColors.Yellow)
                 }
                 val delta = profile.drPointsChange
                 if (delta != null) Text(
@@ -155,8 +178,8 @@ fun Gt7CareerPanel(store: Gt7ProfileStore, editable: Boolean, localCareer: Pitwa
                     color = PitColors.Yellow, fontSize = 11.sp)
             }
             if (profile.psnId.isNotBlank()) {
-                Text("GT GridStats public : DR/SR uniquement. Source non officielle, " +
-                    "sans connexion à PlayStation. Autres chiffres non synchronisés.",
+                Text("Lecture publique GT GridStats : chiffres disponibles et vérifiés uniquement. " +
+                    "Source tierce non officielle, sans mot de passe PlayStation.",
                     color = PitColors.Muted, fontSize = 11.sp)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(enabled = !refreshingPublic, onClick = {
@@ -165,7 +188,7 @@ fun Gt7CareerPanel(store: Gt7ProfileStore, editable: Boolean, localCareer: Pitwa
                     }) {
                         Text(when {
                             refreshingPublic -> "Lecture..."
-                            store.publicSyncEnabled() -> "Actualiser DR/SR"
+                            store.publicSyncEnabled() -> "Actualiser mon profil"
                             else -> "Activer le profil public"
                         })
                     }
