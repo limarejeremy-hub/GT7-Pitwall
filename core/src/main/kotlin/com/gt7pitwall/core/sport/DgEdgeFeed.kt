@@ -76,7 +76,9 @@ object DgEdgeFeed {
             summary.groupValues[3].toIntOrNull() != year) return null
 
         val laps = summary.groupValues[5].toIntOrNull()?.takeIf { it in 1..150 } ?: return null
-        val cars = summary.groupValues[4].trim().takeIf { it.isNotBlank() } ?: return null
+        // SEO pages may say "runs the race over 5 laps". That is not a vehicle.
+        // Ignore generic placeholders instead of marking real one-make cars contradictory.
+        val cars = summary.groupValues[4].trim().takeIf(SportNames::meaningfulCar)
         val track = summary.groupValues[6].trim().takeIf { it.isNotBlank() } ?: return null
         val tyres = GtPlanetFeed.compounds(summary.groupValues[7]).takeIf { it.isNotEmpty() } ?: return null
 
