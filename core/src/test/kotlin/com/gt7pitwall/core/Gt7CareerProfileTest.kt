@@ -21,7 +21,7 @@ class Gt7CareerProfileTest {
             .add(Gt7CareerStats(dr="C",sr="S",drPoints=5313,races=71,wins=4),
                 ProfileEvidence.USER_ENTERED,1000)
         assertEquals(1,mine.samples.size)
-        assertEquals(0,mine.drPointsChange)
+        assertNull(mine.drPointsChange)
         val other=mine.changeIdentity("OtherPSN777")
         assertEquals("OtherPSN777",other.psnId)
         assertTrue(other.samples.isEmpty())
