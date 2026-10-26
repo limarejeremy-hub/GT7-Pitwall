@@ -9,6 +9,7 @@ import java.util.Locale
 enum class ProfileEvidence(val label: String) {
     USER_ENTERED("Déclaré par le pilote"),
     USER_IMPORT("Import fourni par le pilote"),
+    GRIDSTATS_PUBLIC("Page publique GT GridStats : DR/SR uniquement"),
 }
 
 data class Gt7CareerStats(
