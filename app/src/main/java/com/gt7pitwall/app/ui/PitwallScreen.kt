@@ -70,6 +70,7 @@ import com.gt7pitwall.app.discord.DiscordState
 import com.gt7pitwall.app.engine.PitwallEngine
 import com.gt7pitwall.app.engine.PitwallUiState
 import com.gt7pitwall.app.settings.SettingsStore
+import com.gt7pitwall.app.profile.Gt7ProfileStore
 import com.gt7pitwall.app.ui.theme.PitColors
 import com.gt7pitwall.app.voice.BenchModel
 import com.gt7pitwall.app.voice.ListenState
@@ -121,6 +122,8 @@ fun PitwallScreen(
     onStop: () -> Unit,
     onVoiceInputToggle: (Boolean) -> Unit,
 ) {
+    val context = LocalContext.current
+    val gt7Profile = remember(context) { Gt7ProfileStore(context) }
     val state by engine.state.collectAsStateWithLifecycle()
     val connection by engine.connection.collectAsStateWithLifecycle()
     val running by engine.running.collectAsStateWithLifecycle()
@@ -364,6 +367,7 @@ fun PitwallScreen(
                         color = PitColors.Orange)
                     Text("Comprends le règlement et choisis ton plan avant de prendre le départ.",
                         color = PitColors.Muted, style = MaterialTheme.typography.bodySmall)
+                    Gt7CareerPanel(gt7Profile, editable = false)
                     RaceSetupCard(state, rules, engine.database, engine::setRules, engine::command,
                         engine::selectProfile, engine::updateProfile, engine::confirmRules,
                         onRefreshSchedule, engine::declareRules)
@@ -391,6 +395,7 @@ fun PitwallScreen(
                             ScrollColumn(Modifier.weight(1f)) {
                                 Text("ATELIER & CONNEXION", fontSize = 20.sp,
                                     fontWeight = FontWeight.Bold, color = PitColors.Orange)
+                                Gt7CareerPanel(gt7Profile, editable = true)
                                 connectionCard()
                                 DriveCard(state.snapshot.packet)
                                 LapHistoryCard(state.snapshot.laps)
@@ -413,6 +418,7 @@ fun PitwallScreen(
                         ScrollColumn(Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
                             Text("ATELIER & CONNEXION", fontSize = 20.sp,
                                 fontWeight = FontWeight.Bold, color = PitColors.Orange)
+                            Gt7CareerPanel(gt7Profile, editable = true)
                             connectionCard()
                             RaceSetupCard(state, rules, engine.database, engine::setRules,
                                 engine::command, engine::selectProfile, engine::updateProfile,
