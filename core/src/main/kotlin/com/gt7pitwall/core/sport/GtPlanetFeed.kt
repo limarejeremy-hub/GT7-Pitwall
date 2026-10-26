@@ -17,6 +17,12 @@ import java.util.Locale
 object GtPlanetFeed {
     const val NAME = "GTPlanet"
     const val URL = "https://www.gtplanet.net/tag/gran-turismo-7-daily-races/feed/"
+
+    /**
+     * Secours, même site et même format (flux WordPress standard) : le flux général, où l'article de la semaine figure
+     * dans les jours qui suivent sa publication. Lu seulement si le flux de l'étiquette échoue ou n'a pas la semaine.
+     */
+    const val FALLBACK_URL = "https://www.gtplanet.net/feed/"
     val PARIS: ZoneId = ZoneId.of("Europe/Paris")
 
     /** Articles hebdomadaires du flux, du plus récent au plus ancien. Un article sans fiche lisible est ignoré. */

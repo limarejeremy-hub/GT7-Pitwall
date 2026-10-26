@@ -38,6 +38,7 @@ import com.gt7pitwall.core.session.SessionTracker
 import com.gt7pitwall.core.sport.Edition
 import com.gt7pitwall.core.sport.RuleField
 import com.gt7pitwall.core.sport.ScheduleState
+import com.gt7pitwall.core.sport.SessionMatcher
 import com.gt7pitwall.core.sport.SportAutofill
 import com.gt7pitwall.core.strategy.DataSource
 import com.gt7pitwall.core.strategy.FuelReport
@@ -476,6 +477,7 @@ class RaceController(
             pendingSchedule = null
             out += applySchedule(it)
         }
+        if (sessionId != null && !sessionFinished && !sessionIdentitySettled && snapshot.laps.size <= 2) identifySession(out)
         val frozen = tracker.pitVisitOpen || pitWindowPackets > 0
         if (!frozen && (events.isNotEmpty() || windowWasOpen)) out += replan()
         fuel = FuelStrategy.compute(tracker.snapshot, plan?.totalLaps)
@@ -947,6 +949,13 @@ class RaceController(
     /** Épreuve choisie à l'écran : son propre règlement est repris, celui de l'épreuve quittée est rangé. */
     fun selectProfile(id: ProfileId): List<EngineerMessage> {
         if (id == profiles.active) return emptyList()
+        // Choix du pilote : la reconnaissance automatique de l'épreuve ne revient plus dessus pour cette session.
+        sessionIdentitySettled = true
+        return deliver(switchProfile(id))
+    }
+
+    /** Changement d'épreuve (pilote ou reconnaissance automatique) ; messages non filtrés. */
+    private fun switchProfile(id: ProfileId): List<EngineerMessage> {
         profiles.select(id)
         // L'édition de la semaine passe avant toute ancienne fiche enregistrée.
         val ed = schedule?.editions?.get(id.series)
@@ -960,7 +969,100 @@ class RaceController(
         // L'épreuve choisie est annoncée avec son édition de la semaine (ou l'absence de programme).
         val out = (if (id.series != Series.OTHER) listOf(editionAnnouncement()) else emptyList()) + replan()
         saveSession()
-        return deliver(out)
+        return out
+    }
+
+    /** Épreuve reconnue automatiquement pour la session en cours (A, B, C, hors programme, ou pas encore). */
+    var sessionIdentity: SessionMatcher.Result = SessionMatcher.Result.Unknown
+        private set
+    private var sessionIdentitySettled = false
+    /** Circuit reconnu par la télémétrie dans cette session (pas celui d'un profil enregistré). */
+    private var sessionTrackEvidence: Int? = null
+    private var ambiguityAnnounced = false
+
+    /** Une ligne pour l'écran : ce que Pitwall sait de l'épreuve en cours, sans rien deviner. */
+    val sessionIdentityText: String?
+        get() = when (val r = sessionIdentity) {
+            is SessionMatcher.Result.Match -> "${r.series.label} reconnue (${r.evidence.joinToString(", ")})"
+            is SessionMatcher.Result.Ambiguous -> "Épreuve à confirmer : ${r.candidates.joinToString(" ou ") { it.label }}"
+            is SessionMatcher.Result.NoMatch -> "Hors programme Sport : ${r.reason}"
+            SessionMatcher.Result.Unknown -> null
+        }
+
+    /**
+     * Reconnaissance de l'épreuve par la télémétrie : nombre de tours annoncé par GT7 dès le départ, puis circuit
+     * reconnu au premier tour. Une épreuve n'est choisie que si elle seule correspond ; une épreuve contredite n'est
+     * jamais gardée (règlements jamais mélangés). Une course personnalisée ne passe en Sport qu'avec deux preuves
+     * (tours et circuit). Le choix du pilote à l'écran reste prioritaire.
+     */
+    private fun identifySession(out: MutableList<EngineerMessage>) {
+        if (replay) return
+        val p = snapshot.packet ?: return
+        val active = profile.id
+        // Chrono, qualification : GT7 n'annonce pas de nombre de tours, et ces sessions n'ont pas de règlement de course.
+        if (active.kind != SessionKind.RACE || p.totalLaps <= 0) return
+        val st = schedule ?: return
+        val today = java.time.Instant.ofEpochMilli(clock()).atZone(com.gt7pitwall.core.sport.GtPlanetFeed.PARIS).toLocalDate()
+        val result = SessionMatcher.match(st.editions, p.totalLaps, sessionTrackEvidence, today)
+        // Course personnalisée : une seule preuve ne suffit pas à la ranger en Sport (même nombre de tours par hasard).
+        val decided = if (result is SessionMatcher.Result.Match && active.mode == SessionMode.CUSTOM && result.evidence.size < 2) {
+            SessionMatcher.Result.Ambiguous(listOf(result.series))
+        } else {
+            result
+        }
+        if (decided == sessionIdentity) return
+        sessionIdentity = decided
+        when (result) {
+            is SessionMatcher.Result.Match -> {
+                if (decided !is SessionMatcher.Result.Match) return
+                sessionIdentitySettled = result.evidence.size >= 2 || sessionTrackEvidence != null
+                val mode = if (active.mode == SessionMode.SPORT_PRACTICE) SessionMode.SPORT_PRACTICE else SessionMode.SPORT_OFFICIAL
+                val target = ProfileId(result.series, SessionKind.RACE, mode)
+                journal.record(
+                    JournalType.DECISION, JournalSource.ENGINE, "Épreuve reconnue : ${target.label}",
+                    decision = if (target == active) "épreuve active confirmée" else "règlement de la semaine appliqué",
+                    details = mapOf("preuves" to result.evidence.joinToString(", "), "epreuve_precedente" to active.label),
+                )
+                if (target != active) {
+                    out += EngineerMessage(
+                        "${result.series.label} reconnue (${result.evidence.joinToString(", ")}) : j'applique son règlement de la semaine.",
+                        Priority.NORMAL, MessageCategory.RADIO,
+                    )
+                    out += switchProfile(target)
+                }
+            }
+            is SessionMatcher.Result.NoMatch -> {
+                sessionIdentitySettled = true
+                if (!active.sport) return
+                journal.record(
+                    JournalType.DECISION, JournalSource.ENGINE, "Course hors programme Sport",
+                    decision = "règlement ${active.label} retiré pour cette course",
+                    details = mapOf("raison" to result.reason, "tours_gt7" to p.totalLaps.toString()),
+                )
+                out += EngineerMessage(
+                    "Cette course ne correspond pas à la ${active.series.label} de la semaine (${result.reason}) : je n'applique pas son règlement.",
+                    Priority.NORMAL, MessageCategory.RADIO,
+                )
+                out += switchProfile(ProfileId.of(SessionMode.CUSTOM, Series.OTHER))
+            }
+            is SessionMatcher.Result.Ambiguous -> if (active.sport && active.series !in result.candidates) {
+                // L'épreuve active est contredite : son règlement est retiré en attendant la preuve du circuit.
+                journal.record(
+                    JournalType.DECISION, JournalSource.ENGINE, "Épreuve à confirmer : ${result.candidates.joinToString(" ou ") { it.label }}",
+                    decision = "règlement ${active.label} retiré (contredit par GT7)",
+                    details = mapOf("tours_gt7" to p.totalLaps.toString()),
+                )
+                if (!ambiguityAnnounced) {
+                    ambiguityAnnounced = true
+                    out += EngineerMessage(
+                        "Course de ${p.totalLaps} tours : ${result.candidates.joinToString(" ou ") { it.label }}. Je confirme au premier tour.",
+                        Priority.INFO, MessageCategory.RADIO,
+                    )
+                }
+                out += switchProfile(ProfileId.of(SessionMode.CUSTOM, Series.OTHER))
+            }
+            SessionMatcher.Result.Unknown -> Unit
+        }
     }
 
     /** Version de GT7, contexte de réglages / BoP. */
@@ -1013,6 +1115,10 @@ class RaceController(
         finishPosition = null
         internalErrors.clear()
         trackInconsistencyNoted = false
+        sessionIdentity = SessionMatcher.Result.Unknown
+        sessionIdentitySettled = false
+        sessionTrackEvidence = null
+        ambiguityAnnounced = false
         lastDrivingReport = null
         briefed = false
         lastPositionChangeClockMs = null
@@ -3212,6 +3318,7 @@ class RaceController(
                     else -> null
                 }
                 if (pick != null) {
+                    sessionTrackEvidence = pick.id
                     applyRules(rules.copy(trackId = pick.id))
                     out += EngineerMessage("Circuit reconnu : ${pick.label}.", Priority.NORMAL, MessageCategory.RADIO)
                     continue
@@ -3224,6 +3331,7 @@ class RaceController(
             val found = database.coursesMatching(dist)
             when {
                 found.size == 1 -> {
+                    sessionTrackEvidence = found[0].id
                     applyRules(rules.copy(trackId = found[0].id))
                     out += EngineerMessage("Circuit reconnu : ${found[0].label}.", Priority.NORMAL, MessageCategory.RADIO)
                 }

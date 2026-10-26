@@ -126,6 +126,39 @@ class PitwallApp : Application() {
         database = DatabaseRepository(this, engine.database) { sport.rebuildNow() }
         engine.onUnknownCar = database::unknownCar
         database.start()
+        // Zero touch : retour du réseau (Wi-Fi retrouvé, mode avion coupé) : nouvelle synchronisation si besoin.
+        runCatching {
+            getSystemService(android.net.ConnectivityManager::class.java)?.registerDefaultNetworkCallback(
+                object : android.net.ConnectivityManager.NetworkCallback() {
+                    override fun onAvailable(network: android.net.Network) {
+                        sport.onNetworkBack()
+                        database.onNetworkBack()
+                    }
+                },
+            )
+        }
+        freshness = combine(sport.state, database.status, minuteTicks()) { s, _, _ ->
+            val now = System.currentTimeMillis()
+            com.gt7pitwall.core.sport.DataFreshness.of(
+                s, java.time.LocalDate.now(com.gt7pitwall.core.sport.GtPlanetFeed.PARIS), now, database.lastSuccessMs, database.lastError,
+            )
+        }.stateIn(CoroutineScope(SupervisorJob() + Dispatchers.Default), SharingStarted.Eagerly, null)
+    }
+
+    /** Fraîcheur des données (programme Sport, base voitures/circuits), recalculée chaque minute. */
+    lateinit var freshness: kotlinx.coroutines.flow.StateFlow<com.gt7pitwall.core.sport.DataFreshness?>
+
+    private fun minuteTicks() = kotlinx.coroutines.flow.flow {
+        while (true) {
+            emit(Unit)
+            kotlinx.coroutines.delay(60_000)
+        }
+    }
+
+    /** Chaque ouverture de l'écran : synchronisation non bloquante (programme de la semaine, nouvelles voitures). */
+    fun syncOnOpen() {
+        sport.onOpen()
+        database.onOpen()
     }
 
     /**

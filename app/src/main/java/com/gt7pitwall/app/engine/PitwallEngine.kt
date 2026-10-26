@@ -92,6 +92,8 @@ data class PitwallUiState(
     val learning: List<String> = emptyList(),
     /** Bilan de pilotage de la dernière course terminée (rapport complet). */
     val drivingReport: List<String> = emptyList(),
+    /** Épreuve reconnue par la télémétrie pour la session en cours (null : rien à dire). */
+    val sessionIdentity: String? = null,
     /** Tours bouclés avec les pneus actuels (d'après les changements déclarés par le pilote). */
     val tyreAgeLaps: Int = 0,
     /** L'ingénieur attend « oui / non » à « As-tu changé les pneus ? ». */
@@ -549,6 +551,7 @@ class PitwallEngine(
             missingTyres = race.missingTyres,
             learning = runCatching { race.learningReport() }.getOrElse { listOf("Diagnostic indisponible : ${it.javaClass.simpleName}") },
             drivingReport = race.lastDrivingReport?.lines.orEmpty(),
+            sessionIdentity = race.sessionIdentityText,
             tyreAgeLaps = race.ledger.tyreAge((race.snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)),
             askTyreChange = race.ledger.awaitingTyreChangeAnswer,
             profile = race.profile,

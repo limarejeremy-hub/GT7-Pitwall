@@ -24,6 +24,11 @@ class MainActivity : ComponentActivity() {
             if (granted) (application as PitwallApp).setVoiceInput(true)
         }
 
+    override fun onStart() {
+        super.onStart()
+        (application as PitwallApp).syncOnOpen()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -63,6 +68,7 @@ class MainActivity : ComponentActivity() {
                     onGoogleOnHeadset = app::setGoogleOnHeadset,
                     onDevTools = app::setDevTools,
                     onRefreshSchedule = { app.sport.refreshNow() },
+                    freshness = app.freshness,
                     onStart = { address ->
                         app.settings.ps5Address = address
                         TelemetryService.start(this, address)

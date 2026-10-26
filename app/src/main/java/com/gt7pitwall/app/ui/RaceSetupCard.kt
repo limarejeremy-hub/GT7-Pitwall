@@ -83,6 +83,9 @@ fun RaceSetupCard(
     ) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("COURSE & STRATÉGIE", style = MaterialTheme.typography.labelMedium, color = PitColors.Muted, letterSpacing = 1.5.sp)
+            state.sessionIdentity?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = if (it.startsWith("Épreuve à confirmer")) PitColors.Yellow else PitColors.Cyan)
+            }
             EventProfileSection(state, onProfile, onProfileInfo, onConfirmRules)
             WeeklyEditionSection(state, rules, database, onRules, onRefreshSchedule, onDeclareRules)
             HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)

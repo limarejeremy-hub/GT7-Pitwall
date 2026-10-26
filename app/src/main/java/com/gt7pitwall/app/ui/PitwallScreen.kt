@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -109,6 +110,7 @@ fun PitwallScreen(
     onGoogleOnHeadset: (Boolean) -> Unit,
     onDevTools: (Boolean) -> Unit,
     onRefreshSchedule: () -> Unit,
+    freshness: kotlinx.coroutines.flow.StateFlow<com.gt7pitwall.core.sport.DataFreshness?>,
     onStart: (String) -> Unit,
     onStop: () -> Unit,
     onVoiceInputToggle: (Boolean) -> Unit,
@@ -275,7 +277,12 @@ fun PitwallScreen(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
-                title = { Text("GT7 Pitwall", fontWeight = FontWeight.Bold) },
+                title = {
+                    Column {
+                        Text("GT7 Pitwall", fontWeight = FontWeight.Bold)
+                        FreshnessLine(freshness, onRefreshSchedule)
+                    }
+                },
                 actions = {
                     TextButton(onClick = { showHistory = true }) { Text("Historique") }
                     StatusPill(connection)
@@ -1864,5 +1871,44 @@ private fun CloudAiCard(cloud: com.gt7pitwall.app.ai.CloudAi, onMode: (com.gt7pi
                 }
             }
         }
+    }
+}
+
+/**
+ * Indicateur discret de fraîcheur des données sous le titre (« Sport 26/10 · Base 3 h ») ; un appui ouvre le détail
+ * et permet une actualisation immédiate. Couleur : vert à jour, jaune en attente, rouge introuvable.
+ */
+@Composable
+private fun FreshnessLine(
+    freshness: kotlinx.coroutines.flow.StateFlow<com.gt7pitwall.core.sport.DataFreshness?>,
+    onRefresh: () -> Unit,
+) {
+    val f by freshness.collectAsStateWithLifecycle()
+    val value = f ?: return
+    var open by remember { mutableStateOf(false) }
+    val color = when (value.level) {
+        com.gt7pitwall.core.sport.DataFreshness.Level.OK -> PitColors.Green
+        com.gt7pitwall.core.sport.DataFreshness.Level.WAITING -> PitColors.Yellow
+        com.gt7pitwall.core.sport.DataFreshness.Level.PROBLEM -> PitColors.Red
+    }
+    Text(
+        "● ${value.text}",
+        color = color,
+        style = MaterialTheme.typography.labelSmall,
+        modifier = Modifier.clickable { open = true },
+    )
+    if (open) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { open = false },
+            title = { Text("Données") },
+            text = { Text(value.detail, style = MaterialTheme.typography.bodySmall) },
+            confirmButton = {
+                TextButton(onClick = {
+                    onRefresh()
+                    open = false
+                }) { Text("Actualiser") }
+            },
+            dismissButton = { TextButton(onClick = { open = false }) { Text("Fermer") } },
+        )
     }
 }

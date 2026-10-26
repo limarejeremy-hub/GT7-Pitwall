@@ -43,6 +43,26 @@ class DatabaseRepository(context: Context, private val database: Gt7Database, pr
         }
     }
 
+    /** Dernière mise à jour réussie (null : base livrée avec l'APK ou cache ancien) et dernière erreur. */
+    val lastSuccessMs: Long? get() = prefs.getLong(KEY_SUCCESS, 0L).takeIf { it > 0 }
+    val lastError: String? get() = prefs.getString(KEY_ERROR, null)
+
+    /** Ouverture de l'application : relecture si la dernière vérification date de plus de [OPEN_REFRESH_MS]. */
+    fun onOpen() {
+        val last = prefs.getLong(KEY_FETCH, 0L)
+        if (System.currentTimeMillis() - last >= OPEN_REFRESH_MS) scope.launch { refresh() }
+    }
+
+    /** Retour du réseau : nouvel essai si la dernière mise à jour a échoué (au plus une fois toutes les 2 minutes). */
+    fun onNetworkBack() {
+        val now = System.currentTimeMillis()
+        if (now - lastNetworkAttemptMs < NETWORK_RETRY_MS) return
+        lastNetworkAttemptMs = now
+        if (lastError != null || now - prefs.getLong(KEY_FETCH, 0L) >= REFRESH_MS) scope.launch { refresh() }
+    }
+
+    @Volatile private var lastNetworkAttemptMs = 0L
+
     /** Voiture inconnue reçue par la télémétrie : relecture anticipée, au plus une fois par heure. */
     fun unknownCar() {
         val last = prefs.getLong(KEY_FETCH, 0L)
@@ -60,7 +80,8 @@ class DatabaseRepository(context: Context, private val database: Gt7Database, pr
                 tmp.renameTo(File(dir, name))
             }
             database.replace(fresh)
-            prefs.edit().putLong(KEY_FETCH, System.currentTimeMillis()).remove(KEY_ERROR).apply()
+            val now = System.currentTimeMillis()
+            prefs.edit().putLong(KEY_FETCH, now).putLong(KEY_SUCCESS, now).remove(KEY_ERROR).apply()
             onUpdated()
         } catch (e: Exception) {
             // Réseau absent ou source indisponible : la base actuelle reste ; nouvel essai à la prochaine vérification.
@@ -109,6 +130,9 @@ class DatabaseRepository(context: Context, private val database: Gt7Database, pr
         const val CHECK_MS = 30 * 60_000L
         private const val KEY_FETCH = "last_fetch"
         private const val KEY_ERROR = "last_error"
+        private const val KEY_SUCCESS = "last_success"
+        const val OPEN_REFRESH_MS = 6 * 3_600_000L
+        const val NETWORK_RETRY_MS = 2 * 60_000L
 
         /** Base au lancement : dernière version téléchargée si elle est lisible et complète, sinon celle de l'APK. */
         fun load(context: Context): Gt7Database {
