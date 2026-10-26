@@ -103,6 +103,40 @@ class TyreIntelligenceTest {
         assertEquals(0, c2.ledger.stopCount)
     }
 
+    /** Course réelle 26/10 : arrêt sans essence T7, puis « je suis en medium » au tour suivant. */
+    @Test
+    fun aPendingNoRefuelStopMakesOldTyresUncertainUntilPilotNamesFreshCompound() {
+        val (c, s) = race(laps = 14)
+        c.setRules(c.rules.copy(startTyre = com.gt7pitwall.core.strategy.TyreCompound.RH))
+        s.start()
+        s.driveLaps(6)
+        s.pitStop(
+            fuel = 0f,
+            changeTyres = true,
+            freshTemps = floatArrayOf(60f, 60f, 60f, 60f),
+        )
+        assertEquals(0, c.ledger.stopCount, "la signature thermique seule ne doit pas confirmer l'arrêt")
+        val candidate = c.ledger.pending
+        assertTrue(candidate != null, "un arrêt probable existe en attente du pilote")
+        assertFalse(c.ledger.tyreStint(s.lap, c.rules.startTyre).certain,
+            "les RH ne doivent plus être présentés comme certains après l'arrêt suspecté")
+        val effectiveLap = candidate.lap + 1
+        s.say("je suis en medium")
+        assertEquals(0, c.ledger.stopCount, "la famille des mediums nécessite la confirmation du pilote")
+        assertTrue("Tu confirmes des pneus course mediums" in s.lastAnswer, s.lastAnswer)
+        s.say("oui")
+        assertEquals(1, c.ledger.stopCount)
+        assertEquals(StopEvidence.DRIVER_CONFIRMED, c.ledger.stopList.single().evidence)
+        assertEquals(TyreService.CHANGED, c.ledger.stopList.single().tyres)
+        assertEquals(com.gt7pitwall.core.strategy.TyreCompound.RM,
+            c.ledger.currentTyre(c.rules.startTyre))
+        assertEquals(com.gt7pitwall.core.strategy.TyreCompound.RH, c.rules.startTyre,
+            "les pneus de départ ne doivent pas être réécrits")
+        assertEquals(effectiveLap, c.ledger.changes.single().lap,
+            "le nouveau train commence juste après l'arrêt, pas à la déclaration vocale")
+        assertTrue(c.ledger.tyreStint(s.lap, c.rules.startTyre).certain)
+    }
+
     /** 4. Signature thermique hors des stands (en roulant, ou arrêté en piste) : aucun faux changement. */
     @Test
     fun aThermalSignatureOutsideThePitsNeverMeansATyreChange() {

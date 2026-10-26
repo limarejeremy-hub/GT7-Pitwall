@@ -94,6 +94,10 @@ interface RaceStorage {
     fun loadJournal(sessionId: String): List<String> = emptyList()
     fun journalSessionIds(): List<String> = emptyList()
 
+    /** Circuits appris par Pitwall (absents de la base communautaire), JSON ; null au premier lancement. */
+    fun loadLearnedTracks(): String? = null
+    fun saveLearnedTracks(json: String) {}
+
     /** Persisted Driver DNA profiles; independent from race session archives. */
     fun loadDriverBook(): String? = null
     fun saveDriverBook(json: String) {}
@@ -211,6 +215,10 @@ class RaceController(
     var trackCandidates: List<Course> = emptyList()
         private set
     private var candidatesAnnounced = false
+
+    init {
+        database.restoreLearned(Gt7Database.learnedFrom(storage?.loadLearnedTracks()))
+    }
 
     /**
      * Paquets restants pendant lesquels le plan est gelé après la ligne d'un tour d'arrêt prévu : selon le circuit,
@@ -1054,7 +1062,8 @@ class RaceController(
     private fun lapEntry(l: com.gt7pitwall.core.session.LapRecord): LapEntry {
         val change = ledger.changes.lastOrNull { it.lap <= l.lapNumber }
         val since = change?.lap ?: 1
-        val certain = ledger.stopList.none { it.tyres == TyreService.UNKNOWN && it.lap >= since - 1 && it.lap < l.lapNumber }
+        val certain = ledger.stopList.none { it.tyres == TyreService.UNKNOWN && it.lap >= since - 1 && it.lap < l.lapNumber } &&
+            ledger.pending?.let { it.lap >= since - 1 && it.lap < l.lapNumber } != true
         fun ev(a: Int?, b: Int?) = if (a == null && b == null) null else (a ?: 0) + (b ?: 0)
         return LapEntry(
             l.lapNumber, l.timeMs, l.fuelUsed, l.refuelled,
@@ -2674,6 +2683,9 @@ class RaceController(
     private companion object {
         val INCIDENT_NOTE = Regex("(?i)accident|accroch|t[eê]te.?[aà].?queue|sortie de piste|touch[eé]|crash|abîm|abim")
         const val TYRE_QUESTION_PACKETS = 60 * 60
+
+        /** Un tour plus court n'est pas un circuit (tour incomplet, chargement). */
+        const val MIN_LEARN_LAP_M = 1_000f
         const val POSITION_CALM_MS = 30_000L
 
         /** Réponses gardées entières : détail demandé, secteurs, règlement. */
@@ -2762,18 +2774,33 @@ class RaceController(
                 "À vérifier : les ${compound.spoken} ne sont pas dans le règlement enregistré, qui n'est pas confirmé."
             }
         }
-        // « Je suis en durs » sans arrêt depuis le départ : ce sont les pneus de départ, pas un changement.
-        val atStart = c.atStart || lap < 1 || (c.current && ledger.stopCount == 0 && ledger.changes.isEmpty())
+        // « Je suis en medium » après une signature thermique n'est PAS une correction du pneu de départ.
+        // La déclaration explicite d'une nouvelle gomme par le pilote confirme le candidat observé
+        // (et lui seul). Le train commence au premier tour APRÈS le passage aux stands.
+        val recentCandidate = ledger.pending?.takeIf {
+            c.current && !c.atStart && lap - it.lap in 0..2 &&
+                ledger.currentTyre(rules.startTyre) != compound
+        }
+        val atStart = c.atStart || lap < 1 ||
+            (c.current && ledger.stopCount == 0 && ledger.changes.isEmpty() && recentCandidate == null && ledger.pending == null)
         if (atStart) {
             applyRules(rules.copy(startTyre = compound))
             raceMemory.fact(lap.coerceAtLeast(0), clock(), "départ en ${compound.spoken}", Provenance.DRIVER)
             out += "Noté : départ en ${compound.spoken}."
         } else {
-            val passage = ledger.changeForPassage(lap)
-            val replaced = ledger.fitTyres(lap, compound)
+            val confirmedStop = recentCandidate?.let { candidate ->
+                ledger.confirmPending()?.also { rec ->
+                    pendingStopTyreSuspect = false
+                    ledger.setThermal(rec.lap, lastThermal?.verdict?.name ?: TyreChangeVerdict.SUSPECTED.name)
+                    out += "Arrêt au tour ${rec.lap} confirmé par ta déclaration de pneus."
+                }
+            }
+            val effectiveLap = confirmedStop?.lap?.plus(1) ?: lap
+            val passage = ledger.changeForPassage(effectiveLap)
+            val replaced = ledger.fitTyres(effectiveLap, compound)
             labelThermal(changed = true)
             performanceTyreLaps = emptyList()
-            if (passage == null) engineer.onTyresChanged(lap)
+            if (passage == null) engineer.onTyresChanged(effectiveLap)
             out += when {
                 replaced != null -> {
                     journal.record(
@@ -2784,7 +2811,7 @@ class RaceController(
                     "Corrigé : ${compound.spoken} au lieu de ${replaced.spoken}."
                 }
                 passage != null -> "Noté : ${compound.spoken} montés à cet arrêt.".also { raceMemory.fact(lap, clock(), "${compound.spoken} montés", Provenance.DRIVER) }
-                else -> "Noté : ${compound.spoken} montés au tour $lap.".also { raceMemory.fact(lap, clock(), "${compound.spoken} montés", Provenance.DRIVER) }
+                else -> "Noté : ${compound.spoken} montés au tour $effectiveLap.".also { raceMemory.fact(effectiveLap, clock(), "${compound.spoken} montés", Provenance.DRIVER) }
             }
         }
         if (rules.requiredTyres.isNotEmpty()) {
@@ -2818,7 +2845,7 @@ class RaceController(
         val guess = current?.let { TyreCompound.of(it, hardness) }
         if (guess != null) {
             pendingConfirmation = c.copy(text = "${current.spoken} ${hardness.spoken}")
-            return listOf("${hardness.spoken.replaceFirstChar { it.uppercase() }} : course, sport ou confort ? ${guess.spoken.replaceFirstChar { it.uppercase() }}, comme tes pneus actuels ?")
+            return listOf("Tu confirmes des pneus ${guess.spoken} actuellement ?")
         }
         return listOf("${hardness.spoken.replaceFirstChar { it.uppercase() }} : course, sport ou confort ?")
     }
@@ -2975,6 +3002,19 @@ class RaceController(
 
     // ------------------------------------------------------------------ Mémoire et circuit
 
+    /** Nouveau circuit appris, enregistré sur le téléphone et retenu pour l'épreuve en cours. */
+    private fun learnTrack(name: String, distM: Float): List<EngineerMessage> {
+        val c = database.learn(name, distM.roundToInt())
+        storage?.saveLearnedTracks(Gt7Database.learnedJson(database.learned))
+        applyRules(rules.copy(trackId = c.id))
+        journal.record(
+            JournalType.DECISION, JournalSource.ENGINE, "Circuit appris : ${c.name}",
+            decision = "absent de la base communautaire ; longueur mesurée sur un tour complet",
+            details = mapOf("longueur_m" to c.lengthM.toString(), "identifiant" to c.id.toString()),
+        )
+        return listOf(EngineerMessage("Nouveau circuit enregistré : ${c.name}.", Priority.INFO, MessageCategory.RADIO))
+    }
+
     private fun learn(events: List<SessionEvent>): List<EngineerMessage> {
         val out = mutableListOf<EngineerMessage>()
         val p = tracker.snapshot.packet ?: return out
@@ -2991,6 +3031,29 @@ class RaceController(
                 continue
             }
             val dist = e.lap.distanceM ?: continue
+            if (dist < MIN_LEARN_LAP_M) continue
+            // Épreuve Sport dont le circuit publié manque à la base (SUGO à sa sortie, le 15/10) : la longueur seule
+            // désignerait à tort un circuit voisin (Laguna Seca, 3,6 km, pour SUGO, 3,7 km). Le circuit est appris sous
+            // son nom publié, avec la longueur mesurée.
+            val published = edition?.takeIf { profile.id.series != Series.OTHER }?.trackName?.value
+            if (published != null) {
+                val named = com.gt7pitwall.core.sport.ScheduleBuilder.matchTrack(published, database)
+                val byLength = database.coursesMatching(dist)
+                val pick = when {
+                    named.size == 1 -> named[0]
+                    named.size > 1 -> named.filter { n -> byLength.any { it.id == n.id } }.singleOrNull()
+                    else -> null
+                }
+                if (pick != null) {
+                    applyRules(rules.copy(trackId = pick.id))
+                    out += EngineerMessage("Circuit reconnu : ${pick.label}.", Priority.NORMAL, MessageCategory.RADIO)
+                    continue
+                }
+                if (named.isEmpty()) {
+                    out += learnTrack(published, dist)
+                    continue
+                }
+            }
             val found = database.coursesMatching(dist)
             when {
                 found.size == 1 -> {

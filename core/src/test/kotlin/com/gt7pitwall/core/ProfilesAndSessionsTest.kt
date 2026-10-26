@@ -213,7 +213,7 @@ class ProfilesAndSessionsTest {
         s.driveLaps(4)
         s.pitStop(fuel = 40f)
         s.say("j'ai mis les durs")
-        s.say("oui") // « Course durs, comme tes pneus actuels ? »
+        s.say("oui") // « Tu confirmes des pneus course durs actuellement ? »
         s.driveLaps(1)
         val r = store.sessions.single()
         val stop = r.stops.single()

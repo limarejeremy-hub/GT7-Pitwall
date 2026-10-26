@@ -52,6 +52,10 @@ class FakeStorage(
 
     /** Driver DNA stored in the same way as on the Android device. */
     var driverBook: String? = null
+    var learnedTracks: String? = null
+    override fun loadLearnedTracks(): String? = learnedTracks
+    override fun saveLearnedTracks(json: String) { learnedTracks = json }
+
     override fun loadDriverBook(): String? = driverBook
     override fun saveDriverBook(json: String) { driverBook = json }
 

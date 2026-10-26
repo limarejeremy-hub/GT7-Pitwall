@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "scenario_id": "gt7-2026-10-26-interlagos-911-gt3-r-t7",
+  "date_local": "2026-10-26",
+  "track": "Autodromo de Interlagos",
+  "car": "Porsche 911 GT3 R (992) '22",
+  "car_code": 3600,
+  "session_id": "1793017813739-3600",
+  "race_laps": 14,
+  "pit_lap": 7,
+  "pit_stationary_seconds": 3.2,
+  "refuelling_observed": false,
+  "detector": {
+    "verdict": "SUSPECTED",
+    "reason": "simultaneous_persistent_drop_4_tyre_temperatures_at_pit_stop",
+    "four_wheel_step_celsius": {
+      "front_left": -29.2,
+      "front_right": -20.2,
+      "rear_left": -18.5,
+      "rear_right": -13.4
+    },
+    "reported_reset_temperature_celsius": 60,
+    "thermal_window_seconds": 59
+  },
+  "ground_truth": {
+    "label": "TYRES_CHANGED",
+    "previous_compound": "RH",
+    "new_compound": "RM",
+    "no_refuel": true,
+    "confirmed_by": "pilot_post_race_statement",
+    "confirmation_in_recorded_voice_log": false
+  },
+  "limitations": [
+    "UDP alone does not confirm tyre service or compound",
+    "Single real positive, insufficient to estimate false-positive rate",
+    "No real negative no-change control included"
+  ]
+}

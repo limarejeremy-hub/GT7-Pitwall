@@ -103,7 +103,7 @@ class RadioAiTest {
         val f = c.aiFacts()
         assertTrue(f.lines.any { it.startsWith("Carburant :") && "tours" in it }, f.text)
         assertTrue(f.lines.any { it.startsWith("Tour 2 :") }, f.text)
-        assertTrue(f.lines.first().startsWith("GT7 ne transmet pas"))
+        assertTrue("GT7 ne transmet pas" in f.lines.first(), f.lines.first())
 
         // Commande comprise par l'IA : Gemini ne fait que reformuler, rien ne change sans le « oui » du pilote.
         val cmd = RadioAi.parse("COMMANDE: les pneus tiennent 6 tours", "mes pneus durent 6 tours", f)

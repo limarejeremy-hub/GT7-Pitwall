@@ -183,7 +183,10 @@ class PitLedger {
         val last = tyreChanges.lastOrNull()
         val since = last?.lap ?: 1
         val unknownSince = stops.any { it.tyres == TyreService.UNKNOWN && (last == null || it.lap >= last.lap - 1) }
-        return TyreStint(since, tyreAge(currentLap), currentTyre(start), certain = !unknownSince, fromStart = last == null)
+        // Arrêt sans essence observé : même avant le « oui » du pilote, il invalide la certitude
+        // de la gomme et de son âge. Son absence au registre ne doit pas effacer la suspicion.
+        val unresolved = pending?.let { it.lap >= since - 1 } == true
+        return TyreStint(since, tyreAge(currentLap), currentTyre(start), certain = !unknownSince && !unresolved, fromStart = last == null)
     }
 
     /** Gommes utilisées d'après les déclarations du pilote (départ + changements). */

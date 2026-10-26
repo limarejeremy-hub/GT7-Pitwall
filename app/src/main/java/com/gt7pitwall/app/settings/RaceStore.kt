@@ -105,6 +105,20 @@ class RaceStore(context: Context) : RaceStorage {
         }
     }
 
+    private val tracksFile = File(context.filesDir, "learned_tracks.json")
+    private val tracksTmp = File(context.filesDir, "learned_tracks.json.tmp")
+
+    override fun loadLearnedTracks(): String? = runCatching { tracksFile.takeIf { it.exists() }?.readText(Charsets.UTF_8) }.getOrNull()
+
+    /** Circuits appris (absents de la base communautaire) : écriture atomique. */
+    @Synchronized
+    override fun saveLearnedTracks(json: String) {
+        runCatching {
+            tracksTmp.writeText(json, Charsets.UTF_8)
+            if (!tracksTmp.renameTo(tracksFile)) tracksTmp.delete()
+        }
+    }
+
     private val dnaFile = File(context.filesDir, "driver_dna.json")
     private val dnaTmp = File(context.filesDir, "driver_dna.json.tmp")
 

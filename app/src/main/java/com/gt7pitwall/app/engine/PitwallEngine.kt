@@ -142,6 +142,9 @@ class PitwallEngine(
         race.engineer.quietRace = true
     }
 
+    /** Voiture transmise par GT7 mais absente de la base : mise à jour de la base demandée (voir DatabaseRepository). */
+    var onUnknownCar: () -> Unit = {}
+
     /** L'ingénieur parle déjà (téléphone ou Discord) : une place mise en file serait périmée à son tour. */
     var voiceBusy: () -> Boolean = { false }
 
@@ -517,6 +520,8 @@ class PitwallEngine(
         if (!force && now - lastPublishMs < UI_REFRESH_MS) return
         lastPublishMs = now
         val snap = race.snapshot
+        // Voiture absente de la base (nouvelle voiture du jeu) : la base est relue sans attendre.
+        snap.packet?.carCode?.takeIf { it > 0 && race.carName == null }?.let { onUnknownCar() }
         _rules.value = race.rules
         _state.value = PitwallUiState(
             snapshot = snap,
