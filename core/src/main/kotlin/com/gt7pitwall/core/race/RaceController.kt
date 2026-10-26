@@ -804,7 +804,7 @@ class RaceController(
     fun aiFacts(): AiFacts {
         val snap = snapshot
         val lines = mutableListOf<String>()
-        lines += "GT7 ne transmet pas : les positions en course, les adversaires, les écarts, les dégâts, les gommes montées, la météo."
+        lines += "GT7 transmet ta place en course (champ 0x84) et le nombre de voitures (0x86), mais pas les écarts, les arrêts ni les pneus des adversaires. GT7 ne transmet pas l’usure des pneus, la gomme réellement montée ni la météo. Les seules températures ne prouvent pas combien de tours un train peut encore tenir."
         lines += "Épreuve : ${profile.id.label}" + if (profile.confirmed) ", règlement confirmé par le pilote." else ", règlement non confirmé."
         edition?.let { ed ->
             lines += "Programme de la semaine (${ed.sources.joinToString { it.name }}) : " +
