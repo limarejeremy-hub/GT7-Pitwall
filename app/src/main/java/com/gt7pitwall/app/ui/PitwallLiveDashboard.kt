@@ -142,14 +142,25 @@ private fun RaceHero(state: PitwallUiState, modifier: Modifier, onOpen: () -> Un
     Panel(modifier, onOpen) {
         Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Column(Modifier.weight(1.5f), verticalArrangement = Arrangement.Center) {
+            Column(Modifier.weight(1.75f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Eyebrow("COURSE ACTUELLE")
-                Text(state.profile.id.label, color = PitColors.Orange, fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold, maxLines = 1)
-                Text(state.course?.label ?: state.edition?.trackName?.value ?: "Circuit à identifier",
-                    color = white, fontWeight = FontWeight.Bold, fontSize = 17.sp,
-                    lineHeight = 19.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                if (packet == null) Hint("PS5 non connectée • ouvrir Atelier")
+                Text(state.profile.id.label + " · " +
+                    (state.course?.label ?: state.edition?.trackName?.value ?: "Circuit à identifier"),
+                    color = PitColors.Orange, fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold, maxLines = 2,
+                    lineHeight = 14.sp, overflow = TextOverflow.Ellipsis)
+                Row(verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    PitwallCarArtwork(state.garageCar.code, Modifier.width(96.dp).height(51.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(state.garageCar.name ?: state.garageCar.code?.let { "GT7 n°" + it }
+                            ?: "Voiture à identifier",
+                            color = white, fontSize = 14.sp, fontWeight = FontWeight.Bold,
+                            maxLines = 2, lineHeight = 16.sp, overflow = TextOverflow.Ellipsis)
+                        Hint(state.garageCar.evidence.label,
+                            if (state.garageCar.liveConfirmed) PitColors.Green else muted)
+                    }
+                }
             }
             Column(Modifier.weight(.83f), horizontalAlignment = Alignment.CenterHorizontally) {
                 Eyebrow("POSITION")
