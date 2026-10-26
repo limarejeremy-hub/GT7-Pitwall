@@ -29,6 +29,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import com.gt7pitwall.app.sport.SportApiCredentialStore
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -372,6 +375,11 @@ private fun WeeklyEditionSection(
 ) {
     val id = state.profile.id
     if (id.series == Series.OTHER) return
+    val context = LocalContext.current
+    val keyStore = remember(context) { SportApiCredentialStore(context) }
+    var gridKey by remember { mutableStateOf("") }
+    var apiConnected by remember { mutableStateOf(keyStore.configured()) }
+    var apiMessage by remember { mutableStateOf<String?>(null) }
     val ed = state.edition
     val status = state.profile.ruleStatus
     val sched = state.schedule
@@ -379,6 +387,20 @@ private fun WeeklyEditionSection(
         "${id.series.label.uppercase()} — " + (ed?.let { "SEMAINE DU ${FrenchFormat.dayMonth(it.validFrom).uppercase()}" } ?: "PROGRAMME INCONNU"),
         fontWeight = FontWeight.Bold,
     )
+    // Course PS5 du 26/10 : profil B chargé pour 6 tours, GT7 annonce 14 tours. L'UDP
+    // connaît la distance mais PAS l'identité officielle A/B/C : ne jamais prétendre
+    // qu'un règlement hebdomadaire s'applique si la distance ne correspond pas.
+    val gt7Laps = state.snapshot.packet?.totalLaps?.takeIf { it > 0 }
+    if (id.kind == SessionKind.RACE && gt7Laps != null &&
+        rules.totalLaps != null && gt7Laps != rules.totalLaps
+    ) {
+        Text(
+            "⚠ Programme à vérifier : GT7 annonce $gt7Laps tours, mais le profil ${id.series.label} en prévoit ${rules.totalLaps}. " +
+                "La distance GT7 est prioritaire ; pneus imposés et arrêts du profil peuvent ne pas être ceux de cette course.",
+            color = PitColors.Yellow,
+            style = MaterialTheme.typography.bodySmall,
+        )
+    }
     fun st(f: RuleField): String = status[f]?.label ?: "saisi par toi"
     fun color(f: RuleField) = when (status[f]) {
         FieldStatus.CONFIRMED, FieldStatus.PILOT, null -> PitColors.Muted
@@ -467,6 +489,40 @@ private fun WeeklyEditionSection(
         )
         TextButton(onClick = onRefresh) { Text("Actualiser") }
     }
+    Text(
+        if (apiConnected) "Source additionnelle GT GridStats configurée (clé protégée sur ce téléphone)."
+        else "Source complémentaire GT GridStats : clé API facultative, aucune carte bancaire demandée par Pitwall.",
+        color = PitColors.Muted,
+        style = MaterialTheme.typography.bodySmall,
+    )
+    OutlinedTextField(
+        value = gridKey,
+        onValueChange = { gridKey = it.take(1024) },
+        label = { Text(if (apiConnected) "Remplacer la clé API" else "Clé API personnelle GT GridStats") },
+        singleLine = true,
+        visualTransformation = PasswordVisualTransformation(),
+        modifier = Modifier.fillMaxWidth(),
+    )
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        TextButton(
+            enabled = gridKey.isNotBlank(),
+            onClick = {
+                if (keyStore.save(gridKey)) {
+                    apiConnected = true
+                    apiMessage = "Clé enregistrée. Synchronisation demandée."
+                    gridKey = ""
+                    onRefresh()
+                } else apiMessage = "Impossible de protéger cette clé sur le téléphone."
+            },
+        ) { Text("Enregistrer et synchroniser") }
+        if (apiConnected) TextButton(onClick = {
+            keyStore.clear()
+            apiConnected = false
+            apiMessage = "Clé supprimée du téléphone."
+            gridKey = ""
+        }) { Text("Retirer") }
+    }
+    apiMessage?.let { Text(it, color = PitColors.Muted, style = MaterialTheme.typography.bodySmall) }
 }
 
 /**
