@@ -7,7 +7,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 
 class PitApproachReminderTest {
-    private val stop = PlannedStop(endOfLap = 8, changeTyres = true)
+    private val stop = PlannedStop(endOfLap = 8, fuel = 0, forFuel = false, mandatory = false, changeTyres = true)
 
     @Test fun oneReminderOnlyInLastDistanceSectorOfScheduledPitLap() {
         val m = PitApproachReminder()
