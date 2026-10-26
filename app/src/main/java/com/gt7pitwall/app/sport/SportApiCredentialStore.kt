@@ -20,25 +20,29 @@ class SportApiCredentialStore(context: Context) {
 
     fun configured(): Boolean = prefs.contains("cipher") && prefs.contains("iv")
 
-    fun read(): String? = runCatching {
+    fun read(): String? {
         if (!configured()) return null
+        return runCatching {
         val iv = Base64.decode(prefs.getString("iv", ""), Base64.NO_WRAP)
         val encrypted = Base64.decode(prefs.getString("cipher", ""), Base64.NO_WRAP)
-        val key = keyStore().getKey(ALIAS, null) as? SecretKey ?: return null
+        val key = keyStore().getKey(ALIAS, null) as? SecretKey ?: return@runCatching null
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, iv))
         String(cipher.doFinal(encrypted), Charsets.UTF_8).takeIf { it.isNotBlank() }
-    }.getOrNull()
+        }.getOrNull()
+    }
 
-    fun save(value: String): Boolean = runCatching {
+    fun save(value: String): Boolean {
         val clean = value.trim()
         if (clean.isBlank() || clean.length > 1024 || '\n' in clean || '\r' in clean) return false
+        return runCatching {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, loadOrCreate())
         val encrypted = cipher.doFinal(clean.toByteArray(Charsets.UTF_8))
         prefs.edit().putString("cipher", Base64.encodeToString(encrypted, Base64.NO_WRAP))
             .putString("iv", Base64.encodeToString(cipher.iv, Base64.NO_WRAP)).commit()
-    }.getOrDefault(false)
+        }.getOrDefault(false)
+    }
 
     fun clear() {
         prefs.edit().clear().apply()
