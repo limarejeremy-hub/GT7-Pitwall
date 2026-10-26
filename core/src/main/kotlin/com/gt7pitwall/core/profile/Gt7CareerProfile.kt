@@ -92,6 +92,25 @@ data class Gt7PlayerProfile(
 
     companion object {
         fun validPsnId(value: String) = Regex("^[A-Za-z][A-Za-z0-9_-]{2,15}$").matches(value)
+        /**
+         * A Google-app shared link is a SHORTCUT, never proof of an official
+         * Sony GT7 page. Permit only the dedicated Google redirect domains and
+         * opaque share IDs; never assume that they synchronize player data.
+         */
+        fun validGoogleShareLink(raw: String): Boolean {
+            val url = runCatching { URI(raw.trim()) }.getOrNull() ?: return false
+            val host = url.host?.lowercase(Locale.ROOT) ?: return false
+            return url.scheme.equals("https", ignoreCase = true) &&
+                host in setOf("share.google", "search.app") &&
+                url.userInfo == null && url.port == -1 &&
+                url.rawQuery == null && url.rawFragment == null &&
+                Regex("^/[A-Za-z0-9_-]{8,40}$").matches(url.path ?: "")
+        }
+
+        /** Save either a verified GT7 URL or a clearly marked Google shortcut. */
+        fun validProfileLink(raw: String): Boolean =
+            validOfficialUrl(raw) || validGoogleShareLink(raw)
+
         fun validOfficialUrl(raw: String): Boolean {
             val url = runCatching { URI(raw.trim()) }.getOrNull() ?: return false
             val host = url.host?.lowercase(Locale.ROOT)
@@ -179,7 +198,7 @@ object Gt7CareerJson {
         val id = o.optString("psnId")
         require(id.isBlank() || Gt7PlayerProfile.validPsnId(id)) { "ID PSN invalide" }
         val url = o.optString("officialProfileUrl")
-        val cleanUrl = url.takeIf { it.isBlank() || Gt7PlayerProfile.validOfficialUrl(it) } ?: ""
+        val cleanUrl = url.takeIf { it.isBlank() || Gt7PlayerProfile.validProfileLink(it) } ?: ""
         val arr = o.optJSONArray("samples") ?: JSONArray()
         val samples = (0 until minOf(arr.length(),200)).mapNotNull { i ->
             runCatching {
