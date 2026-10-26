@@ -1380,6 +1380,36 @@ class RaceController(
             gaps.isNotEmpty() -> "Briefing ${profile.id.label} : règlement à compléter (${gaps.joinToString(", ") { it.label }})."
             else -> "Briefing ${profile.id.label} : règlement confirmé."
         }
+        if (profile.id.sport && edition?.laps?.value != null &&
+            snapshot.packet?.totalLaps?.takeIf { it > 0 } != null &&
+            snapshot.packet!!.totalLaps != edition!!.laps.value) {
+            out += "ALERTE : le nombre de tours reçu de GT7 ne correspond pas au programme Sport sélectionné. Aucun conseil réglementaire ne doit être considéré comme confirmé."
+        }
+        snapshot.packet?.let { p ->
+            val car = database.car(p.carCode)?.fullName ?: "code " + p.carCode
+            out += "Voiture reconnue : " + car + "."
+            if (p.currentLap == 0 && p.preRacePosition > 0 && p.preRaceCarCount > 0)
+                out += "Matchmaking : position momentanée P" + p.preRacePosition + "/" + p.preRaceCarCount +
+                    ". Grille définitive encore non validée."
+        }
+        val raceLength = snapshot.packet?.totalLaps?.takeIf { it > 0 } ?: rules.totalLaps
+        if (raceLength != null) out += "Distance prévue : " + raceLength + " tours."
+        val oblig = ruleGaps.contains(RuleField.REQUIRED_TYRES)
+        if (rules.allowedTyres.isNotEmpty()) out += "Pneus autorisés : " +
+            rules.allowedTyres.joinToString(", ") { it.name } + "."
+        out += if (oblig) "Gommes obligatoires inconnues : impossible de valider une stratégie d'arrêt pour le règlement."
+            else if (rules.requiredTyres.isNotEmpty()) "Gommes imposées : " +
+                rules.requiredTyres.joinToString(" et ") { it.name } + "."
+            else "Aucune gomme obligatoire n'est actuellement déclarée dans le règlement."
+        plan?.let { p ->
+            out += if (p.stops.isEmpty()) "Plan de base : zéro arrêt prévu ; vérifier les obligations réglementaires."
+                else "Plan de base : arrêt(s) à la fin des tours " +
+                    p.stops.joinToString(", ") { it.endOfLap.toString() } + " (réévaluation pendant la course)."
+        }
+        historyModel.pitLossMs?.takeIf { it.confidence != Confidence.INSUFFICIENT }?.let {
+            out += "Perte moyenne historique par arrêt : " + StrategyOptions.seconds(it.mean.toLong()) +
+                " (" + it.confidence.label + "), contenu des arrêts potentiellement différent."
+        }
         if (rules.trackId == null) out += "Circuit non identifié : je ne peux pas utiliser ton historique."
         val h = history
         val learned = historyModel.fuelPerLap?.takeIf { it.confidence != Confidence.INSUFFICIENT }
@@ -1403,7 +1433,9 @@ class RaceController(
                 else -> null
             } ?: return@let
         }
-        if (!raceMode) driverCoach.known(driverKey)?.traits()?.text?.let { out += it }
+        // The driver's proven weaknesses are most useful BEFORE the race, not just in practice.
+        if (rules.trackId != null) driverCoach.known(driverKey)?.traits()?.text?.let { out += it }
+        out += "Objectif : maximiser les places gagnées avec une course propre ; aucun écart ou pneu adverse n'est transmis par l'UDP GT7."
         return out
     }
 
@@ -1414,7 +1446,8 @@ class RaceController(
         // Le briefing a déjà signalé le règlement non confirmé : pas de second rappel au premier tour.
         if (!profile.confirmed) rulesReminded = true
         journal.record(JournalType.STRATEGY, JournalSource.ENGINE, "Briefing : ${lines.joinToString(" ")}")
-        return listOf(EngineerMessage(lines.joinToString(" "), Priority.NORMAL, MessageCategory.FUEL, topic = "briefing"))
+        // Full briefing stays on screen: the grid radio must not read a long technical report.
+        return listOf(EngineerMessage(lines.take(3).joinToString(" "), Priority.NORMAL, MessageCategory.FUEL, topic = "briefing"))
     }
 
     /** Événements mesurés du tracker inscrits au journal (tours, stands, arrivée, grille). */
