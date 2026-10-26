@@ -5,6 +5,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -295,10 +301,16 @@ fun PitwallScreen(
             )
         },
         bottomBar = {
+            // Android 15+/Samsung Fold: the persistent taskbar can overlap a
+            // custom Scaffold bottomBar when the Activity uses enableEdgeToEdge().
+            // Include the system's ACTUAL safe-drawing bottom inset in the bar's
+            // measured height, so Scaffold also reserves it for the dashboard.
+            // Do not hard-code a gap: the taskbar size changes with posture/mode.
             Row(
                 Modifier.fillMaxWidth()
                     .background(MaterialTheme.colorScheme.surface)
-                    .padding(horizontal = 6.dp, vertical = 5.dp),
+                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom))
+                    .padding(horizontal = 6.dp, vertical = 7.dp),
                 horizontalArrangement = Arrangement.spacedBy(3.dp),
             ) {
                 listOf("Live", "Briefing", "Analyse", "Historique", "Atelier").forEach { tab ->
@@ -330,7 +342,14 @@ fun PitwallScreen(
             }
         },
     ) { padding ->
-        BoxWithConstraints(Modifier.fillMaxSize().padding(padding)) {
+        BoxWithConstraints(
+            Modifier
+                .fillMaxSize()
+                .padding(padding)
+                // Pass consumed Scaffold paddings to nested content: no
+                // duplicate inset, and no final card hidden behind the taskbar.
+                .consumeWindowInsets(padding),
+        ) {
             val wide = maxWidth >= 600.dp
             when (selectedTab) {
                 "Live" -> PitwallLiveDashboard(
