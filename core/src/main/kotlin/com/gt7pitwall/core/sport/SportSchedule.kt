@@ -122,7 +122,9 @@ data class Edition(
     /** Statut de chaque champ du règlement, pour l'affichage et les garde-fous de la stratégie. */
     val status: Map<RuleField, FieldStatus>
         get() = mapOf(
-            RuleField.TRACK to if (trackId == null && trackName.known) FieldStatus.UNKNOWN else trackName.status,
+            // The published circuit name can be independently verified without a telemetry ID.
+            // Keep trackId null until geometry/GT7 database proves it; never invent an ID.
+            RuleField.TRACK to trackName.status,
             RuleField.LAPS to laps.status,
             RuleField.CARS to cars.status,
             RuleField.FUEL_MULTIPLIER to fuelMultiplier.status,

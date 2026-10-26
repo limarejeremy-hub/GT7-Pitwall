@@ -3,7 +3,6 @@ package com.gt7pitwall.core.sport
 import com.gt7pitwall.core.knowledge.Course
 import com.gt7pitwall.core.knowledge.Gt7Database
 import com.gt7pitwall.core.race.Series
-import java.text.Normalizer
 import java.time.LocalDate
 
 /**
@@ -44,7 +43,7 @@ object ScheduleBuilder {
             val distinctSources = given.map { it.second.name }.distinct().size
             return Sourced(first, if (distinctSources >= 2) FieldStatus.CONFIRMED else FieldStatus.PROBABLE, given.map { it.second })
         }
-        val trackName = field({ it.trackName }) { a, b -> norm(a) == norm(b) }
+        val trackName = field({ it.trackName }) { a, b -> SportNames.sameTrack(a, b) }
         val matches = trackName.value?.let { matchTrack(it, database) } ?: emptyList()
         return Edition(
             series = series,
@@ -54,7 +53,7 @@ object ScheduleBuilder {
             trackId = matches.singleOrNull()?.id,
             trackCandidates = if (matches.size > 1) matches.map { it.id } else emptyList(),
             laps = field({ it.laps }),
-            cars = field({ it.cars }),
+            cars = field({ it.cars?.takeIf(SportNames::meaningfulCar) }) { a, b -> SportNames.sameCar(a, b) },
             bop = field({ it.bop }),
             settings = field({ it.settings }),
             startType = field({ it.startType }),
@@ -72,18 +71,17 @@ object ScheduleBuilder {
      * contient tous les mots publiés (tracé principal, sens normal). Plusieurs possibilités : ambigu, rien n'est choisi.
      */
     fun matchTrack(name: String, database: Gt7Database): List<Course> {
-        val n = norm(name)
+        val n = SportNames.trackKey(name)
         if (n.isEmpty()) return emptyList()
         val courses = database.courses.distinctBy { it.id }
-        courses.filter { norm(it.name) == n && !it.reverse }.let { if (it.isNotEmpty()) return it.take(1) }
+        courses.filter { SportNames.trackKey(it.name) == n && !it.reverse }
+            .let { if (it.isNotEmpty()) return it }
         val words = n.split(' ').filter { it.length > 1 }
-        val contains = courses.filter { c -> !c.reverse && words.all { w -> w in norm(c.name).split(' ') } }
+        val contains = courses.filter { c -> !c.reverse && words.all { w -> w in SportNames.trackKey(c.name).split(' ') } }
         if (contains.size <= 1) return contains
         // Plusieurs tracés : le principal (tracé 1) seulement s'il est unique.
         return contains.filter { it.layout == 1 }.takeIf { it.size == 1 } ?: contains
     }
 
-    fun norm(s: String): String =
-        Normalizer.normalize(s.lowercase(), Normalizer.Form.NFD).replace(Regex("\\p{Mn}+"), "")
-            .replace(Regex("[^a-z0-9 ]"), " ").replace(Regex("\\s+"), " ").trim()
+    fun norm(s: String): String = SportNames.normalize(s)
 }

@@ -2,6 +2,8 @@ package com.gt7pitwall.app.sport
 
 import android.content.Context
 import com.gt7pitwall.core.knowledge.Gt7Database
+import com.gt7pitwall.core.sport.DgEdgeFeed
+import com.gt7pitwall.core.sport.VictoryDailyFeed
 import com.gt7pitwall.core.sport.GtPlanetFeed
 import com.gt7pitwall.core.sport.GridStatsDailyFeed
 import com.gt7pitwall.core.sport.RefreshPolicy
@@ -22,6 +24,8 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.time.LocalDate
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * Programme des courses Sport A/B/C, lu dans le flux RSS public de GTPlanet (une requête au plus toutes les 30 minutes,
@@ -33,6 +37,8 @@ class SportScheduleRepository(context: Context, private val database: Gt7Databas
     private val cache = File(dir, "gtplanet.xml")
     private val fallbackCache = File(dir, "gtplanet-general.xml")
     private val gridCache = File(dir, "gridstats.json")
+    private val dgCache = File(dir, "dg-edge.json")
+    private val victoryCache = File(dir, "victory.html")
     private val credentials = SportApiCredentialStore(context)
     private val prefs = context.getSharedPreferences("sport", Context.MODE_PRIVATE)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -100,38 +106,152 @@ class SportScheduleRepository(context: Context, private val database: Gt7Databas
 
     private suspend fun fetch() = lock.withLock {
         _busy.value = true
-        val errors = mutableListOf<String>()
-        var succeeded = false
+        val sourceErrors = mutableListOf<String>()
         try {
-            val primary = runCatching { fetchGtPlanet(GtPlanetFeed.URL, cache, conditional = true) }
-            primary.onSuccess { succeeded = true }
-            // Secours sans clé : flux général du même site, si le flux principal échoue ou n'a pas la semaine en cours.
             val week = ScheduleBuilder.weekStart(LocalDate.now(GtPlanetFeed.PARIS))
-            val haveWeek = runCatching { cache.isFile && GtPlanetFeed.parse(cache.readText(), 0).any { ScheduleBuilder.weekStart(it.validFrom) == week } }
-                .getOrDefault(false)
-            if (!haveWeek) {
+            // HTTP 200 can still contain last week's schedule.
+            runCatching { fetchGtPlanet(GtPlanetFeed.URL, cache, conditional = true) }
+                .onFailure { sourceErrors += "GTPlanet : ${it.message ?: "indisponible"}" }
+            if (!hasWeek(cache, week)) {
                 runCatching { fetchGtPlanet(GtPlanetFeed.FALLBACK_URL, fallbackCache, conditional = false) }
-                    .onSuccess { succeeded = true }
-                    .onFailure { e -> errors.add("GTPlanet (flux général) : ${e.message ?: "indisponible"}") }
+                    .onFailure { sourceErrors += "GTPlanet général : ${it.message ?: "indisponible"}" }
             }
-            primary.onFailure { errors.add(0, "GTPlanet : ${it.message ?: "indisponible"}") }
-            // Seule une clé personnelle présente sur le téléphone active cette deuxième source.
-            // Aucune requête vers l'API sans clé : pas de création de compte ni de facturation implicite.
-            val key = credentials.read()
-            if (key != null) {
-                runCatching { fetchGridStats(key) }.onSuccess { succeeded = true }
-                    .onFailure { errors += "GT GridStats : ${it.message ?: "indisponible"}" }
+            // Victory serves the current A/B/C HTML and JSON-LD without API credentials.
+            // The live CI network probe confirmed HTTP 200 on 26/10 (DG EDGE gave HTTP 403).
+            val hasVictory = readVictory().any { it.validFrom == week }
+            if (!hasVictory || System.currentTimeMillis() - victoryCache.lastModified() >= RefreshPolicy.DAILY_MS) {
+                runCatching { fetchVictory(week) }
+                    .onFailure { sourceErrors += "Victory : ${it.message ?: "indisponible"}" }
             }
-            // Même si une source marche, l'autre peut être indisponible : on montre le diagnostic.
-            prefs.edit().putLong(KEY_FETCH, System.currentTimeMillis())
-                .apply {
-                    if (errors.isEmpty()) remove(KEY_ERROR)
-                    else putString(KEY_ERROR, errors.joinToString(" • ").take(300))
-                }.apply()
+            // DG EDGE may complement tyre obligations if publicly accessible on the phone.
+            // A 403 is treated as a normal, non-fatal source failure and never bypassed.
+            val hasDg = readDg().any { it.validFrom == week }
+            if (!hasDg || System.currentTimeMillis() - dgCache.lastModified() >= RefreshPolicy.DAILY_MS) {
+                runCatching { fetchDgEdge(week) }
+                    .onFailure { sourceErrors += "DG EDGE : ${it.message ?: "indisponible"}" }
+            }
+            credentials.read()?.let { token ->
+                runCatching { fetchGridStats(token) }
+                    .onFailure { sourceErrors += "GT GridStats : ${it.message ?: "indisponible"}" }
+            }
+            val currentSources = listOfNotNull(cache, fallbackCache).flatMap { file ->
+                runCatching { if (file.isFile) GtPlanetFeed.parse(file.readText(), file.lastModified()) else emptyList() }
+                    .getOrDefault(emptyList())
+            } + readVictory() + readDg() + runCatching {
+                if (gridCache.isFile) GridStatsDailyFeed.parse(gridCache.readText(), gridCache.lastModified()) else emptyList()
+            }.getOrDefault(emptyList())
+            val complete = currentSources.filter { ScheduleBuilder.weekStart(it.validFrom) == week }
+                .flatMap { it.races.keys }.toSet()
+            val current = complete.containsAll(listOf(
+                com.gt7pitwall.core.race.Series.DAILY_A,
+                com.gt7pitwall.core.race.Series.DAILY_B,
+                com.gt7pitwall.core.race.Series.DAILY_C,
+            ))
+            val diagnostic = if (current) null else
+                "Aucune fiche A/B/C exploitable pour la semaine du $week" +
+                    sourceErrors.takeIf { it.isNotEmpty() }?.joinToString(" • ", prefix = " : ").orEmpty()
+            prefs.edit().putLong(KEY_FETCH, System.currentTimeMillis()).apply {
+                if (diagnostic == null) remove(KEY_ERROR) else putString(KEY_ERROR, diagnostic.take(450))
+            }.apply()
         } finally {
             _busy.value = false
+            rebuild()
         }
-        rebuild()
+    }
+
+    /** Public Victory page cached privately, preserving the last correct week. */
+    private fun readVictory(): List<com.gt7pitwall.core.sport.WeeklyPost> = runCatching {
+        if (victoryCache.isFile) VictoryDailyFeed.parse(victoryCache.readText(), victoryCache.lastModified())
+        else emptyList()
+    }.getOrDefault(emptyList())
+
+    private fun fetchVictory(week: LocalDate) {
+        val url = URL(VictoryDailyFeed.URL)
+        if (url.protocol != "https" || url.host != "victorydash.io" || url.path != "/daily-races")
+            error("adresse Victory inattendue")
+        val conn = (url.openConnection() as HttpURLConnection).apply {
+            connectTimeout = 12_000
+            readTimeout = 15_000
+            instanceFollowRedirects = false
+            setRequestProperty("Accept", "text/html")
+            setRequestProperty("User-Agent", "GT7Pitwall/0.8 (Android; personal use)")
+        }
+        val html = try {
+            if (conn.responseCode != HttpURLConnection.HTTP_OK) error("HTTP ${conn.responseCode}")
+            if (!conn.contentType.orEmpty().contains("html", ignoreCase = true)) error("réponse non HTML")
+            if (conn.contentLengthLong > MAX_FEED) error("page trop volumineuse")
+            conn.inputStream.bufferedReader().use { it.readText() }.also {
+                if (it.length > MAX_FEED) error("page trop volumineuse")
+            }
+        } finally { conn.disconnect() }
+        if (VictoryDailyFeed.parse(html, System.currentTimeMillis()).singleOrNull()?.validFrom != week)
+            error("aucun programme complet A/B/C pour $week")
+        val tmp = File(dir, "victory.html.tmp")
+        tmp.writeText(html)
+        if (!tmp.renameTo(victoryCache)) error("impossible de sauvegarder Victory")
+    }
+
+    private fun hasWeek(file: File, week: LocalDate): Boolean = runCatching {
+        if (!file.isFile) false else {
+            val races = GtPlanetFeed.parse(file.readText(), file.lastModified())
+                .filter { ScheduleBuilder.weekStart(it.validFrom) == week }
+                .flatMap { it.races.keys }.toSet()
+            races.containsAll(listOf(
+                com.gt7pitwall.core.race.Series.DAILY_A,
+                com.gt7pitwall.core.race.Series.DAILY_B,
+                com.gt7pitwall.core.race.Series.DAILY_C,
+            ))
+        }
+    }.getOrDefault(false)
+
+    /** Local cache, usable offline only during its actual week. */
+    private fun readDg(): List<com.gt7pitwall.core.sport.WeeklyPost> = runCatching {
+        if (!dgCache.isFile) return emptyList()
+        val root = JSONObject(dgCache.readText())
+        val week = LocalDate.parse(root.getString("week"))
+        val pages = root.getJSONArray("pages")
+        val entries = (0 until pages.length()).associate { i ->
+            val item = pages.getJSONObject(i)
+            item.getString("url") to item.getString("html")
+        }
+        listOfNotNull(DgEdgeFeed.parseWeek(entries, week, dgCache.lastModified()))
+    }.getOrDefault(emptyList())
+
+    /** Maximum four small public HTML requests per successful weekly/daily refresh. */
+    private fun fetchDgEdge(week: LocalDate) {
+        val links = DgEdgeFeed.links(fetchPublicHtml(DgEdgeFeed.INDEX), week)
+        if (links.size != 3) error("seulement ${links.size}/3 courses pour la semaine du $week")
+        val pages = links.values.associateWith(::fetchPublicHtml)
+        if (DgEdgeFeed.parseWeek(pages, week, System.currentTimeMillis()) == null)
+            error("fiche publique illisible ou incomplète")
+        val array = JSONArray()
+        pages.forEach { (url, html) -> array.put(JSONObject().put("url", url).put("html", html)) }
+        val tmp = File(dir, "dg-edge.json.tmp")
+        tmp.writeText(JSONObject().put("week", week.toString()).put("pages", array).toString())
+        if (!tmp.renameTo(dgCache)) error("impossible de sauvegarder la fiche DG EDGE")
+    }
+
+    private fun fetchPublicHtml(address: String): String {
+        // Allowlisted HTTPS origin and public paths only; no third-party redirects.
+        val url = URL(address)
+        if (url.protocol != "https" || url.host != "www.dg-edge.com" ||
+            !(url.path == "/events/dailies" || url.path.startsWith("/events/dailies/week-")))
+            error("adresse de source non autorisée")
+        val conn = (url.openConnection() as HttpURLConnection).apply {
+            connectTimeout = 12_000
+            readTimeout = 15_000
+            instanceFollowRedirects = false
+            setRequestProperty("Accept", "text/html")
+            setRequestProperty("User-Agent", USER_AGENT)
+        }
+        try {
+            if (conn.responseCode != HttpURLConnection.HTTP_OK) error("HTTP ${conn.responseCode}")
+            if (!conn.contentType.orEmpty().contains("html", ignoreCase = true)) error("réponse non HTML")
+            if (conn.contentLengthLong > MAX_FEED) error("page trop volumineuse")
+            val html = conn.inputStream.bufferedReader().use { it.readText() }
+            if (html.length > MAX_FEED) error("page trop volumineuse")
+            return html
+        } finally { conn.disconnect() }
     }
 
     private fun fetchGtPlanet(address: String, target: File, conditional: Boolean) {
@@ -192,10 +312,12 @@ class SportScheduleRepository(context: Context, private val database: Gt7Databas
         // Le même article peut figurer dans les deux flux : une seule fois.
         val posts = (read(cache) + read(fallbackCache)).distinctBy { it.source.url ?: it.title }
         val today = LocalDate.now(GtPlanetFeed.PARIS)
+        val victoryPosts = readVictory()
+        val dgPosts = readDg()
         val gridPosts = runCatching {
             if (gridCache.isFile) GridStatsDailyFeed.parse(gridCache.readText(), gridCache.lastModified()) else emptyList()
         }.getOrDefault(emptyList())
-        _state.value = ScheduleBuilder.build(posts + gridPosts, database, today, lastFetchMs, lastError)
+        _state.value = ScheduleBuilder.build(posts + victoryPosts + dgPosts + gridPosts, database, today, lastFetchMs, lastError)
     }
 
     private companion object {
