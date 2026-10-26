@@ -21,6 +21,7 @@ import com.gt7pitwall.core.engineer.RadioLevel
 import com.gt7pitwall.core.knowledge.CarTrackRecord
 import com.gt7pitwall.core.knowledge.DriverGarage
 import com.gt7pitwall.core.knowledge.GarageCar
+import com.gt7pitwall.core.profile.PitwallLocalCareer
 import com.gt7pitwall.core.knowledge.Course
 import com.gt7pitwall.core.knowledge.Gt7Database
 import com.gt7pitwall.core.race.EventProfile
@@ -110,6 +111,8 @@ data class PitwallUiState(
     val history: HistorySummary = HistorySummary.EMPTY,
     /** Sessions archivées, toutes épreuves confondues. */
     val archivedSessions: Int = 0,
+    /** Totals measured from all saved local GT7 sessions, independent of PSN access. */
+    val localCareer: PitwallLocalCareer = PitwallLocalCareer.EMPTY,
     /** Édition de la semaine pour l'épreuve active (programme Sport public). */
     val edition: Edition? = null,
     /** Informations du règlement utiles à la stratégie qui restent inconnues. */
@@ -171,7 +174,7 @@ class PitwallEngine(
 
     val connection: StateFlow<ConnectionStatus> = client.status
 
-    private val _state = MutableStateFlow(PitwallUiState())
+    private val _state = MutableStateFlow(PitwallUiState(localCareer = PitwallLocalCareer.fromSessions(race.archivedSessions)))
     val state: StateFlow<PitwallUiState> = _state.asStateFlow()
 
     private val _radio = MutableStateFlow<List<EngineerMessage>>(emptyList())
@@ -303,6 +306,8 @@ class PitwallEngine(
     private var replanJob: Job? = null
     private var lastPublishMs = 0L
     private var lastHistoryMs = 0L
+    private var lastCareerMs = 0L
+    private var lastCareerArchiveCount = -1
 
     init {
         voiceInput?.let { input -> scope.launch { input.events.collect { onVoice(it) } } }
@@ -566,6 +571,13 @@ class PitwallEngine(
                 db = database,
             )
         } else _state.value.garageCar
+        val archiveCount = race.archivedCount
+        val career = if (force || archiveCount != lastCareerArchiveCount ||
+            now - lastCareerMs >= 2_500L) {
+            lastCareerMs = now
+            lastCareerArchiveCount = archiveCount
+            PitwallLocalCareer.fromSessions(race.archivedSessions)
+        } else _state.value.localCareer
         _state.value = PitwallUiState(
             snapshot = snap,
             fuel = race.fuel,
@@ -595,7 +607,8 @@ class PitwallEngine(
             askTyreChange = race.ledger.awaitingTyreChangeAnswer,
             profile = race.profile,
             history = if (force || now - lastHistoryMs > HISTORY_REFRESH_MS) race.history.also { lastHistoryMs = now } else _state.value.history,
-            archivedSessions = race.archivedCount,
+            archivedSessions = archiveCount,
+            localCareer = career,
             edition = race.edition,
             ruleGaps = race.ruleGaps,
             schedule = race.schedule,
