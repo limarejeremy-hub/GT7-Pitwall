@@ -33,21 +33,6 @@ jobs:
       - name: Tests unitaires (décodage GT7, tours, carburant, ingénieur)
         run: ./gradlew --no-daemon --stacktrace :core:test
 
-      - name: Diagnose public race HTML structure
-        run: |
-          python3 - <<'PY'
-          import urllib.request, re, html
-          for site in ["https://www.dg-edge.com/events/dailies", "https://victorydash.io/daily-races"]:
-              try:
-                  req=urllib.request.Request(site, headers={"User-Agent":"Mozilla/5.0 GT7Pitwall/1.0"})
-                  with urllib.request.urlopen(req, timeout=20) as r: body=r.read(2_000_000).decode('utf-8','replace')
-                  print("SITE", site, "LENGTH",len(body))
-                  for needle in ["Daily Race A","Race A","SUGO International", "26 October 2026","__NEXT_DATA__"]:
-                      m=re.search(re.escape(needle),body,re.I)
-                      if m: print("MATCH",needle,html.unescape(body[max(0,m.start()-250):m.start()+900]).replace(chr(10),' ')[:1150])
-              except Exception as e: print("SITE ERROR",site, type(e).__name__,str(e)[:200])
-          PY
-
       - name: Cache de la bibliothèque DAVE (arm64)
         id: dave-cache
         uses: actions/cache@v4

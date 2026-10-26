@@ -54,14 +54,13 @@ object VictoryDailyFeed {
             val id = eventUrl.removePrefix("$URL/")
             if (!Regex("""p_rt_[a-z0-9_]+""", RegexOption.IGNORE_CASE).matches(id)) return emptyList()
             val cards = Regex(
-                """(?is)<a\b[^>]*href=["']/daily-races/@@{Regex.escape(id)}["'][^>]*>(.*?)</article>\s*</a>"""
-            .replace("@@{Regex.escape(id)}", Regex.escape(id))
+                """(?is)<a\b[^>]*href=["']/daily-races/""" + Regex.escape(id) + """["'][^>]*>(.*?)</article>\s*</a>"""
             )
             val card = cards.find(html)?.groupValues?.get(1) ?: return emptyList()
             val text = GtPlanetFeed.text(card.replace(Regex("""(?is)<script\b[^>]*>.*?</script>"""), " "))
             // A card must visibly name its own race, so repeated JSON scripts never count as
             // the rendered UI or as a valid schedule.
-            if (!text.contains(Regex("""(?i)\bRace\s+""" + match.groupValues[1] + """\b""")))
+            if (!Regex("""(?i)\bRace\s+""" + match.groupValues[1] + """\b""").containsMatchIn(text))
                 return emptyList()
             val laps = Regex("""(?i)\b(\d{1,3})\s+laps?\b""").find(text)
                 ?.groupValues?.get(1)?.toIntOrNull()?.takeIf { it in 1..150 } ?: return emptyList()

@@ -1,31 +1,22 @@
-# Pitwall — Source Sport indépendante et sans clé API
+# Zero Touch Sport — sources publiques et cache
 
-Branche : `fix/zero-touch-sport-sources` (depuis `claude/zero-touch`).
+## Défaut reproduit le 26 octobre 2026
+L'APK 258 affichait « Programme inconnu » malgré une requête GTPlanet récente : les deux flux GTPlanet dépendaient du même site et ne publiaient pas encore les courses de la semaine.
 
-## Défaut observé
+## Correction Android
+- **Victory** : page publique `https://victorydash.io/daily-races`, accessible sans clé ni compte. JSON-LD SportsEvent pour A/B/C (voiture, circuit, dates), plus cartes HTML (tours, pneus autorisés, multiplicateurs).
+- **DG EDGE** : source supplémentaire expérimentale. Dans le test réseau GitHub Actions du 26/10, l'index répondait **HTTP 403**. Aucun contournement : sur le Fold elle est utilisée uniquement si accessible publiquement.
+- **GTPlanet** reste en place ; **GT GridStats** reste facultatif avec clé personnelle.
+- Cache privé Android, synchronisation non bloquante et mise à jour périodique.
+- Validation stricte des 3 courses et de la semaine ISO, pas de succès trompeur sur une réponse HTTP 200 de la semaine précédente.
+- Les conflits entre sources bloquent l'application des champs concernés.
 
-Le 26 octobre 2026, le Galaxy Fold recevait la télémétrie PS5 mais affichait « Programme inconnu » pour A/B/C. Le flux GTPlanet de la catégorie (et son flux général de secours) n'avait pas encore de fiche valide pour la semaine.
+### Limites
+Victory décrit les gommes **autorisées**, pas les **gommes obligatoires**. Une source supplémentaire explicite est nécessaire pour renseigner une obligation. Pour la Course C du 26/10, RM et RS sont publiés comme autorisés dans Victory, mais leur obligation ne doit pas être inventée depuis cette seule page.
 
-Un accès HTTP 200 à un flux avec uniquement l'ancienne semaine **n'est pas** un succès métier. Il n'est pas autorisé à confirmer le règlement du jour.
+## Vérifications
+- Tests unitaires : `VictoryDailyFeedTest`, `DgEdgeFeedTest` et historiques.
+- Test réseau GitHub Actions : Victory HTTP 200, HTML ~360 kB, JSON-LD et cartes A/B/C ; DG EDGE HTTP 403 depuis le runner.
+- Compilation Android et essai réel sur Fold/PS5 restent les critères de validation finale.
 
-## Correction
-
-- Source secondaire réellement indépendante : pages publiques de DG EDGE pour les courses quotidiennes, consultées directement par le Fold.
-- Lecture de l'index, découverte **strictement filtrée** des URLs des trois courses de la semaine ISO, puis lecture de leurs résumés publics. Aucun compte ni clé API.
-- Extraction stricte de A/B/C, semaine, piste, classe/voiture, tours, pneus, multiplicateurs, BoP, départ, pneus obligatoires explicitement nommés.
-- Aucun arrêt obligatoire inventé à partir de deux gommes imposées ; absent = inconnu.
-- Si une carte manque, diverge de l'URL, ou n'a pas les valeurs minimales requises : échec contrôlé, ancien cache préservé.
-- Cache local privé Android ; aucun relayage ni redistribution du HTML sur GitHub. Rafraîchissement quotidien si valide, toutes les 30 min quand la semaine manque.
-- Fusion via `ScheduleBuilder` : sources en désaccord = champ non appliqué, déclarations confirmées du pilote préservées.
-- Diagnostic « aucune fiche A/B/C exploitable pour la semaine » et erreurs de sources au lieu de « mise à jour réussie » sur simple HTTP 200.
-
-## Sécurité et limites
-
-Cette lecture est pour l'usage personnel et non commercial de l'utilisateur ; son rythme de requêtes est faible et aucun espace privé, premium ou API non autorisée n'est sollicité. Respecter les conditions du site et arrêter cette collecte si l'exploitant la restreint. La structure HTML peut changer : dans ce cas le parseur doit échouer, pas deviner des règles.
-
-Le 26/10, les pages publiques montrent :
-- A — SUGO, Nissan Fairlady Z (Z34) '08, 5 tours, SH, carburant ×1, pneus ×1 ;
-- B — Big Willow, Gr.4, 7 tours, RH, ×1 / ×1 ;
-- C — SUGO, Gr.3, 14 tours, RM et RS requis, ×2 / ×4.
-
-Tests unitaires locaux : `DgEdgeFeedTest`. Une compilation CI verte et un essai réseau réel sur Android restent obligatoires pour valider le « zéro intervention » complètement. Ne pas fusionner les branches sans vérification PS5/Fold.
+Usage strictement personnel, non commercial, de pages publiques. Pas d'extraction d'API cachée, de contournement ni de redistribution centrale des pages.

@@ -123,10 +123,10 @@ class SportScheduleRepository(context: Context, private val database: Gt7Databas
                 runCatching { fetchVictory(week) }
                     .onFailure { sourceErrors += "Victory : ${it.message ?: "indisponible"}" }
             }
-            // DG EDGE is only a last-resort independent source if both GTPlanet and Victory
-            // cannot provide the complete week. A 403 is treated as unavailable, never bypassed.
-            val validGP = hasWeek(cache, week) || hasWeek(fallbackCache, week)
-            if (!validGP && readVictory().none { it.validFrom == week }) {
+            // DG EDGE may complement tyre obligations if publicly accessible on the phone.
+            // A 403 is treated as a normal, non-fatal source failure and never bypassed.
+            val hasDg = readDg().any { it.validFrom == week }
+            if (!hasDg || System.currentTimeMillis() - dgCache.lastModified() >= RefreshPolicy.DAILY_MS) {
                 runCatching { fetchDgEdge(week) }
                     .onFailure { sourceErrors += "DG EDGE : ${it.message ?: "indisponible"}" }
             }
