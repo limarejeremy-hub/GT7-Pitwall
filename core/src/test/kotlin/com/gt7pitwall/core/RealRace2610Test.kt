@@ -100,4 +100,44 @@ class RealRace2610Test {
         // est la signature, même si la voiture repart une seconde plus tard.
         assertEquals(com.gt7pitwall.core.tyres.TyreChangeVerdict.SUSPECTED, r.verdict, r.reason)
     }
+
+    private val header = "ID,Name,Base,Country,Category,Length,LongestStraight,ElevationDiff,Altitude,MinTimeH,MinTimeM,MinTimeS,MaxTimeH,MaxTimeM,MaxTimeS,LayoutNumber,IsReverse,PitLaneDelta,IsOval,NumCorners,NoRain"
+
+    /** Le Mans mémorisé d'une course précédente, tour réel bien plus court : circuit écarté, jamais remplacé d'office. */
+    @Test
+    fun aRememberedTrackThatContradictsTheLapIsDiscardedAndTraced() {
+        val db = com.gt7pitwall.core.knowledge.Gt7Database.parse(
+            "ID,ShortName,Maker\n2186,WRX Gr.3,1\n", "ID,Name,Country\n1,Subaru,1\n",
+            "$header\n454,24 Heures du Mans Racing Circuit,1,6,circuit,13629,1679,37.3,811.0,0,0,0,0,0,0,1,0,30.0,0,38,0\n",
+        )
+        val storage = FakeStorage(rules = RaceRules(totalLaps = 10, trackId = 454))
+        val c = RaceController(db, storage)
+        val s = RaceSim(c, totalLaps = 14, perLap = 3f)
+        s.start()
+        s.driveLaps(3)
+        assertEquals(null, c.rules.trackId, "Le Mans écarté")
+        assertTrue(s.texts.any { "ne correspond pas à ce tour" in it }, s.texts.toString())
+        assertEquals(1, s.texts.count { "ne correspond pas à ce tour" in it }, "un seul message")
+        val journal = storage.journals.values.single().joinToString("\n")
+        assertTrue("Circuit incohérent" in journal, journal)
+        // Nombre de tours : celui de GT7, noté à côté de l'ancien règlement.
+        assertTrue("tours_gt7" in journal && "\"14\"" in journal, journal)
+        // Aucun historique de pilotage ni mémoire n'est rangé sous le mauvais circuit.
+        assertTrue(storage.memory.keys.none { "454" in it }, storage.memory.keys.toString())
+        assertFalse("454" in c.driverKey)
+    }
+
+    @Test
+    fun aConsistentTrackIsKept() {
+        val db = com.gt7pitwall.core.knowledge.Gt7Database.parse(
+            "ID,ShortName,Maker\n", "ID,Name,Country\n",
+            "$header\n10,Sim Ring,1,1,circuit,3016,500,1.0,1.0,0,0,0,0,0,0,1,0,20.0,0,10,0\n",
+        )
+        val c = RaceController(db, FakeStorage(rules = RaceRules(totalLaps = 14, trackId = 10)))
+        val s = RaceSim(c, totalLaps = 14, perLap = 3f)
+        s.start()
+        s.driveLaps(3)
+        assertEquals(10, c.rules.trackId)
+        assertTrue(s.texts.none { "ne correspond pas" in it })
+    }
 }

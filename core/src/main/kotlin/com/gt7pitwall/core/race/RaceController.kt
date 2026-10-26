@@ -1009,6 +1009,7 @@ class RaceController(
         gridPosition = null
         finishPosition = null
         internalErrors.clear()
+        trackInconsistencyNoted = false
         briefed = false
         lastPositionChangeClockMs = null
         replay = false
@@ -1033,7 +1034,10 @@ class RaceController(
                 p?.carCode?.let { "voiture" to it.toString() },
                 rules.trackId?.let { "circuit" to it.toString() },
                 "epreuve" to profile.id.label,
-                (rules.totalLaps ?: p?.totalLaps?.takeIf { it > 0 })?.let { "tours" to it.toString() },
+                // Course du 26/10 : « tours=10 » (règlement mémorisé d'une course précédente) pour une course de 14 tours.
+                // GT7 donne le nombre de tours réel : il est noté à part, et c'est lui que le plan utilise.
+                p?.totalLaps?.takeIf { it > 0 }?.let { "tours_gt7" to it.toString() },
+                rules.totalLaps?.let { "tours_reglement" to it.toString() },
                 rules.durationMin?.let { "duree_min" to it.toString() },
                 "multiplicateur_carburant" to rules.fuelMultiplier.toString(),
                 "multiplicateur_pneus" to rules.tyreMultiplier.toString(),
@@ -2733,6 +2737,12 @@ class RaceController(
         /** Un tour plus court n'est pas un circuit (tour incomplet, chargement). */
         const val MIN_LEARN_LAP_M = 1_000f
 
+        /** Écart toléré entre la distance mesurée d'un tour et la longueur officielle (trajectoire, coupes). */
+        const val TRACK_LENGTH_TOLERANCE = 0.15f
+
+        /** Une moyenne supérieure à la vitesse de pointe (+5 %) est impossible : circuit erroné. */
+        const val TRACK_SPEED_TOLERANCE = 1.05
+
         /** Réponse radio à « qu'as-tu appris ? » : l'essentiel ; tout le diagnostic est à l'écran. */
         const val LEARNED_RADIO_LINES = 4
         const val POSITION_CALM_MS = 30_000L
@@ -3099,12 +3109,55 @@ class RaceController(
         return listOf(EngineerMessage("Nouveau circuit enregistré : ${c.name}.", Priority.INFO, MessageCategory.RADIO))
     }
 
+    /** Circuit déjà signalé incohérent dans cette session (un seul message). */
+    private var trackInconsistencyNoted = false
+
+    /**
+     * Le circuit retenu est-il compatible avec ce tour ? Course du 26/10 : Le Mans (13,6 km), mémorisé d'une course
+     * précédente, pour un tour en 1:20,9 avec 240 km/h de pointe (il aurait fallu 607 km/h de moyenne). Une incohérence
+     * est tracée et le circuit n'est plus utilisé pour cette session (ni mémoire, ni profil de pilotage, ni historique) ;
+     * il n'est jamais remplacé d'office par un autre : la reconnaissance par la distance reprend, ou le pilote choisit.
+     * Renvoie faux si le circuit vient d'être écarté.
+     */
+    private fun checkTrackConsistency(lap: com.gt7pitwall.core.session.LapRecord, trackId: Int, out: MutableList<EngineerMessage>): Boolean {
+        val c = database.course(trackId) ?: return true
+        if (c.lengthM <= 0) return true
+        val dist = lap.distanceM
+        val time = lap.timeMs?.takeIf { it > 0 }
+        val vmax = lap.maxSpeedKmh
+        val avgKmh = time?.let { c.lengthM / 1000.0 / (it / 3_600_000.0) }
+        val reason = when {
+            dist != null && dist >= MIN_LEARN_LAP_M && kotlin.math.abs(dist - c.lengthM) > c.lengthM * TRACK_LENGTH_TOLERANCE ->
+                "distance mesurée ${km(dist)} pour une piste de ${km(c.lengthM.toFloat())}"
+            avgKmh != null && vmax != null && vmax > 50f && avgKmh > vmax * TRACK_SPEED_TOLERANCE ->
+                "tour en ${lapTime(time)} avec ${vmax.roundToInt()} km/h de pointe : il faudrait ${avgKmh.roundToInt()} km/h de moyenne sur ${km(c.lengthM.toFloat())}"
+            else -> null
+        } ?: return true
+        if (!trackInconsistencyNoted) {
+            trackInconsistencyNoted = true
+            journal.record(
+                JournalType.DECISION, JournalSource.ENGINE, "Circuit incohérent : ${c.label} ($reason)",
+                decision = "circuit écarté pour cette session (mémoire, profil, historique) ; reconnaissance par la distance ou choix du pilote",
+                details = mapOf("circuit" to c.id.toString(), "tour" to lap.lapNumber.toString()),
+            )
+            out += EngineerMessage(
+                "Le circuit enregistré, ${c.label}, ne correspond pas à ce tour : je ne l'utilise plus. Choisis le circuit dans la carte Course si besoin.",
+                Priority.INFO, MessageCategory.RADIO,
+            )
+        }
+        applyRules(rules.copy(trackId = null))
+        return false
+    }
+
+    private fun km(m: Float) = String.format(java.util.Locale.FRANCE, "%.1f km", m / 1000f)
+    private fun lapTime(ms: Int) = "${ms / 60_000}:${String.format(java.util.Locale.FRANCE, "%04.1f", (ms % 60_000) / 1000.0)}"
+
     private fun learn(events: List<SessionEvent>): List<EngineerMessage> {
         val out = mutableListOf<EngineerMessage>()
         val p = tracker.snapshot.packet ?: return out
         for (e in events) {
             if (e !is SessionEvent.LapCompleted) continue
-            val trackId = rules.trackId
+            val trackId = rules.trackId?.takeIf { checkTrackConsistency(e.lap, it, out) }
             if (trackId != null) {
                 val scope = profile.id.memoryScope
                 val key = CarTrackRecord.key(p.carCode, trackId, scope)
