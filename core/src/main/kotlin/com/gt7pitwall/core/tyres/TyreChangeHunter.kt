@@ -233,11 +233,14 @@ class TyreChangeHunter(val thresholdC: Float = DEFAULT_THRESHOLD_C) {
                 val pre = valid.subList(j - WINDOW, j)
                 val post = valid.subList(j + 1, minOf(valid.size, j + 1 + WINDOW))
                 if (post.size < 2) continue
-                // Ancien détecteur : mesure parfois dès l'entrée dans la voie des stands.
-                // On conserve cette sensibilité, mais pas les ruptures entre phases ou après un trou UDP.
+                // Le détecteur historique regarde aussi les quelques secondes autour de l'arrêt :
+                // cela couvre les changements de pneus sans ravitaillement (fenêtre STOP courte).
+                // Une rupture UDP est ignorée, ainsi qu'un saut exactement à l'entrée d'une voie des stands
+                // alors que le véhicule roulait encore. Ce n'est jamais une confirmation automatique.
                 val around = pre + valid[j] + post
-                if (around.any { it.phase != ThermalPhase.STOP } ||
-                    around.zipWithNext().any { (a, b) -> b.second != a.second + 1 }) continue
+                if (around.zipWithNext().any { (a, b) -> b.second != a.second + 1 }) continue
+                if (j > 0 && valid[j - 1].phase != ThermalPhase.STOP &&
+                    valid[j - 1].speedKmh > STILL_KMH) continue
                 val deltas = (0 until 4).map { w -> post.map { it.temps[w] }.average().toFloat() - pre.map { it.temps[w] }.average().toFloat() }
                 val step = ThermalStep(valid[j].second, deltas, persisted = false)
                 if (best == null || score(step) > score(best)) {
