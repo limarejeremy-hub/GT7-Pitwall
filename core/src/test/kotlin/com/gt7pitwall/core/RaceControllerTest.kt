@@ -128,7 +128,9 @@ class RaceControllerTest {
         // Une seule source de chiffres à la radio : le plan.
         val planned = s.controller.plan!!.stops.single()
         assertTrue(s.texts.none { "Il faudra ravitailler" in it }, s.texts.toString())
-        assertTrue(s.texts.any { "Arrêt prévu à la fin du tour ${planned.endOfLap}, environ ${planned.fuel} % du réservoir" in it }, s.texts.toString())
+        assertTrue(s.texts.any { "fin du tour ${planned.endOfLap}, ${planned.fuel} % du réservoir" in it }, s.texts.toString())
+        // Arrêt carburant prévu : la fin de tour ne répète pas l'insuffisance d'essence (l'appel au stand s'en charge).
+        assertTrue(s.texts.none { "Essence insuffisante" in it }, s.texts.toString())
     }
 
     @Test
