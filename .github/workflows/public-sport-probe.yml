@@ -1,0 +1,30 @@
+name: Public Sport parser probe (temporary)
+on:
+  push:
+    branches: ["fix/zero-touch-sport-sources"]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sample public Victory page structure
+        run: |
+          python3 - <<'PY'
+          import urllib.request,re,html,json
+          u="https://victorydash.io/daily-races"
+          req=urllib.request.Request(u,headers={"User-Agent":"GT7Pitwall/0.8 (Android; personal use)"})
+          with urllib.request.urlopen(req, timeout=20) as r: raw=r.read(500000).decode("utf-8","replace")
+          print("LENGTH",len(raw))
+          for needle in ["Race A:", "5 laps", "7 laps", "14 laps", "Fuel", "Wear", "Race week", "October 26", "2026-10-26", "Required","RM","Gr.3","<main","application/ld+json"]:
+              m = re.search(re.escape(needle), raw, re.I)
+              if m: print("SNIP", needle, html.unescape(raw[max(0,m.start()-160):m.start()+550]).replace("\\n"," ")[:700])
+              else: print("ABSENT",needle)
+          clean=re.sub(r'<script\b[^>]*>.*?</script>',' ',raw,flags=re.I|re.S)
+          clean=re.sub(r'<style\b[^>]*>.*?</style>',' ',clean,flags=re.I|re.S)
+          clean=html.unescape(re.sub(r'<[^>]*>',' ',clean))
+          clean=' '.join(clean.split())
+          for needle in ["Race A:", "Race B:", "Race C:"]:
+              k=clean.find(needle)
+              print("TEXT",needle,clean[max(0,k-50):k+420] if k>=0 else "absent")
+          PY
