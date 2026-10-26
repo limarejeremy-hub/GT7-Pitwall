@@ -229,6 +229,7 @@ class RaceController(
      */
     private var pitWindowPackets = 0
     private val pitApproachReminder = PitApproachReminder()
+    private var driverRequestedPitLap: Int? = null
     /** Déclaration vocale pendant CE passage physique aux stands, à rapprocher du plein mesuré. */
     private var driverDeclaredDuringPitNumber: Int? = null
     private var tyreLifeAsked = false
@@ -429,6 +430,7 @@ class RaceController(
                 candidatesAnnounced = false
                 pitWindowPackets = 0
                 pitApproachReminder.reset()
+                driverRequestedPitLap = null
                 aiExchanges.clear()
                 raceMemory.clear()
                 intentions.clear()
@@ -455,6 +457,7 @@ class RaceController(
                     pitWindowPackets = PIT_WINDOW_PACKETS
                 }
                 if (e is SessionEvent.PitVisitEnded) {
+                    driverRequestedPitLap = null
                     pitWindowPackets = 0
                     out += onPitVisit(e)
                     // Une question est posée (arrêt, pneus) : le plan attend la réponse, au plus 30 s.
@@ -508,16 +511,24 @@ class RaceController(
     private fun finalSectorPitCall(p: TelemetryPacket): List<EngineerMessage> {
         if (!raceMode || sessionFinished || p.isPaused || p.isLoading || p.speedKmh < 20f) return emptyList()
         val end = p.totalLaps.takeIf { it > 0 } ?: return emptyList()
-        // Wrong weekly series (Sport A selected during a 14-lap C race): never order a pit.
-        val reference = if (profile.id.sport) edition?.laps?.value ?: return emptyList() else null
+        // Manual, *confirmed* "I pit this lap" is independent of a potentially
+        // misidentified weekly profile. Automated calls require a matching event.
+        val voluntary = driverRequestedPitLap == p.currentLap
+        val reference = if (voluntary) null
+            else if (profile.id.sport) edition?.laps?.value ?: return emptyList()
+            else null
+        val planned = if (voluntary) com.gt7pitwall.core.strategy.PlannedStop(
+            endOfLap = p.currentLap, fuel = null, forFuel = false, mandatory = false,
+        ) else plan?.nextStop(p.currentLap)
         val progress = tracker.liveLapProgress()
         val stop = pitApproachReminder.onProgress(
             lap = p.currentLap, totalLaps = end, referenceLaps = reference,
-            progress = progress, plannedStop = plan?.nextStop(p.currentLap),
+            progress = progress, plannedStop = planned,
             pitVisitOpen = tracker.pitVisitOpen,
         ) ?: return emptyList()
         val instruction = buildString {
-            append("Dernier secteur. Box à la fin de ce tour.")
+            append(if (voluntary) "Dernier secteur. Rappel de ton choix : box à la fin de ce tour."
+                else "Dernier secteur. Box à la fin de ce tour.")
             if (stop.tyreToFit != null) append(" Monte les ${stop.tyreToFit.spoken}.")
             else if (stop.changeTyres) append(" Pneus à changer.")
             if (stop.noFuelNeeded) append(" Sans ravitaillement.")
@@ -1161,6 +1172,7 @@ class RaceController(
         lastDrivingReport = null
         briefed = false
         pitApproachReminder.reset()
+        driverRequestedPitLap = null
         lastPositionChangeClockMs = null
         replay = false
         replaySuspect = null
@@ -2545,6 +2557,7 @@ class RaceController(
                 pendingPilotDecision = null
             } else if (com.gt7pitwall.core.ai.DialogueActs.yes(text)) {
                 pendingPilotDecision = null
+                if (what.contains("box à la fin de ce tour", ignoreCase = true)) driverRequestedPitLap = lap
                 raceMemory.decision(lap, nowMs, "$what (décidé par le pilote)")
                 noteIntention("décision du pilote : $what")
                 journal.record(JournalType.DECISION, JournalSource.ENGINE, "Décision du pilote : $what", decision = "confirmée par le pilote")
@@ -2569,6 +2582,7 @@ class RaceController(
         val act = com.gt7pitwall.core.ai.DialogueActs.classify(text) ?: return null
         return when (act) {
             com.gt7pitwall.core.ai.DialogueActs.Act.Retract -> {
+                driverRequestedPitLap = null
                 pendingConfirmation = null
                 pendingPilotDecision = null
                 val removed = raceMemory.retractLast(nowMs)
