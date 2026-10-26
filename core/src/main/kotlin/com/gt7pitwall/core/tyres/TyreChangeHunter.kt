@@ -229,13 +229,14 @@ class TyreChangeHunter(val thresholdC: Float = DEFAULT_THRESHOLD_C) {
         private fun bestStep(valid: List<ThermalSample>): ThermalStep? {
             var best: ThermalStep? = null
             for (j in WINDOW until valid.size - 1) {
-                if (valid[j].phase != ThermalPhase.STOP || valid[j].speedKmh > STILL_KMH) continue
+                if (valid[j].phase != ThermalPhase.STOP) continue
                 val pre = valid.subList(j - WINDOW, j)
                 val post = valid.subList(j + 1, minOf(valid.size, j + 1 + WINDOW))
                 if (post.size < 2) continue
-                // Le détecteur historique doit respecter les mêmes protections que la signature à 60 °C.
+                // Ancien détecteur : mesure parfois dès l'entrée dans la voie des stands.
+                // On conserve cette sensibilité, mais pas les ruptures entre phases ou après un trou UDP.
                 val around = pre + valid[j] + post
-                if (around.any { it.phase != ThermalPhase.STOP || it.speedKmh > STILL_KMH } ||
+                if (around.any { it.phase != ThermalPhase.STOP } ||
                     around.zipWithNext().any { (a, b) -> b.second != a.second + 1 }) continue
                 val deltas = (0 until 4).map { w -> post.map { it.temps[w] }.average().toFloat() - pre.map { it.temps[w] }.average().toFloat() }
                 val step = ThermalStep(valid[j].second, deltas, persisted = false)
