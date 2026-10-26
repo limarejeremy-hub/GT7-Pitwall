@@ -553,7 +553,7 @@ class PitwallEngine(
             missingTyres = race.missingTyres,
             learning = runCatching { race.learningReport() }.getOrElse { listOf("Diagnostic indisponible : ${it.javaClass.simpleName}") },
             drivingReport = race.lastDrivingReport?.lines.orEmpty(),
-            preRaceBrief = if (force || snap.packet?.currentLap == 0) race.briefing() else _state.value.preRaceBrief,
+            preRaceBrief = if (force || snap.packet?.currentLap == 0) race.victoryBriefing() else _state.value.preRaceBrief,
             sessionIdentity = race.sessionIdentityText,
             tyreAgeLaps = race.ledger.tyreAge((race.snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)),
             askTyreChange = race.ledger.awaitingTyreChangeAnswer,
