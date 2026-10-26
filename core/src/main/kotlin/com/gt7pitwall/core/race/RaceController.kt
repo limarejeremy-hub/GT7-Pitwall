@@ -218,6 +218,8 @@ class RaceController(
      * « box » et annoncerait un nouveau plan en pleine voie des stands.
      */
     private var pitWindowPackets = 0
+    /** Déclaration vocale pendant CE passage physique aux stands, à rapprocher du plein mesuré. */
+    private var driverDeclaredDuringPitNumber: Int? = null
     private var tyreLifeAsked = false
 
     /** Derniers échanges vérifiés avec l'IA, pour les relances (« et au freinage ? »). */
@@ -988,6 +990,7 @@ class RaceController(
     // ------------------------------------------------------------------ Archive des sessions
 
     private fun startSession() {
+        driverDeclaredDuringPitNumber = null
         gridPosition = null
         finishPosition = null
         briefed = false
@@ -2459,9 +2462,26 @@ class RaceController(
             plan?.stops?.any { v.lap - it.endOfLap in 0..1 } == true
         return when (v.assessment) {
             PitAssessment.REFUEL -> {
-                val rec = ledger.recordRefuel(v.lap, v.refuelAmount)
+                val declaration = driverDeclaredDuringPitNumber
+                driverDeclaredDuringPitNumber = null
+                val rec = ledger.recordRefuel(v.lap, v.refuelAmount, declaration)
                 ledger.setThermal(v.lap, thermal.verdict.name)
-                info(stopRecorded(rec) + afterStopQuestions(), Priority.HIGH, expectsReply = awaitingAnswer)
+                if (declaration != null && rec.number == declaration && ledger.stopCount == rec.number) {
+                    // Le pilote a déjà entendu « arrêt enregistré » et la question pneus : pas de second arrêt
+                    // ni de nouvelle question qui masque la réponse en cours.
+                    journal.record(
+                        JournalType.PIT, JournalSource.ENGINE,
+                        "Déclaration du pilote et ravitaillement GT7 rapprochés : arrêt ${rec.number} unique",
+                        lap = v.lap,
+                        details = mapOf("rapprochement" to "meme_visite", "carburant" to v.refuelAmount.toString()),
+                    )
+                    if (ledger.awaitingTyreChangeAnswer || ledger.awaitingTyreDeclaration ||
+                        ledger.changeForPassage((snapshot.packet?.currentLap ?: v.lap).coerceAtLeast(1)) != null
+                    ) emptyList()
+                    else info(afterStopQuestions(), Priority.HIGH, expectsReply = awaitingAnswer)
+                } else {
+                    info(stopRecorded(rec) + afterStopQuestions(), Priority.HIGH, expectsReply = awaitingAnswer)
+                }
             }
             // Arrêt sans ravitaillement : proposé s'il compte pour le règlement, ou si les quatre pneus ont changé de
             // température d'un coup (pneus seuls possibles). Rien n'est enregistré sans le « oui » du pilote.
@@ -2521,7 +2541,9 @@ class RaceController(
                 return listOf("Arrêt ${it.number} déjà enregistré au tour ${it.lap}, je ne le compte pas deux fois.") to false
             }
         }
-        return stopRecorded(ledger.declare(lap)) to true
+        val recorded = ledger.declare(lap)
+        if (tracker.pitVisitOpen) driverDeclaredDuringPitNumber = recorded.number
+        return stopRecorded(recorded) to true
     }
 
     /**
