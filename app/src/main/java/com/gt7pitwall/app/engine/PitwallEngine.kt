@@ -330,7 +330,10 @@ class PitwallEngine(
         collectJob = null
         _running.value = false
         // La session en cours est archivée (interrompue, sauf si la course est finie).
-        scope.launch { mutex.withLock { race.endSession() } }
+        scope.launch { mutex.withLock {
+            race.endSession()
+            publish(force = true) // Show the completed archive even after PS5 telemetry is stopped.
+        } }
     }
 
     /** Question du pilote via les boutons de l'écran. */
