@@ -367,7 +367,7 @@ fun PitwallScreen(
                         color = PitColors.Orange)
                     Text("Comprends le règlement et choisis ton plan avant de prendre le départ.",
                         color = PitColors.Muted, style = MaterialTheme.typography.bodySmall)
-                    Gt7CareerPanel(gt7Profile, editable = false)
+                    Gt7CareerPanel(gt7Profile, editable = false, localCareer = state.localCareer)
                     RaceSetupCard(state, rules, engine.database, engine::setRules, engine::command,
                         engine::selectProfile, engine::updateProfile, engine::confirmRules,
                         onRefreshSchedule, engine::declareRules)
@@ -395,7 +395,7 @@ fun PitwallScreen(
                             ScrollColumn(Modifier.weight(1f)) {
                                 Text("ATELIER & CONNEXION", fontSize = 20.sp,
                                     fontWeight = FontWeight.Bold, color = PitColors.Orange)
-                                Gt7CareerPanel(gt7Profile, editable = true)
+                                Gt7CareerPanel(gt7Profile, editable = true, localCareer = state.localCareer)
                                 connectionCard()
                                 DriveCard(state.snapshot.packet)
                                 LapHistoryCard(state.snapshot.laps)
@@ -418,7 +418,7 @@ fun PitwallScreen(
                         ScrollColumn(Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
                             Text("ATELIER & CONNEXION", fontSize = 20.sp,
                                 fontWeight = FontWeight.Bold, color = PitColors.Orange)
-                            Gt7CareerPanel(gt7Profile, editable = true)
+                            Gt7CareerPanel(gt7Profile, editable = true, localCareer = state.localCareer)
                             connectionCard()
                             RaceSetupCard(state, rules, engine.database, engine::setRules,
                                 engine::command, engine::selectProfile, engine::updateProfile,

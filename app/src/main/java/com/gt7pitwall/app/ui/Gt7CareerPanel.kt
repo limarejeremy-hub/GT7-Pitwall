@@ -37,6 +37,7 @@ import com.gt7pitwall.app.ui.theme.PitColors
 import com.gt7pitwall.core.profile.Gt7CareerJson
 import com.gt7pitwall.core.profile.Gt7CareerStats
 import com.gt7pitwall.core.profile.Gt7PlayerProfile
+import com.gt7pitwall.core.profile.PitwallLocalCareer
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -47,7 +48,7 @@ import kotlin.math.roundToInt
  * Official OAuth cannot be enabled until Sony approves a client and scopes.
  */
 @Composable
-fun Gt7CareerPanel(store: Gt7ProfileStore, editable: Boolean) {
+fun Gt7CareerPanel(store: Gt7ProfileStore, editable: Boolean, localCareer: PitwallLocalCareer = PitwallLocalCareer.EMPTY) {
     val profile by store.profile.collectAsStateWithLifecycle()
     var editing by rememberSaveable { mutableStateOf(false) }
     var feedback by remember { mutableStateOf("") }
@@ -60,7 +61,8 @@ fun Gt7CareerPanel(store: Gt7ProfileStore, editable: Boolean) {
     Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
         Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("MON PILOTE GT7", color = PitColors.Orange,
+            PitwallLocalCareerCard(localCareer)
+            Text("MON PROFIL GT7 EN LIGNE", color = PitColors.Orange,
                 fontWeight = FontWeight.ExtraBold, fontSize = 18.sp)
             // Always show the save result directly below the title, rather than
             // after a long editor that can extend below the Fold viewport.

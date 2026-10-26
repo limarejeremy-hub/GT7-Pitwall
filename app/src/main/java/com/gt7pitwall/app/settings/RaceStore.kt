@@ -1,6 +1,8 @@
 package com.gt7pitwall.app.settings
 
 import android.content.Context
+import android.util.AtomicFile
+import android.util.Log
 import com.gt7pitwall.core.knowledge.CarTrackRecord
 import com.gt7pitwall.core.race.ProfileBook
 import com.gt7pitwall.core.race.RaceJson
@@ -82,12 +84,27 @@ class RaceStore(context: Context) : RaceStorage {
             runCatching { RaceJson.session(f.readText()) }.getOrNull()
         }
 
+    /**
+     * GT7 rewrites each session archive as each lap is completed.
+     * AtomicFile protects the old valid JSON if Android kills the process
+     * mid-write; unlike a plain rename this doesn't silently drop a finish.
+     * Existing session file names / JSON remain readable without migration.
+     */
+    @Synchronized
     override fun saveSession(record: SessionRecord) {
         val name = record.id.filter { it.isLetterOrDigit() || it == '-' } + ".json"
-        val tmp = File(sessionDir, "$name.tmp")
-        runCatching {
-            tmp.writeText(RaceJson.session(record))
-            if (!tmp.renameTo(File(sessionDir, name))) tmp.delete()
+        val target = AtomicFile(File(sessionDir, name))
+        var stream: java.io.FileOutputStream? = null
+        try {
+            val bytes = RaceJson.session(record).toByteArray(Charsets.UTF_8)
+            stream = target.startWrite()
+            stream.write(bytes)
+            target.finishWrite(stream)
+        } catch (e: Exception) {
+            stream?.let { target.failWrite(it) }
+            // A storage failure must be visible in diagnostics, never a
+            // silent success that makes the driver think a race was saved.
+            Log.e("PitwallRaceStore", "Session archive failed for " + name, e)
         }
     }
 
