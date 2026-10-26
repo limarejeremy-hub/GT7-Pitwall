@@ -1399,36 +1399,6 @@ class RaceController(
             gaps.isNotEmpty() -> "Briefing ${profile.id.label} : règlement à compléter (${gaps.joinToString(", ") { it.label }})."
             else -> "Briefing ${profile.id.label} : règlement confirmé."
         }
-        if (profile.id.sport && edition?.laps?.value != null &&
-            snapshot.packet?.totalLaps?.takeIf { it > 0 } != null &&
-            snapshot.packet!!.totalLaps != edition!!.laps.value) {
-            out += "ALERTE : le nombre de tours reçu de GT7 ne correspond pas au programme Sport sélectionné. Aucun conseil réglementaire ne doit être considéré comme confirmé."
-        }
-        snapshot.packet?.let { p ->
-            val car = database.car(p.carCode)?.fullName ?: "code " + p.carCode
-            out += "Voiture reconnue : " + car + "."
-            if (p.currentLap == 0 && p.preRacePosition > 0 && p.preRaceCarCount > 0)
-                out += "Matchmaking : position momentanée P" + p.preRacePosition + "/" + p.preRaceCarCount +
-                    ". Grille définitive encore non validée."
-        }
-        val raceLength = snapshot.packet?.totalLaps?.takeIf { it > 0 } ?: rules.totalLaps
-        if (raceLength != null) out += "Distance prévue : " + raceLength + " tours."
-        val oblig = ruleGaps.contains(RuleField.REQUIRED_TYRES)
-        if (rules.allowedTyres.isNotEmpty()) out += "Pneus autorisés : " +
-            rules.allowedTyres.joinToString(", ") { it.name } + "."
-        out += if (oblig) "Gommes obligatoires inconnues : impossible de valider une stratégie d'arrêt pour le règlement."
-            else if (rules.requiredTyres.isNotEmpty()) "Gommes imposées : " +
-                rules.requiredTyres.joinToString(" et ") { it.name } + "."
-            else "Aucune gomme obligatoire n'est actuellement déclarée dans le règlement."
-        plan?.let { p ->
-            out += if (p.stops.isEmpty()) "Plan de base : zéro arrêt prévu ; vérifier les obligations réglementaires."
-                else "Plan de base : arrêt(s) à la fin des tours " +
-                    p.stops.joinToString(", ") { it.endOfLap.toString() } + " (réévaluation pendant la course)."
-        }
-        historyModel.pitLossMs?.takeIf { it.confidence != Confidence.INSUFFICIENT }?.let {
-            out += "Perte moyenne historique par arrêt : " + StrategyOptions.seconds(it.mean.toLong()) +
-                " (" + it.confidence.label + "), contenu des arrêts potentiellement différent."
-        }
         if (rules.trackId == null) out += "Circuit non identifié : je ne peux pas utiliser ton historique."
         val h = history
         val learned = historyModel.fuelPerLap?.takeIf { it.confidence != Confidence.INSUFFICIENT }
@@ -1452,10 +1422,61 @@ class RaceController(
                 else -> null
             } ?: return@let
         }
-        // The driver's proven weaknesses are most useful BEFORE the race, not just in practice.
-        if (rules.trackId != null) driverCoach.known(driverKey)?.traits()?.text?.let { out += it }
-        out += "Objectif : maximiser les places gagnées avec une course propre ; aucun écart ou pneu adverse n'est transmis par l'UDP GT7."
+        if (!raceMode) driverCoach.known(driverKey)?.traits()?.text?.let { out += it }
         return out
+    }
+
+    /**
+     * Complete pre-grid dossier for the Fold. The historical radio briefing()
+     * contract remains untouched to preserve concise speech and tested facts.
+     */
+    fun victoryBriefing(): List<String> = buildList {
+        addAll(briefing())
+        val p = snapshot.packet
+        val ed = edition
+        if (profile.id.sport && ed?.laps?.known == true && p != null &&
+            p.totalLaps > 0 && ed.laps.value != p.totalLaps) {
+            add("ALERTE : GT7 annonce ${p.totalLaps} tours, mais la course ${profile.id.series.label} de la semaine en prévoit ${ed.laps.value}. Règlement incompatible : ne pas calculer les arrêts sur cette fiche.")
+        }
+        if (p != null) {
+            add("Voiture : " + (database.car(p.carCode)?.fullName ?: "code ${p.carCode}, absent de la base") + ".")
+            if (p.currentLap == 0 && p.preRacePosition > 0 && p.preRaceCarCount > 0) {
+                add("Matchmaking provisoire : P${p.preRacePosition} sur ${p.preRaceCarCount} ; la grille définitive n'est pas encore confirmée.")
+            }
+        }
+        val length = p?.totalLaps?.takeIf { it > 0 } ?: rules.totalLaps
+        if (length != null) add("Distance de course : $length tours (source : " +
+            (if (p?.totalLaps?.takeIf { it > 0 } != null) "GT7" else "règlement") + ").")
+        if (rules.allowedTyres.isNotEmpty()) {
+            add("Pneus autorisés : " + rules.allowedTyres.joinToString(", ") { it.name } + ".")
+        }
+        if (RuleField.REQUIRED_TYRES in ruleGaps) {
+            add("Pneus obligatoires : règlement non confirmé ; impossible de garantir qu'un plan d'arrêt respecte les règles.")
+        } else if (rules.requiredTyres.isNotEmpty()) {
+            add("Pneus obligatoires : " + rules.requiredTyres.joinToString(", ") { it.name } + ".")
+        } else {
+            add("Aucun composé obligatoire confirmé dans le règlement enregistré.")
+        }
+        plan?.let { rp ->
+            val valid = !profile.id.sport || ed?.laps?.value == null || p?.totalLaps == null ||
+                p.totalLaps <= 0 || ed.laps.value == p.totalLaps
+            if (!valid) {
+                add("Plan d'arrêt suspendu : incohérence de l'épreuve.")
+            } else {
+                add(if (rp.stops.isEmpty()) "Plan de base : aucun arrêt prévu, sous réserve des règles."
+                else "Plan de base : arrêt(s) à la fin des tours " +
+                    rp.stops.joinToString(", ") { it.endOfLap.toString() } + ".")
+            }
+        }
+        historyModel.pitLossMs?.takeIf { it.confidence != Confidence.INSUFFICIENT }?.let {
+            add("Coût historique moyen d'un arrêt : " + StrategyOptions.seconds(it.mean.toLong()) +
+                " (" + it.confidence.label + ") ; le contenu des arrêts peut différer.")
+        }
+        // Avoid mixing unknown circuits, cars and rule profiles in Driver DNA.
+        if (rules.trackId != null) {
+            driverCoach.known(driverKey)?.traits()?.text?.let { add("Mémoire du pilote : $it") }
+        }
+        add("Objectif : gagner des places par le rythme et les bonnes décisions. Écarts, noms et pneus des adversaires : non accessibles en UDP GT7.")
     }
 
     private fun briefingIfDue(p: TelemetryPacket): List<EngineerMessage> {
@@ -1466,7 +1487,7 @@ class RaceController(
         if (!profile.confirmed) rulesReminded = true
         journal.record(JournalType.STRATEGY, JournalSource.ENGINE, "Briefing : ${lines.joinToString(" ")}")
         // Full briefing stays on screen: the grid radio must not read a long technical report.
-        return listOf(EngineerMessage(lines.take(3).joinToString(" "), Priority.NORMAL, MessageCategory.FUEL, topic = "briefing"))
+        return listOf(EngineerMessage(lines.joinToString(" "), Priority.NORMAL, MessageCategory.FUEL, topic = "briefing"))
     }
 
     /** Événements mesurés du tracker inscrits au journal (tours, stands, arrivée, grille). */
