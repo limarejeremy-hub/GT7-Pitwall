@@ -84,6 +84,11 @@ class RadioConversation(
             mutex.withLock { race.raceMemory.retractLast(clock()) }
             return onUtterance(c.rest, c.rest, model, onThinking, addressed)
         }
+        // Réponse à une question en attente (« Tu as monté quelle gomme ? » → « medium ») : au moteur, sans détour.
+        // Course du 26/10 : « medium » était écarté comme bout de phrase et la gomme n'était jamais enregistrée.
+        if (mutex.withLock { race.answersPendingQuestion(heardFree) || race.answersPendingQuestion(text) }) {
+            return mutex.withLock { race.utterance(text, heardFree, source) }
+        }
         // Actes de dialogue (oubli, identité, préférence, désaccord, décision, hypothèse) : l'ingénieur répond lui-même.
         val cloudReady = cloud?.let { it.mode.cloudOrder(false).isNotEmpty() && it.available(false) } == true
         mutex.withLock { race.dialogue(heardFree, clock(), cloudReady) }?.let { return it }
@@ -92,7 +97,11 @@ class RadioConversation(
         // Course réelle du 26/10 : « pourquoi je m'arrête au prochain tour ? » partait vers le cloud,
         // expirait deux fois après 12 s, puis revenait au moteur qui savait déjà répondre.
         // Les questions déterministes sur le plan, le carburant, les pneus et la position ont priorité sur Gemini.
-        val quick = DriverCommandParser.parse(text)
+        // Question de pilotage : reconnue aussi sur la phrase libre (le vocabulaire radio la déforme).
+        val drivingQuery = com.gt7pitwall.core.engineer.DrivingAnalysis.classify(heardFree)
+            ?: com.gt7pitwall.core.engineer.DrivingAnalysis.classify(text)
+        val parsedQuick = DriverCommandParser.parse(text)
+        val quick = if (drivingQuery != null && (parsedQuick == null || parsedQuick is DriverCommand.Ask)) DriverCommand.Ask(drivingQuery) else parsedQuick
         val localQueries = setOf(
             com.gt7pitwall.core.radio.DriverQuery.PLAN,
             com.gt7pitwall.core.radio.DriverQuery.FUEL,
@@ -100,12 +109,13 @@ class RadioConversation(
             com.gt7pitwall.core.radio.DriverQuery.TYRE_CHANGE,
             com.gt7pitwall.core.radio.DriverQuery.NEXT_TYRE,
             com.gt7pitwall.core.radio.DriverQuery.POSITION,
-        )
+        ) + com.gt7pitwall.core.engineer.DrivingAnalysis.QUERIES
         // Sauf une question sur l'aide de l'ingénieur (« tu vas m'aider pour l'essence ? ») ou une demande d'avis
         // (« tu penses que ma stratégie tient la route ? ») : ce ne sont pas des demandes de chiffre.
         val normalized = com.gt7pitwall.core.radio.DriverCommandParser.normalize(heardFree)
         val opinion = OPINION.containsMatchIn(normalized) || IntentClassifier.helpTopic(heardFree) != null
-        if (quick is DriverCommand.Ask && quick.query in localQueries && !opinion) {
+        // Une question de pilotage (« tu trouves que je conduis bien ? ») reste mesurée par le moteur, même posée en avis.
+        if (quick is DriverCommand.Ask && quick.query in localQueries && (!opinion || quick.query in com.gt7pitwall.core.engineer.DrivingAnalysis.QUERIES)) {
             strategyDialogue(text, freeText)?.let { return it }
             return mutex.withLock { race.utterance(text, heardFree, source) }
         }

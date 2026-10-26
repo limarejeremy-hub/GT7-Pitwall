@@ -48,6 +48,10 @@ data class EngineerMessage(
  * Chaque phrase s'appuie uniquement sur des valeurs transmises par GT7 ou calculées à partir d'elles.
  */
 class RaceEngineer {
+    /** Annonces carburant de fin de tour : une par changement de situation (voir [FuelRadio]). */
+    val fuelRadio = FuelRadio()
+    private var announcedMeasuring = false
+
     private var warnedTwoLaps = false
     private var warnedOneLap = false
     private var announcedNoConsumption = false
@@ -179,6 +183,8 @@ class RaceEngineer {
                 SessionEvent.SessionReset -> {
                     resetAlerts()
                     announcedNoConsumption = false
+                    announcedMeasuring = false
+                    fuelRadio.reset()
                     driverPosition = null
                     carsInRace = null
                     tyres.reset()
@@ -372,6 +378,9 @@ class RaceEngineer {
             }
 
             DriverQuery.POSITION -> positionAnswer()
+            DriverQuery.DRIVING_QUALITY, DriverQuery.DRIVING_LOSS, DriverQuery.DRIVING_BRAKING, DriverQuery.DRIVING_PROGRESS,
+            DriverQuery.DRIVING_ADVICE, DriverQuery.DRIVING_LEARNED,
+            -> DrivingAnalysis.answer(query, snapshot.laps, emptySet())
             DriverQuery.PLACES -> placesAnswer()
 
             DriverQuery.SECTORS -> sectorReport(snapshot)
@@ -486,22 +495,25 @@ class RaceEngineer {
         val pitLap = plan?.stops?.any { it.endOfLap == lap.lapNumber } == true
         if (fuel != null && !pitLap) {
             when (fuel.advice) {
-                FuelAdvice.Measuring -> if (lap.fuelUsed == null) sb.append("Je mesure la consommation sur le prochain tour complet.")
+                FuelAdvice.Measuring -> if (lap.fuelUsed == null && !announcedMeasuring) {
+                    announcedMeasuring = true
+                    sb.append("Je mesure la consommation sur le prochain tour complet.")
+                }
                 FuelAdvice.NoConsumption -> if (!announcedNoConsumption) {
                     announcedNoConsumption = true
                     sb.append("Le niveau d'essence ne baisse pas : pas de consommation sur cette épreuve.")
                 }
                 FuelAdvice.NotAvailable, FuelAdvice.RaceFinished -> Unit
-                // L'appel au stand remplace le point carburant détaillé sur ces tours-là.
+                // L'appel au stand remplace le point carburant sur ces tours-là. Sinon, la radio ne parle du carburant que
+                // lorsque la situation change (course du 26/10 : « carburant pour 30,9 tours » à chaque tour, voir FuelRadio).
+                // Le détail reste disponible à la demande (« essence ? », « détails »).
                 else -> if (box == null) {
-                    sb.append(fuelSentence(fuel, verbose = false))
-                    // Version courte : le carburant seulement s'il devient juste.
-                    val tight = when (val a = fuel.advice) {
-                        is FuelAdvice.Tight, is FuelAdvice.PitRequired -> true
-                        is FuelAdvice.Comfortable -> a.marginLaps < 1f
-                        else -> false
+                    val fuelStopPlanned = plan?.stops?.any { it.forFuel && it.endOfLap >= lap.lapNumber } == true
+                    fuelRadio.onLap(fuel, fuelStopPlanned)?.let {
+                        sb.append(it).append(' ')
+                        short.append(it).append(' ')
+                        noteworthy = true
                     }
-                    if (tight) short.append(fuelSentence(fuel, verbose = false)).also { noteworthy = true }
                 }
             }
         }

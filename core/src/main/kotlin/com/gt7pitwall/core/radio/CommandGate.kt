@@ -189,7 +189,9 @@ object CommandGate {
                 "Course terminée : tu as fini P${ctx.finalPosition}. Je ne change plus le classement.",
             )
         }
-        val mode = StatementGuard.mode(text, ignoreRuleNegations = command is DriverCommand.Rule || command == DriverCommand.CancelStop)
+        // « J'ai changé les pneus mais pas fait le plein » : la négation porte sur le plein, pas sur les pneus.
+        val clause = if (command is DriverCommand.Tyres || command == DriverCommand.TyresChanged) tyreClause(text) else text
+        val mode = StatementGuard.mode(clause, ignoreRuleNegations = command is DriverCommand.Rule || command == DriverCommand.CancelStop)
         val t = DriverCommandParser.normalize(text)
         val garbled = "[unk]" in t
         val v = when (command) {
@@ -228,6 +230,13 @@ object CommandGate {
             return Vetting.Confirm(command, confirmation(command))
         }
         return v
+    }
+
+    /** Partie de la phrase qui parle des pneus (« … mais pas fait le plein » écarté). */
+    private fun tyreClause(text: String): String {
+        val parts = text.split(Regex("(?i)\\s+mais\\s+|\\s*,\\s*|\\s+par contre\\s+"))
+        if (parts.size < 2) return text
+        return parts.firstOrNull { p -> Regex("(?i)pneu|gomme|tendre|medium|moyen|dur").containsMatchIn(p) } ?: text
     }
 
     private fun stop(command: DriverCommand, mode: StatementGuard.Mode, t: String, garbled: Boolean, ctx: GateContext): Vetting = when (mode) {

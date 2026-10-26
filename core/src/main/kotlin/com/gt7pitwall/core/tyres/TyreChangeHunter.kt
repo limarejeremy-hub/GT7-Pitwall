@@ -197,7 +197,9 @@ class TyreChangeHunter(val thresholdC: Float = DEFAULT_THRESHOLD_C) {
                 val spreadBefore = prev.temps.max() - prev.temps.min()
                 if (spreadBefore < UNIFORM_BEFORE_SPREAD_C) continue
                 val after = valid.subList(j, j + UNIFORM_HOLD)
-                if (after.any { it.phase != ThermalPhase.STOP || it.speedKmh > STILL_KMH || it.temps.max() - it.temps.min() > UNIFORM_SPREAD_C } ||
+                // Après la remise, la voiture peut déjà repartir (course du 26/10 : arrêt de 3,2 s sans essence, en mouvement
+                // une seconde après) : seuls comptent la valeur commune des quatre pneus et la continuité des mesures.
+                if (after.any { it.temps.max() - it.temps.min() > UNIFORM_SPREAD_C } ||
                     after.zipWithNext().any { (a, b) -> b.second != a.second + 1 }) continue
                 val deltas = (0 until 4).map { w -> now.temps[w] - prev.temps[w] }
                 val step = ThermalStep(now.second, deltas, persisted = true)

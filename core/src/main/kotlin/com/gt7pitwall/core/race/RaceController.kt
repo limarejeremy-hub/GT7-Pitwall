@@ -379,7 +379,7 @@ class RaceController(
         if (events.any { it is SessionEvent.SessionReset }) positionTracker.reset()
         positionTracker.enabled = profile.id.kind == SessionKind.RACE
         val nowMs = clock()
-        val positionChanges = runCatching { positionTracker.onPacket(p, nowMs) }.getOrDefault(emptyList())
+        val positionChanges = runCatching { positionTracker.onPacket(p, nowMs) }.getOrElse { diagnostic("position", it); emptyList() }
         // Nouvelle session : la précédente est archivée avant que le registre des arrêts soit vidé.
         if (events.any { it is SessionEvent.SessionReset }) {
             closeSession(SessionOutcome.INTERRUPTED)
@@ -392,7 +392,7 @@ class RaceController(
         if (sessionId != null && journal.sessionId != sessionId && p.currentLap >= 1) beginJournal()
         if (!replay) events.filterIsInstance<SessionEvent.LapCompleted>().forEach { checkReplay(it.lap) }
         if (replay) return emptyList()
-        val coached = if (sessionFinished) emptyList() else runCatching { driverCoach.onPacket(p, tracker.pitVisitOpen) }.getOrDefault(emptyList())
+        val coached = if (sessionFinished) emptyList() else runCatching { driverCoach.onPacket(p, tracker.pitVisitOpen) }.getOrElse { diagnostic("profil de pilotage (paquet)", it); emptyList() }
         if (positionChanges.isNotEmpty()) lastPositionChangeClockMs = pacer.packetClockMs
         journalPositions(positionChanges)
         val out = mutableListOf<EngineerMessage>()
@@ -484,7 +484,10 @@ class RaceController(
         // Retour au menu après une course finie : pas de « nouvelle session » annoncée.
         out.addAll(0, engineer.onUpdate(events, tracker.snapshot, fuel).filterNot { finishedBefore && it.text.startsWith("Nouvelle session détectée") })
         out += celebrate(engineer.onPosition(positionChanges, nowMs), nowMs)
-        if (events.any { it is SessionEvent.RaceFinished }) finishPosition = engineer.measured.finalPosition ?: engineer.driverPosition
+        if (events.any { it is SessionEvent.RaceFinished }) {
+            finishPosition = engineer.measured.finalPosition ?: engineer.driverPosition
+            out += drivingReportAtFinish()
+        }
         out += briefingIfDue(p)
         updateMood(events, positionChanges, p)
         if (events.any { it is SessionEvent.LapCompleted || it is SessionEvent.RaceFinished || it is SessionEvent.PitVisitEnded }) saveSession()
@@ -607,7 +610,9 @@ class RaceController(
                 out += answer(tyres(command, lap))
                 out += replanOrWait()
             }
-            is DriverCommand.Ask -> out += if (command.query == DriverQuery.DETAILS && engineer.quietRace) {
+            is DriverCommand.Ask -> out += if (command.query in com.gt7pitwall.core.engineer.DrivingAnalysis.QUERIES) {
+                answer(listOf(drivingAnswer(command.query)))
+            } else if (command.query == DriverQuery.DETAILS && engineer.quietRace) {
                 // Analyse complète, seulement sur demande : tour, carburant, pneus et plan.
                 answer(
                     listOfNotNull(
@@ -650,8 +655,13 @@ class RaceController(
         // « Course » seul, juste après « tendres : course, sport ou confort ? » : c'est la réponse.
         tyreFamilyAnswer(original)?.let { return listOf(echo) + voiceCommand(it, it.text, source) }
         // « Moyens », « medium », « course tendres » juste après « Tu as monté quelle gomme ? » : c'est la réponse.
-        compoundAnswer(original)?.let { return listOf(echo) + voiceCommand(it, it.text, source) }
-        val cmd = DriverCommandParser.parse(text)
+        (compoundAnswer(original) ?: compoundAnswer(text))?.let { return listOf(echo) + voiceCommand(it, it.text, source) }
+        // Question de pilotage reconnue sur la phrase libre quand le vocabulaire radio l'a déformée (26/10 : « est ce
+        // quelle tour sont mon » pour « puisque mes tours sont bons »). Seulement une question : jamais une commande.
+        val parsed = DriverCommandParser.parse(text)
+        val driving = com.gt7pitwall.core.engineer.DrivingAnalysis.classify(original)
+            ?.takeIf { parsed == null || parsed is DriverCommand.Ask }?.let { DriverCommand.Ask(it) }
+        val cmd = driving ?: parsed
         return listOf(echo) + if (cmd == null) deliver(listOf(engineer.notUnderstood(text))) else voiceCommand(cmd, original, source)
     }
 
@@ -833,7 +843,7 @@ class RaceController(
             return AiFacts(lines)
         }
         strategyBrief?.let { lines += it.facts() }
-        lines += runCatching { driverCoach.facts(driverKey) }.getOrDefault(emptyList())
+        lines += runCatching { driverCoach.facts(driverKey) }.getOrElse { diagnostic("profil de pilotage (faits)", it); emptyList() }
         forecastTrack().text()?.let { lines += "Justesse de mes prévisions comparables : $it" }
         lastReview?.lines()?.takeIf { it.isNotEmpty() }?.let { lines += "Dernier bilan : ${it.joinToString(" ")}" }
         activeObservations.forEach { o -> lines += "Déclaré par le pilote au tour ${o.lap} (non mesuré) : ${o.kind.label}." }
@@ -1001,6 +1011,9 @@ class RaceController(
         driverDeclaredDuringPitNumber = null
         gridPosition = null
         finishPosition = null
+        internalErrors.clear()
+        trackInconsistencyNoted = false
+        lastDrivingReport = null
         briefed = false
         lastPositionChangeClockMs = null
         replay = false
@@ -1025,7 +1038,10 @@ class RaceController(
                 p?.carCode?.let { "voiture" to it.toString() },
                 rules.trackId?.let { "circuit" to it.toString() },
                 "epreuve" to profile.id.label,
-                (rules.totalLaps ?: p?.totalLaps?.takeIf { it > 0 })?.let { "tours" to it.toString() },
+                // Course du 26/10 : « tours=10 » (règlement mémorisé d'une course précédente) pour une course de 14 tours.
+                // GT7 donne le nombre de tours réel : il est noté à part, et c'est lui que le plan utilise.
+                p?.totalLaps?.takeIf { it > 0 }?.let { "tours_gt7" to it.toString() },
+                rules.totalLaps?.let { "tours_reglement" to it.toString() },
                 rules.durationMin?.let { "duree_min" to it.toString() },
                 "multiplicateur_carburant" to rules.fuelMultiplier.toString(),
                 "multiplicateur_pneus" to rules.tyreMultiplier.toString(),
@@ -1054,6 +1070,7 @@ class RaceController(
             plans = planLog.toList(),
             notes = driverNotes.toList(),
             gridPosition = gridPosition,
+            report = lastDrivingReport?.lines.orEmpty(),
             finishPosition = finishPosition,
         )
     }
@@ -1136,7 +1153,7 @@ class RaceController(
                 pitLap = stopped,
                 wheelBaseM = snapshot.packet?.wheelBaseM,
             )
-            out += journalCoaching(runCatching { driverCoach.onLap(lap, ctx) }.getOrDefault(emptyList()))
+            out += journalCoaching(runCatching { driverCoach.onLap(lap, ctx) }.getOrElse { diagnostic("profil de pilotage (tour)", it); emptyList() })
         }
         return out
     }
@@ -1183,6 +1200,7 @@ class RaceController(
             plans = planLog.toList(),
             notes = driverNotes.toList(),
             gridPosition = gridPosition,
+            report = lastDrivingReport?.lines.orEmpty(),
             finishPosition = finishPosition,
         ) ?: return
         sessions[r.id] = r
@@ -2140,6 +2158,67 @@ class RaceController(
         ledger.pending?.let { add("arrêt possible au tour ${it.lap}, à confirmer") }
     }
 
+    /** Erreurs internes rattrapées (la course continue), par module : visibles dans le diagnostic et le journal. */
+    val internalErrors = linkedMapOf<String, String>()
+
+    /**
+     * Un module a échoué : la course n'est pas interrompue et rien de trompeur n'est annoncé, mais l'échec est tracé
+     * (journal, diagnostic) au lieu d'être masqué. Une seule entrée de journal par module et par session.
+     */
+    fun diagnostic(module: String, e: Throwable) {
+        val what = "${e.javaClass.simpleName}${e.message?.let { ": " + it.take(120) } ?: ""}"
+        if (internalErrors.put(module, what) == null) {
+            runCatching { journal.record(JournalType.SESSION, JournalSource.SYSTEM, "Erreur interne ($module) : $what", decision = "module ignoré pour cette mesure, course non interrompue") }
+        }
+    }
+
+    /** Bilan de pilotage de la dernière course terminée (rapport complet : écran et archive ; synthèse : radio). */
+    var lastDrivingReport: com.gt7pitwall.core.engineer.DrivingReport? = null
+        private set
+
+    private fun drivingReportAtFinish(): List<EngineerMessage> {
+        val r = runCatching {
+            val total = snapshot.packet?.totalLaps?.takeIf { it > 0 } ?: rules.totalLaps
+            val d = driverCoach.diagnostics()
+            com.gt7pitwall.core.engineer.DrivingReport.of(
+                laps = snapshot.laps.filter { total == null || it.lapNumber <= total },
+                stopLaps = ledger.stopList.map { it.lap },
+                tyreChanges = ledger.changes.map { it.lap to it.compound?.spoken },
+                grid = engineer.measured.startPosition ?: gridPosition,
+                finish = engineer.measured.finalPosition ?: finishPosition,
+                cornerFindings = cornerFindings(),
+                adviceGiven = d.adviceGiven,
+                adviceImproved = d.adviceImproved,
+            )
+        }.getOrElse { diagnostic("bilan de pilotage", it); return emptyList() }
+        lastDrivingReport = r
+        r.lines.forEach { journal.record(JournalType.DECISION, JournalSource.ENGINE, "Bilan pilotage : $it") }
+        return listOf(EngineerMessage(r.radio, Priority.HIGH, MessageCategory.RADIO, dedupKey = "bilan:$sessionId"))
+    }
+
+    /** « Qu'est-ce que Pitwall a appris sur mon pilotage ? » : uniquement les données mesurées et enregistrées. */
+    fun learningReport(): List<String> = buildList {
+        val d = driverCoach.diagnostics()
+        addAll(d.lines())
+        addAll(runCatching { driverCoach.facts(driverKey) }.getOrElse { emptyList() }.drop(1))
+        cornerFindings().firstOrNull()?.let { add("Constat : $it") }
+        if (d.adviceGiven == 0) add("Aucun conseil donné : ${d.lastNoAdviceReason ?: if (d.lapsUsable == 0) "aucun tour exploitable" else "pas de perte nette et répétée"}. Ce n'est pas la preuve d'un pilotage parfait.")
+        internalErrors.forEach { (m, e) -> add("Erreur interne ($m) : $e.") }
+    }
+
+    /** Analyse du pilotage sur les tours propres de la session, avec les constats du profil par virage s'il en a. */
+    fun drivingAnswer(query: DriverQuery): String {
+        if (query == DriverQuery.DRIVING_LEARNED) return learningReport().take(LEARNED_RADIO_LINES).joinToString(" ")
+        val pitLaps = ledger.stopList.flatMap { listOf(it.lap, it.lap + 1) }.toSet()
+        return com.gt7pitwall.core.engineer.DrivingAnalysis.answer(query, snapshot.laps, pitLaps, cornerFindings())
+    }
+
+    /** Constats mesurés virage par virage (profil de pilotage), vides tant qu'il n'y en a pas. */
+    fun cornerFindings(): List<String> = runCatching { driverCoach.findings() }.getOrElse { e ->
+        diagnostic("constats par virage", e)
+        emptyList()
+    }
+
     /** Une phrase vient d'être échangée : la suivante peut la continuer (« pourquoi ? »). */
     fun inConversation(nowMs: Long = clock()): Boolean =
         inAiConversation(nowMs) || raceMemory.lastExchange?.let { nowMs - it.atMs < AI_CONVERSATION_MS } == true
@@ -2154,6 +2233,7 @@ class RaceController(
             DriverQuery.NEXT_TYRE -> return nextTyreSentence()
             DriverQuery.TYRE_CHANGE -> return tyreChangeSentence()
             DriverQuery.TYRES -> return if (snapshot.packet != null) tyreSummary() else null
+            in com.gt7pitwall.core.engineer.DrivingAnalysis.QUERIES -> return drivingAnswer(q!!)
             null -> Unit
             else -> return engineer.answer(q, snapshot, fuel).text
         }
@@ -2686,10 +2766,20 @@ class RaceController(
 
         /** Un tour plus court n'est pas un circuit (tour incomplet, chargement). */
         const val MIN_LEARN_LAP_M = 1_000f
+
+        /** Écart toléré entre la distance mesurée d'un tour et la longueur officielle (trajectoire, coupes). */
+        const val TRACK_LENGTH_TOLERANCE = 0.15f
+
+        /** Une moyenne supérieure à la vitesse de pointe (+5 %) est impossible : circuit erroné. */
+        const val TRACK_SPEED_TOLERANCE = 1.05
+
+        /** Réponse radio à « qu'as-tu appris ? » : l'essentiel ; tout le diagnostic est à l'écran. */
+        const val LEARNED_RADIO_LINES = 4
         const val POSITION_CALM_MS = 30_000L
 
         /** Réponses gardées entières : détail demandé, secteurs, règlement. */
-        val DETAILED_QUERIES = setOf(DriverQuery.DETAILS, DriverQuery.SECTORS, DriverQuery.OBLIGATIONS)
+        val DETAILED_QUERIES = setOf(DriverQuery.DETAILS, DriverQuery.SECTORS, DriverQuery.OBLIGATIONS) +
+            com.gt7pitwall.core.engineer.DrivingAnalysis.QUERIES
 
         /** Réponse à « quelle gomme ? » : quelques mots (« course mediums », « les moyens »). */
         const val COMPOUND_ANSWER_MAX_WORDS = 4
@@ -2764,6 +2854,7 @@ class RaceController(
 
     private fun tyres(c: DriverCommand.Tyres, lap: Int): List<String> {
         val compound = TyreCompound.fromSpeech(c.text, rules.allowedTyres, rules.requiredTyres, rulesConfirmed = profile.confirmed)
+            ?: familyFromContext(c, lap)
             ?: return ambiguousTyres(c)
         pendingTyreFamily = null
         val out = mutableListOf<String>()
@@ -2825,6 +2916,22 @@ class RaceController(
         return out
     }
 
+    /**
+     * « J'ai mis des mediums » en réponse à la question sur la gomme, ou « non, finalement des tendres » juste après une
+     * déclaration (course du 26/10) : la famille est celle des pneus actuels, sans seconde question. Hors de ce contexte,
+     * ou si le règlement l'exclut, la famille est demandée.
+     */
+    private fun familyFromContext(c: DriverCommand.Tyres, lap: Int): TyreCompound? {
+        if (c.atStart) return null
+        val t = DriverCommandParser.normalize(c.text)
+        val hardness = TyreCompound.hardnessIn(t) ?: return null
+        if (TyreCompound.familyIn(t) != null) return null
+        val answering = ledger.awaitingTyreDeclaration || ledger.changeForPassage(lap.coerceAtLeast(1)) != null
+        if (!answering) return null
+        val family = (ledger.currentTyre(rules.startTyre) ?: rules.startTyre)?.family ?: return null
+        return TyreCompound.of(family, hardness)?.takeIf { rules.allowedTyres.isEmpty() || it in rules.allowedTyres }
+    }
+
     /** Dureté dite sans famille, en attente de précision : « tendres » → « course, sport ou confort ? ». */
     private var pendingTyreFamily: Pair<DriverCommand.Tyres, TyreCompound.Hardness>? = null
     private var pendingTyreFamilyMs = 0L
@@ -2859,12 +2966,29 @@ class RaceController(
         if (!ledger.awaitingTyreDeclaration || pendingTyreFamily != null) return null
         val t = DriverCommandParser.normalize(text).replace(Regex("[.,!?;:]"), " ").replace(Regex("\\s+"), " ").trim()
         if (t.isEmpty() || t.split(' ').size > COMPOUND_ANSWER_MAX_WORDS) return null
-        if (DriverCommandParser.parse(t) is DriverCommand.Tyres) return null
         val named = TyreCompound.hardnessIn(t) != null || TyreCompound.entries.any { Regex("(^|\\s)${it.name.lowercase()}($|\\s)").containsMatchIn(t) } ||
             Regex("intermediaire|(^|\\s)(pluie|wet)($|\\s)").containsMatchIn(t)
         if (!named) return null
-        return DriverCommand.Tyres(if (Regex("(^|\\s)(pluie|wet)($|\\s)").containsMatchIn(t)) "pneus $t" else t, atStart = false)
+        if (Regex("(^|\\s)(pluie|wet)($|\\s)").containsMatchIn(t)) return DriverCommand.Tyres("pneus $t", atStart = false)
+        // Course du 26/10 : « medium » seul, réponse à la question sur la gomme. Sans famille dite, celle des pneus
+        // actuels (RS au départ → course) : la réponse ne relance pas une seconde question ; le pilote peut corriger
+        // (« non, sport mediums »). Famille inconnue ou contraire au règlement : la question de famille reste posée.
+        val hardness = TyreCompound.hardnessIn(t)
+        if (hardness != null && TyreCompound.familyIn(t) == null) {
+            val family = (ledger.currentTyre(rules.startTyre) ?: rules.startTyre)?.family
+            val guess = family?.let { TyreCompound.of(it, hardness) }
+            if (guess != null && (rules.allowedTyres.isEmpty() || guess in rules.allowedTyres)) {
+                return DriverCommand.Tyres("${family.spoken} ${hardness.spoken}", atStart = false)
+            }
+        }
+        return DriverCommand.Tyres(t, atStart = false)
     }
+
+    /**
+     * La phrase répond-elle à une question que l'ingénieur vient de poser (gomme montée, famille de gomme) ? Elle va
+     * alors directement au moteur, jamais écartée comme bout de phrase par la conversation (course du 26/10).
+     */
+    fun answersPendingQuestion(text: String): Boolean = compoundAnswer(text) != null || tyreFamilyAnswer(text) != null
 
     private fun tyreFamilyAnswer(text: String): DriverCommand.Tyres? {
         val (c, hardness) = pendingTyreFamily ?: return null
@@ -3015,12 +3139,55 @@ class RaceController(
         return listOf(EngineerMessage("Nouveau circuit enregistré : ${c.name}.", Priority.INFO, MessageCategory.RADIO))
     }
 
+    /** Circuit déjà signalé incohérent dans cette session (un seul message). */
+    private var trackInconsistencyNoted = false
+
+    /**
+     * Le circuit retenu est-il compatible avec ce tour ? Course du 26/10 : Le Mans (13,6 km), mémorisé d'une course
+     * précédente, pour un tour en 1:20,9 avec 240 km/h de pointe (il aurait fallu 607 km/h de moyenne). Une incohérence
+     * est tracée et le circuit n'est plus utilisé pour cette session (ni mémoire, ni profil de pilotage, ni historique) ;
+     * il n'est jamais remplacé d'office par un autre : la reconnaissance par la distance reprend, ou le pilote choisit.
+     * Renvoie faux si le circuit vient d'être écarté.
+     */
+    private fun checkTrackConsistency(lap: com.gt7pitwall.core.session.LapRecord, trackId: Int, out: MutableList<EngineerMessage>): Boolean {
+        val c = database.course(trackId) ?: return true
+        if (c.lengthM <= 0) return true
+        val dist = lap.distanceM
+        val time = lap.timeMs?.takeIf { it > 0 }
+        val vmax = lap.maxSpeedKmh
+        val avgKmh = time?.let { c.lengthM / 1000.0 / (it / 3_600_000.0) }
+        val reason = when {
+            dist != null && dist >= MIN_LEARN_LAP_M && kotlin.math.abs(dist - c.lengthM) > c.lengthM * TRACK_LENGTH_TOLERANCE ->
+                "distance mesurée ${km(dist)} pour une piste de ${km(c.lengthM.toFloat())}"
+            avgKmh != null && vmax != null && vmax > 50f && avgKmh > vmax * TRACK_SPEED_TOLERANCE ->
+                "tour en ${lapTime(time)} avec ${vmax.roundToInt()} km/h de pointe : il faudrait ${avgKmh.roundToInt()} km/h de moyenne sur ${km(c.lengthM.toFloat())}"
+            else -> null
+        } ?: return true
+        if (!trackInconsistencyNoted) {
+            trackInconsistencyNoted = true
+            journal.record(
+                JournalType.DECISION, JournalSource.ENGINE, "Circuit incohérent : ${c.label} ($reason)",
+                decision = "circuit écarté pour cette session (mémoire, profil, historique) ; reconnaissance par la distance ou choix du pilote",
+                details = mapOf("circuit" to c.id.toString(), "tour" to lap.lapNumber.toString()),
+            )
+            out += EngineerMessage(
+                "Le circuit enregistré, ${c.label}, ne correspond pas à ce tour : je ne l'utilise plus. Choisis le circuit dans la carte Course si besoin.",
+                Priority.INFO, MessageCategory.RADIO,
+            )
+        }
+        applyRules(rules.copy(trackId = null))
+        return false
+    }
+
+    private fun km(m: Float) = String.format(java.util.Locale.FRANCE, "%.1f km", m / 1000f)
+    private fun lapTime(ms: Int) = "${ms / 60_000}:${String.format(java.util.Locale.FRANCE, "%04.1f", (ms % 60_000) / 1000.0)}"
+
     private fun learn(events: List<SessionEvent>): List<EngineerMessage> {
         val out = mutableListOf<EngineerMessage>()
         val p = tracker.snapshot.packet ?: return out
         for (e in events) {
             if (e !is SessionEvent.LapCompleted) continue
-            val trackId = rules.trackId
+            val trackId = rules.trackId?.takeIf { checkTrackConsistency(e.lap, it, out) }
             if (trackId != null) {
                 val scope = profile.id.memoryScope
                 val key = CarTrackRecord.key(p.carCode, trackId, scope)

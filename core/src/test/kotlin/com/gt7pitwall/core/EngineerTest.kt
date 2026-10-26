@@ -52,8 +52,12 @@ class EngineerTest {
         val lap2 = run(t, e, packet(lap = 3, totalLaps = 5, fuel = 80f, lastLapMs = 89_600))
         val text2 = lap2.single().text
         assertTrue("Meilleur tour, 40 centièmes de mieux" in text2, text2)
-        assertTrue("Carburant pour 8 tours" in text2, text2)
-        assertTrue("On finit la course" in text2, text2)
+        // Course du 26/10 : une seule annonce rassurante, puis silence sur le carburant tant que tout va bien.
+        assertTrue("Essence suffisante pour l'arrivée" in text2, text2)
+        val lap3 = run(t, e, packet(lap = 4, totalLaps = 5, fuel = 70f, lastLapMs = 89_700))
+        assertTrue(lap3.none { "Essence" in it.text || "Carburant" in it.text }, lap3.toString())
+        // À la demande, le détail reste disponible.
+        assertTrue("Carburant pour" in e.answer(com.gt7pitwall.core.radio.DriverQuery.FUEL, t.snapshot, com.gt7pitwall.core.strategy.FuelStrategy.compute(t.snapshot)).text)
     }
 
     @Test

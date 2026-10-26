@@ -147,11 +147,10 @@ class PitDetectionTest {
         assertTrue("il manque course durs" in status, status)
         assertFalse("respect" in status)
 
-        // Règlement non confirmé : il ne choisit jamais la famille. Hypothèse : celle des pneus actuels (course).
+        // Règlement non confirmé : la famille ne vient jamais du règlement. En réponse à « Quels pneus as-tu montés ? »,
+        // celle des pneus actuels (course) est retenue sans seconde question (course du 26/10) ; le pilote peut corriger.
         s.say("j'ai mis les durs")
-        assertTrue("Tu confirmes des pneus course durs" in s.lastAnswer, s.lastAnswer)
-        assertEquals(setOf(TyreCompound.RH), s.controller.missingTyres)
-        s.say("oui")
+        assertTrue("course durs" in s.lastAnswer, s.lastAnswer)
         assertTrue(s.controller.missingTyres.isEmpty())
         assertTrue(s.lastAnswer.contains("Gommes imposées : toutes déclarées"), s.lastAnswer)
         assertFalse(s.controller.obligationsSentence().contains("respect"))

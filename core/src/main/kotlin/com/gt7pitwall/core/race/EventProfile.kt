@@ -226,7 +226,12 @@ class ProfileBook(entries: Map<ProfileId, ProfileEntry>, active: ProfileId) {
         val old = book[id]
         val sameWeek = old?.profile?.editionId == edition.id
         if (sameWeek && (old!!.profile.confirmed || old.profile.editionFingerprint == edition.fingerprint)) return false
-        val (r, status) = rules(id)
+        val (published, publishedStatus) = rules(id)
+        // Même semaine, fiche corrigée par la source : ce que le pilote a saisi lui-même est gardé (valeur et statut).
+        // Une nouvelle semaine repart de la fiche publiée : le règlement change chaque semaine.
+        val pilotFields = if (sameWeek) old!!.profile.ruleStatus.filterValues { it == FieldStatus.PILOT }.keys else emptySet()
+        val r = pilotFields.fold(published) { acc, f -> keepField(acc, old!!.rules, f) }
+        val status = publishedStatus + pilotFields.associateWith { FieldStatus.PILOT }
         val base = old?.profile ?: EventProfile(id = id)
         book[id] = ProfileEntry(
             base.copy(
@@ -240,6 +245,17 @@ class ProfileBook(entries: Map<ProfileId, ProfileEntry>, active: ProfileId) {
             r,
         )
         return true
+    }
+
+    private fun keepField(into: RaceRules, from: RaceRules, f: RuleField): RaceRules = when (f) {
+        RuleField.TRACK -> into.copy(trackId = from.trackId)
+        RuleField.LAPS -> into.copy(totalLaps = from.totalLaps)
+        RuleField.FUEL_MULTIPLIER -> into.copy(fuelMultiplier = from.fuelMultiplier)
+        RuleField.TYRE_MULTIPLIER -> into.copy(tyreMultiplier = from.tyreMultiplier)
+        RuleField.MANDATORY_STOPS -> into.copy(mandatoryStops = from.mandatoryStops)
+        RuleField.ALLOWED_TYRES -> into.copy(allowedTyres = from.allowedTyres, startTyre = from.startTyre)
+        RuleField.REQUIRED_TYRES -> into.copy(requiredTyres = from.requiredTyres)
+        RuleField.CARS, RuleField.BOP, RuleField.SETTINGS -> into
     }
 
     fun updateProfile(profile: EventProfile): ProfileEntry {

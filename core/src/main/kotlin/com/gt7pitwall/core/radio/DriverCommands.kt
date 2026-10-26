@@ -219,6 +219,9 @@ object DriverCommandParser {
             return DriverCommand.Overtook
         }
 
+        // « Mes tours sont bons ? », « où je perds du temps ? » : une analyse du pilotage, pas l'avancement de la course.
+        com.gt7pitwall.core.engineer.DrivingAnalysis.classify(t)?.let { return DriverCommand.Ask(it) }
+
         // "dernier tour" = question chrono ; "dernier" seul / "je suis dernier" = position.
         if (has(t, "dernier tour", "dernier chrono", "dernier temps")) return DriverCommand.Ask(DriverQuery.LAST_LAP)
         if (Regex("(^|\\s)derniere?($|\\s)").containsMatchIn(t) && !has(t, "tour", "chrono", "temps", "secteur")) {
@@ -409,7 +412,7 @@ object DriverCommandParser {
             "si", "on", "quoi", "doit", "faut", "sont", "celui", "ceux", "ils", "autres", "devant", "derrière", "moi", "nous",
             "rentrer", "rentrent", "maintenant", "mettre", "prolonger", "relais", "son", "leur",
             // Pneus conservés (essai PS5) : « j'ai gardé les mêmes pneus », « pas touché aux pneus », « rien changé ».
-            "analyse", "bilan", "complet", "complète", "point", "gardé", "garde", "conservé", "même", "touché", "rien", "changés", "changement", "train", "c'est", "les", "aux", "pareil", "sans",
+            "analyse", "bilan", "complet", "bons", "bon", "bien", "régulier", "perds", "perd", "améliorer", "progresse", "freine", "freinage", "tôt", "tard", "conduis", "lent", "virage", "virages", "où", "pilotage", "trouves", "vois", "complète", "point", "gardé", "garde", "conservé", "même", "touché", "rien", "changés", "changement", "train", "c'est", "les", "aux", "pareil", "sans",
             // Fin de la conversation continue : « terminé », « fin de communication », « merci, terminé ».
             "merci", "fin", "communication", "transmission", "terminée",
         )
