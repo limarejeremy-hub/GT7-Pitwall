@@ -3,6 +3,7 @@ package com.gt7pitwall.app.sport
 import android.content.Context
 import com.gt7pitwall.core.knowledge.Gt7Database
 import com.gt7pitwall.core.sport.DgEdgeFeed
+import com.gt7pitwall.core.sport.VictoryDailyFeed
 import com.gt7pitwall.core.sport.GtPlanetFeed
 import com.gt7pitwall.core.sport.GridStatsDailyFeed
 import com.gt7pitwall.core.sport.RefreshPolicy
@@ -37,6 +38,7 @@ class SportScheduleRepository(context: Context, private val database: Gt7Databas
     private val fallbackCache = File(dir, "gtplanet-general.xml")
     private val gridCache = File(dir, "gridstats.json")
     private val dgCache = File(dir, "dg-edge.json")
+    private val victoryCache = File(dir, "victory.html")
     private val credentials = SportApiCredentialStore(context)
     private val prefs = context.getSharedPreferences("sport", Context.MODE_PRIVATE)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -114,10 +116,17 @@ class SportScheduleRepository(context: Context, private val database: Gt7Databas
                 runCatching { fetchGtPlanet(GtPlanetFeed.FALLBACK_URL, fallbackCache, conditional = false) }
                     .onFailure { sourceErrors += "GTPlanet général : ${it.message ?: "indisponible"}" }
             }
-            // Independent public website; no API key and no login, personal local use only.
-            // Daily verification when available; retry if no current week is cached.
-            val hasDg = readDg().any { it.validFrom == week }
-            if (!hasDg || System.currentTimeMillis() - dgCache.lastModified() >= RefreshPolicy.DAILY_MS) {
+            // Victory serves the current A/B/C HTML and JSON-LD without API credentials.
+            // The live CI network probe confirmed HTTP 200 on 26/10 (DG EDGE gave HTTP 403).
+            val hasVictory = readVictory().any { it.validFrom == week }
+            if (!hasVictory || System.currentTimeMillis() - victoryCache.lastModified() >= RefreshPolicy.DAILY_MS) {
+                runCatching { fetchVictory(week) }
+                    .onFailure { sourceErrors += "Victory : ${it.message ?: "indisponible"}" }
+            }
+            // DG EDGE is only a last-resort independent source if both GTPlanet and Victory
+            // cannot provide the complete week. A 403 is treated as unavailable, never bypassed.
+            val validGP = hasWeek(cache, week) || hasWeek(fallbackCache, week)
+            if (!validGP && readVictory().none { it.validFrom == week }) {
                 runCatching { fetchDgEdge(week) }
                     .onFailure { sourceErrors += "DG EDGE : ${it.message ?: "indisponible"}" }
             }
@@ -128,7 +137,7 @@ class SportScheduleRepository(context: Context, private val database: Gt7Databas
             val currentSources = listOfNotNull(cache, fallbackCache).flatMap { file ->
                 runCatching { if (file.isFile) GtPlanetFeed.parse(file.readText(), file.lastModified()) else emptyList() }
                     .getOrDefault(emptyList())
-            } + readDg() + runCatching {
+            } + readVictory() + readDg() + runCatching {
                 if (gridCache.isFile) GridStatsDailyFeed.parse(gridCache.readText(), gridCache.lastModified()) else emptyList()
             }.getOrDefault(emptyList())
             val complete = currentSources.filter { ScheduleBuilder.weekStart(it.validFrom) == week }
@@ -148,6 +157,38 @@ class SportScheduleRepository(context: Context, private val database: Gt7Databas
             _busy.value = false
             rebuild()
         }
+    }
+
+    /** Public Victory page cached privately, preserving the last correct week. */
+    private fun readVictory(): List<com.gt7pitwall.core.sport.WeeklyPost> = runCatching {
+        if (victoryCache.isFile) VictoryDailyFeed.parse(victoryCache.readText(), victoryCache.lastModified())
+        else emptyList()
+    }.getOrDefault(emptyList())
+
+    private fun fetchVictory(week: LocalDate) {
+        val url = URL(VictoryDailyFeed.URL)
+        if (url.protocol != "https" || url.host != "victorydash.io" || url.path != "/daily-races")
+            error("adresse Victory inattendue")
+        val conn = (url.openConnection() as HttpURLConnection).apply {
+            connectTimeout = 12_000
+            readTimeout = 15_000
+            instanceFollowRedirects = false
+            setRequestProperty("Accept", "text/html")
+            setRequestProperty("User-Agent", "GT7Pitwall/0.8 (Android; personal use)")
+        }
+        val html = try {
+            if (conn.responseCode != HttpURLConnection.HTTP_OK) error("HTTP ${conn.responseCode}")
+            if (!conn.contentType.orEmpty().contains("html", ignoreCase = true)) error("réponse non HTML")
+            if (conn.contentLengthLong > MAX_FEED) error("page trop volumineuse")
+            conn.inputStream.bufferedReader().use { it.readText() }.also {
+                if (it.length > MAX_FEED) error("page trop volumineuse")
+            }
+        } finally { conn.disconnect() }
+        if (VictoryDailyFeed.parse(html, System.currentTimeMillis()).singleOrNull()?.validFrom != week)
+            error("aucun programme complet A/B/C pour $week")
+        val tmp = File(dir, "victory.html.tmp")
+        tmp.writeText(html)
+        if (!tmp.renameTo(victoryCache)) error("impossible de sauvegarder Victory")
     }
 
     private fun hasWeek(file: File, week: LocalDate): Boolean = runCatching {
@@ -271,11 +312,12 @@ class SportScheduleRepository(context: Context, private val database: Gt7Databas
         // Le même article peut figurer dans les deux flux : une seule fois.
         val posts = (read(cache) + read(fallbackCache)).distinctBy { it.source.url ?: it.title }
         val today = LocalDate.now(GtPlanetFeed.PARIS)
+        val victoryPosts = readVictory()
         val dgPosts = readDg()
         val gridPosts = runCatching {
             if (gridCache.isFile) GridStatsDailyFeed.parse(gridCache.readText(), gridCache.lastModified()) else emptyList()
         }.getOrDefault(emptyList())
-        _state.value = ScheduleBuilder.build(posts + dgPosts + gridPosts, database, today, lastFetchMs, lastError)
+        _state.value = ScheduleBuilder.build(posts + victoryPosts + dgPosts + gridPosts, database, today, lastFetchMs, lastError)
     }
 
     private companion object {
