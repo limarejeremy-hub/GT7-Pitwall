@@ -1345,13 +1345,17 @@ class RaceController(
         if (replay) return
         val dna = driverCoach.close(fuel?.perLap)
         val final = if (sessionFinished) SessionOutcome.FINISHED else outcome
+        // A finished session may have been reset by GT7 before the journal is closed.
+        // Use the last saved session instead of falsely reporting zero measured laps.
+        val measuredLapsAtClose = snapshot.laps.size.takeIf { it > 0 }
+            ?: sessions[sessionId]?.laps?.size ?: 0
         journal.end(
             when (final) {
                 SessionOutcome.FINISHED -> "Fin de session : course terminée"
                 SessionOutcome.INTERRUPTED -> "Fin de session : interrompue (télémétrie arrêtée ou nouvelle session)"
                 SessionOutcome.IN_PROGRESS -> "Fin de session"
             },
-            details = mapOf("issue" to final.name.lowercase(), "tours_mesures" to snapshot.laps.size.toString()),
+            details = mapOf("issue" to final.name.lowercase(), "tours_mesures" to measuredLapsAtClose.toString()),
         )
         val r = currentRecord(final) ?: sessions[sessionId]?.copy(
             outcome = final,
