@@ -129,6 +129,23 @@ class SessionTracker(
     /** Un passage aux stands (ravitaillement ou immobilisation) est en cours. */
     val pitVisitOpen: Boolean get() = pitDetector.inVisit
 
+    /**
+     * Progress within the current lap (0..1) inferred from a complete previous
+     * lap's distance. Pitwall sectors are equal-distance thirds, NOT official
+     * GT7 sectors. Returns null if coverage was interrupted or no baseline exists.
+     */
+    fun liveLapProgress(): Float? {
+        val p = snapshot.packet ?: return null
+        if (p.currentLap < 2 || !trace.isComplete || pitVisitOpen) return null
+        val baseline = snapshot.laps.asReversed().firstNotNullOfOrNull {
+            it.distanceM?.takeIf { d -> d >= 1_000f && !it.pitLane }
+        } ?: return null
+        val d = trace.lapDistance
+        if (!d.isFinite() || d < 0f || d > baseline * 1.06f) return null
+        return (d / baseline).coerceIn(0f, 1f)
+    }
+
+
     private data class PendingLap(
         val lapNumber: Int,
         val lastLapMsBefore: Int,

@@ -89,6 +89,52 @@ data class DrivingReport(
             if (tyreChanges.isNotEmpty()) {
                 lines += "Pneus : " + tyreChanges.joinToString(", ") { (lap, c) -> "changés au tour $lap (${c ?: "gomme non précisée"})" } + "."
             }
+            // Extended *written* report: race results need tactical explanations,
+            // not longer messages while the driver is approaching a braking zone.
+            lines += "— Débrief tactique orienté progression —"
+            if (enough && times.isNotEmpty()) {
+                val typical = times.sorted()[times.size / 2]
+                val invalid = pitLaps + setOf(1)
+                val worstIncident = timed.filter { it.lapNumber !in invalid }
+                    .map { it to (it.timeMs!! - typical) }
+                    .filter { it.second >= 3_000 }
+                    .maxByOrNull { it.second }
+                worstIncident?.let { pair ->
+                    val bad = pair.first
+                    lines += "Plus grosse perte hors stands : tour " + bad.lapNumber +
+                        ", " + s(pair.second) + " de plus que le rythme médian des tours propres."
+                    if (bad.sectorsMs?.size == 3) {
+                        val sectorReference = clean.mapNotNull { it.sectorsMs?.takeIf { parts -> parts.size == 3 } }
+                        if (sectorReference.size >= 2) {
+                            val lossesOnIncident = (0..2).map { index ->
+                                bad.sectorsMs!![index] - sectorReference.minOf { it[index] }
+                            }
+                            val worstIndex = lossesOnIncident.indices.maxByOrNull { lossesOnIncident[it] } ?: 0
+                            if (lossesOnIncident[worstIndex] >= 1_000) {
+                                lines += "Sur ce tour : secteur Pitwall " + (worstIndex + 1) +
+                                    ", " + s(lossesOnIncident[worstIndex].toDouble()) +
+                                    " de plus que sa meilleure référence propre."
+                            }
+                        }
+                    }
+                    if ((bad.wheelspins ?: 0) >= 5 || (bad.tcsShare ?: 0f) >= 0.10f) {
+                        lines += "Motricité perturbée : " + (bad.wheelspins ?: 0) + " patinages et antipatinage actif " +
+                            ((bad.tcsShare ?: 0f) * 100).roundToInt() +
+                            " % du tour. Impossible d'en déduire seul la cause de l'incident."
+                    }
+                }
+                stopLaps.firstOrNull()?.let { stop ->
+                    val pitLap = timed.firstOrNull { it.lapNumber == stop }
+                    if (pitLap != null && pitLap.timeMs!! > typical) {
+                        lines += "Tour d'arrêt " + stop + " : " + s(pitLap.timeMs!! - typical) +
+                            " de plus que le rythme propre ; cela n'isole pas le coût réel du stand."
+                    }
+                }
+                timed.lastOrNull()?.fuelAfter?.let {
+                    lines += "Carburant à l'arrivée : " + n(it.toDouble()) +
+                        " unités GT7 ; confronter aux obligations de pneus avant de conclure qu'un arrêt était évitable."
+                }
+            }
             if (adviceGiven > 0) lines += "Conseils de virage : $adviceGiven donnés, $adviceImproved suivis d'une amélioration mesurée."
             // Forces, faiblesse, une seule priorité : seulement avec assez de données.
             var priority: String? = null

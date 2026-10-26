@@ -27,6 +27,8 @@ class DrivingReportTest {
         assertTrue(r.lines.any { it.startsWith("Meilleur tour") }, r.lines.toString())
         assertTrue(r.lines.any { it.startsWith("Rythme exploitable") }, r.lines.toString())
         assertTrue(r.lines.any { it.startsWith("Après l'arrêt") }, r.lines.toString())
+        assertTrue(r.lines.any { it.contains("Débrief tactique") }, r.lines.toString())
+        assertTrue(r.lines.any { it.contains("Décision à préparer") } == false || r.lines.size >= 8)
         assertTrue(s.texts.any { it.startsWith("Bilan") }, s.texts.toString())
         // Synthèse radio courte ; rapport complet dans l'archive, relu à l'identique.
         assertTrue(r.radio.length < 200, r.radio)

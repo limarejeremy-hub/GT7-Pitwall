@@ -52,6 +52,7 @@ import com.gt7pitwall.core.strategy.StrategyReport
 import com.gt7pitwall.core.strategy.PitLedger
 import com.gt7pitwall.core.strategy.PitStopRecord
 import com.gt7pitwall.core.strategy.RacePlan
+import com.gt7pitwall.core.strategy.PitApproachReminder
 import com.gt7pitwall.core.strategy.RacePlanner
 import com.gt7pitwall.core.strategy.RaceRules
 import com.gt7pitwall.core.strategy.StopEvidence
@@ -227,6 +228,9 @@ class RaceController(
      * « box » et annoncerait un nouveau plan en pleine voie des stands.
      */
     private var pitWindowPackets = 0
+    private val pitApproachReminder = PitApproachReminder()
+    private var driverRequestedPitLap: Int? = null
+    private var sportRuleMismatchWarned = false
     /** Déclaration vocale pendant CE passage physique aux stands, à rapprocher du plein mesuré. */
     private var driverDeclaredDuringPitNumber: Int? = null
     private var tyreLifeAsked = false
@@ -426,6 +430,9 @@ class RaceController(
                 trackCandidates = emptyList()
                 candidatesAnnounced = false
                 pitWindowPackets = 0
+                pitApproachReminder.reset()
+                driverRequestedPitLap = null
+                sportRuleMismatchWarned = false
                 aiExchanges.clear()
                 raceMemory.clear()
                 intentions.clear()
@@ -452,6 +459,7 @@ class RaceController(
                     pitWindowPackets = PIT_WINDOW_PACKETS
                 }
                 if (e is SessionEvent.PitVisitEnded) {
+                    driverRequestedPitLap = null
                     pitWindowPackets = 0
                     out += onPitVisit(e)
                     // Une question est posée (arrêt, pneus) : le plan attend la réponse, au plus 30 s.
@@ -491,12 +499,58 @@ class RaceController(
             out += drivingReportAtFinish()
         }
         out += briefingIfDue(p)
+        out += finalSectorPitCall(p)
         updateMood(events, positionChanges, p)
         if (events.any { it is SessionEvent.LapCompleted || it is SessionEvent.RaceFinished || it is SessionEvent.PitVisitEnded }) saveSession()
         // Messages non urgents différés pendant un gros freinage ou un virage (au plus quelques secondes).
         if (events.any { it is SessionEvent.SessionReset }) pacer.clear()
         val busy = pacer.busy(p)
         return deliver(pacer.pace(out, busy, pacer.packetClockMs, p.currentLap))
+    }
+
+
+    /** A second, one-shot call in Pitwall's last equal-distance sector. */
+    private fun finalSectorPitCall(p: TelemetryPacket): List<EngineerMessage> {
+        if (!raceMode || sessionFinished || p.isPaused || p.isLoading || p.speedKmh < 20f) return emptyList()
+        // Wait for a calmer point in the last sector; never call "Box" at a heavy braking point.
+        if (pacer.busy(p)) return emptyList()
+        val end = p.totalLaps.takeIf { it > 0 } ?: return emptyList()
+        // Manual, *confirmed* "I pit this lap" is independent of a potentially
+        // misidentified weekly profile. Automated calls require a matching event.
+        val voluntary = driverRequestedPitLap == p.currentLap
+        val reference = if (voluntary) null
+            else if (profile.id.sport) edition?.laps?.value ?: return emptyList()
+            else null
+        val planned = if (voluntary) com.gt7pitwall.core.strategy.PlannedStop(
+            endOfLap = p.currentLap, fuel = null, forFuel = false, mandatory = false,
+        ) else plan?.nextStop(p.currentLap)
+        val progress = tracker.liveLapProgress()
+        val stop = pitApproachReminder.onProgress(
+            lap = p.currentLap, totalLaps = end, referenceLaps = reference,
+            progress = progress, plannedStop = planned,
+            pitVisitOpen = tracker.pitVisitOpen,
+        ) ?: return emptyList()
+        val instruction = buildString {
+            append(if (voluntary) "Dernier secteur. Rappel de ton choix : box à la fin de ce tour."
+                else "Dernier secteur. Box à la fin de ce tour.")
+            if (stop.tyreToFit != null) append(" Monte les ${stop.tyreToFit.spoken}.")
+            else if (stop.changeTyres) append(" Pneus à changer.")
+            if (stop.noFuelNeeded) append(" Sans ravitaillement.")
+            else if (stop.forFuel) append(" Ravitaillement prévu.")
+        }
+        journal.record(
+            JournalType.STRATEGY, JournalSource.ENGINE,
+            "Rappel de stand dernier secteur Pitwall : ${stop.endOfLap}",
+            lap = p.currentLap, details = mapOf(
+                "fraction_piste" to "%.2f".format(java.util.Locale.ROOT, progress ?: 0f),
+                "preuve" to "tour complet précédent et arrêt du plan",
+            ),
+        )
+        return listOf(
+            EngineerMessage(instruction, Priority.CRITICAL, MessageCategory.ALERT,
+                dedupKey = "approche-stand:$sessionId:${stop.endOfLap}", topic = "pit-approach",
+                validUntilLap = p.currentLap),
+        )
     }
 
     private val pacer = com.gt7pitwall.core.radio.RadioPacer()
@@ -1121,6 +1175,9 @@ class RaceController(
         ambiguityAnnounced = false
         lastDrivingReport = null
         briefed = false
+        pitApproachReminder.reset()
+        driverRequestedPitLap = null
+        sportRuleMismatchWarned = false
         lastPositionChangeClockMs = null
         replay = false
         replaySuspect = null
@@ -1290,13 +1347,17 @@ class RaceController(
         if (replay) return
         val dna = driverCoach.close(fuel?.perLap)
         val final = if (sessionFinished) SessionOutcome.FINISHED else outcome
+        // A finished session may have been reset by GT7 before the journal is closed.
+        // Use the last saved session instead of falsely reporting zero measured laps.
+        val measuredLapsAtClose = snapshot.laps.size.takeIf { it > 0 }
+            ?: sessions[sessionId]?.laps?.size ?: 0
         journal.end(
             when (final) {
                 SessionOutcome.FINISHED -> "Fin de session : course terminée"
                 SessionOutcome.INTERRUPTED -> "Fin de session : interrompue (télémétrie arrêtée ou nouvelle session)"
                 SessionOutcome.IN_PROGRESS -> "Fin de session"
             },
-            details = mapOf("issue" to final.name.lowercase(), "tours_mesures" to snapshot.laps.size.toString()),
+            details = mapOf("issue" to final.name.lowercase(), "tours_mesures" to measuredLapsAtClose.toString()),
         )
         val r = currentRecord(final) ?: sessions[sessionId]?.copy(
             outcome = final,
@@ -1367,6 +1428,59 @@ class RaceController(
         return out
     }
 
+    /**
+     * Complete pre-grid dossier for the Fold. The historical radio briefing()
+     * contract remains untouched to preserve concise speech and tested facts.
+     */
+    fun victoryBriefing(): List<String> = buildList {
+        addAll(briefing())
+        val p = snapshot.packet
+        val ed = edition
+        if (profile.id.sport && ed?.laps?.known == true && p != null &&
+            p.totalLaps > 0 && ed.laps.value != p.totalLaps) {
+            add("ALERTE : GT7 annonce ${p.totalLaps} tours, mais la course ${profile.id.series.label} de la semaine en prévoit ${ed.laps.value}. Règlement incompatible : ne pas calculer les arrêts sur cette fiche.")
+        }
+        if (p != null) {
+            add("Voiture : " + (database.car(p.carCode)?.fullName ?: "code ${p.carCode}, absent de la base") + ".")
+            if (p.currentLap == 0 && p.preRacePosition > 0 && p.preRaceCarCount > 0) {
+                add("Matchmaking provisoire : P${p.preRacePosition} sur ${p.preRaceCarCount} ; la grille définitive n'est pas encore confirmée.")
+            }
+        }
+        val length = p?.totalLaps?.takeIf { it > 0 } ?: rules.totalLaps
+        if (length != null) add("Distance de course : $length tours (source : " +
+            (if (p?.totalLaps?.takeIf { it > 0 } != null) "GT7" else "règlement") + ").")
+        if (rules.allowedTyres.isNotEmpty()) {
+            add("Pneus autorisés : " + rules.allowedTyres.joinToString(", ") { it.name } + ".")
+        }
+        if (RuleField.REQUIRED_TYRES in ruleGaps) {
+            add("Pneus obligatoires : règlement non confirmé ; impossible de garantir qu'un plan d'arrêt respecte les règles.")
+        } else if (rules.requiredTyres.isNotEmpty()) {
+            add("Pneus obligatoires : " + rules.requiredTyres.joinToString(", ") { it.name } + ".")
+        } else {
+            add("Aucun composé obligatoire confirmé dans le règlement enregistré.")
+        }
+        plan?.let { rp ->
+            val valid = !profile.id.sport || ed?.laps?.value == null || p?.totalLaps == null ||
+                p.totalLaps <= 0 || ed.laps.value == p.totalLaps
+            if (!valid) {
+                add("Plan d'arrêt suspendu : incohérence de l'épreuve.")
+            } else {
+                add(if (rp.stops.isEmpty()) "Plan de base : aucun arrêt prévu, sous réserve des règles."
+                else "Plan de base : arrêt(s) à la fin des tours " +
+                    rp.stops.joinToString(", ") { it.endOfLap.toString() } + ".")
+            }
+        }
+        historyModel.pitLossMs?.takeIf { it.confidence != Confidence.INSUFFICIENT }?.let {
+            add("Coût historique moyen d'un arrêt : " + StrategyOptions.seconds(it.mean.toLong()) +
+                " (" + it.confidence.label + ") ; le contenu des arrêts peut différer.")
+        }
+        // Avoid mixing unknown circuits, cars and rule profiles in Driver DNA.
+        if (rules.trackId != null) {
+            driverCoach.known(driverKey)?.traits()?.text?.let { add("Mémoire du pilote : $it") }
+        }
+        add("Objectif : gagner des places par le rythme et les bonnes décisions. Écarts, noms et pneus des adversaires : non accessibles en UDP GT7.")
+    }
+
     private fun briefingIfDue(p: TelemetryPacket): List<EngineerMessage> {
         if (briefed || !profile.id.sport || profile.id.kind != SessionKind.RACE || p.currentLap != 0 || p.speedKmh > 1f) return emptyList()
         briefed = true
@@ -1374,6 +1488,7 @@ class RaceController(
         // Le briefing a déjà signalé le règlement non confirmé : pas de second rappel au premier tour.
         if (!profile.confirmed) rulesReminded = true
         journal.record(JournalType.STRATEGY, JournalSource.ENGINE, "Briefing : ${lines.joinToString(" ")}")
+        // Full briefing stays on screen: the grid radio must not read a long technical report.
         return listOf(EngineerMessage(lines.joinToString(" "), Priority.NORMAL, MessageCategory.FUEL, topic = "briefing"))
     }
 
@@ -1484,6 +1599,26 @@ class RaceController(
     private fun replan(): List<EngineerMessage> {
         val snap = tracker.snapshot
         val p = snap.packet ?: return emptyList()
+        // Never optimize stops using the wrong weekly regulations (e.g. Sport A
+        // selected while actual GT7 race has 14 laps, corresponding to Sport C).
+        // Telemetry fuel is still monitored independently and the event can be
+        // reidentified after a complete track lap.
+        val publishedLaps = if (profile.id.sport) edition?.laps?.takeIf { it.known }?.value else null
+        if (publishedLaps != null && p.totalLaps > 0 && p.totalLaps != publishedLaps) {
+            plan = null
+            strategy = null
+            engineer.onPlan(null, p.currentLap)
+            if (sportRuleMismatchWarned) return emptyList()
+            sportRuleMismatchWarned = true
+            val warning = "Règlement Sport incompatible : GT7 annonce " + p.totalLaps +
+                " tours, la course sélectionnée en prévoit " + publishedLaps +
+                ". Je suspends les arrêts planifiés jusqu'à reconnaissance de l'épreuve."
+            journal.record(JournalType.STRATEGY, JournalSource.ENGINE, warning,
+                details = mapOf("tours_gt7" to p.totalLaps.toString(), "tours_programme" to publishedLaps.toString()))
+            return listOf(EngineerMessage(warning, Priority.HIGH, MessageCategory.ALERT,
+                dedupKey = "sport-laps-mismatch:" + sessionId))
+        }
+        sportRuleMismatchWarned = false
         val live = FuelStrategy.compute(snap)
         val rec = memoryRecord
         // Historique : sessions comparables archivées d'abord (avec leur niveau de confiance), sinon l'ancienne mémoire.
@@ -2472,6 +2607,7 @@ class RaceController(
                 pendingPilotDecision = null
             } else if (com.gt7pitwall.core.ai.DialogueActs.yes(text)) {
                 pendingPilotDecision = null
+                if (what.contains("box à la fin de ce tour", ignoreCase = true)) driverRequestedPitLap = lap
                 raceMemory.decision(lap, nowMs, "$what (décidé par le pilote)")
                 noteIntention("décision du pilote : $what")
                 journal.record(JournalType.DECISION, JournalSource.ENGINE, "Décision du pilote : $what", decision = "confirmée par le pilote")
@@ -2496,6 +2632,7 @@ class RaceController(
         val act = com.gt7pitwall.core.ai.DialogueActs.classify(text) ?: return null
         return when (act) {
             com.gt7pitwall.core.ai.DialogueActs.Act.Retract -> {
+                driverRequestedPitLap = null
                 pendingConfirmation = null
                 pendingPilotDecision = null
                 val removed = raceMemory.retractLast(nowMs)

@@ -88,6 +88,20 @@ fun RaceSetupCard(
             }
             EventProfileSection(state, onProfile, onProfileInfo, onConfirmRules)
             WeeklyEditionSection(state, rules, database, onRules, onRefreshSchedule, onDeclareRules)
+            var preRaceOpen by rememberSaveable { mutableStateOf(false) }
+            OutlinedButton(onClick = { preRaceOpen = !preRaceOpen }, modifier = Modifier.fillMaxWidth()) {
+                Text(if (preRaceOpen) "Réduire le briefing de victoire" else "Briefing avant-course : objectif victoire")
+            }
+            if (preRaceOpen) {
+                Text(
+                    "Informations certaines, estimations historiques et limites de données (les adversaires ne sont pas accessibles par UDP).",
+                    color = PitColors.Muted, style = MaterialTheme.typography.bodySmall,
+                )
+                state.preRaceBrief.forEach { line ->
+                    Text("• " + line, style = MaterialTheme.typography.bodySmall,
+                        color = if (line.startsWith("ALERTE")) PitColors.Yellow else MaterialTheme.colorScheme.onSurface)
+                }
+            }
             HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
 
             val p = state.snapshot.packet
