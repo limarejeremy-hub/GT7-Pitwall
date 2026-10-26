@@ -27,7 +27,89 @@ import kotlin.math.sqrt
 class DriverCoach(
     private val load: () -> String? = { null },
     private val save: (String) -> Unit = {},
+    private val clock: () -> Long = System::currentTimeMillis,
 ) {
+    /**
+     * État vérifiable de l'apprentissage (course du 26/10 : presque aucun conseil, sans raison visible). Ce que le profil a
+     * réellement mesuré, enregistré et rendu ; pourquoi des tours ont été écartés ou aucun conseil donné.
+     */
+    data class Diagnostics(
+        val profileKey: String?,
+        val lapsSeen: Int,
+        val lapsUsable: Int,
+        /** Tours écartés de l'analyse, par raison. */
+        val rejected: Map<String, Int>,
+        val cornersRecognized: Int,
+        val passesThisSession: Int,
+        val passesStored: Int,
+        val sessionsStored: Int,
+        val adviceGiven: Int,
+        val adviceEvaluated: Int,
+        val adviceImproved: Int,
+        /** Pourquoi aucun conseil n'a été donné au dernier tour analysé (null : un conseil a été donné ou rien d'analysé). */
+        val lastNoAdviceReason: String?,
+        val lastSaveMs: Long?,
+        val lastError: String?,
+    ) {
+        /** Lignes lisibles pour l'écran et pour « qu'est-ce que tu as appris ? ». */
+        fun lines(): List<String> = buildList {
+            add("Tours analysés : $lapsUsable exploitables sur $lapsSeen.")
+            if (rejected.isNotEmpty()) add("Écartés : " + rejected.entries.joinToString(", ") { "${it.value} ${it.key}" } + ".")
+            add("Virages reconnus : $cornersRecognized ; passages mesurés : $passesThisSession cette session, $passesStored enregistrés.")
+            add("Sessions enregistrées pour cette voiture et ce circuit : $sessionsStored.")
+            add("Conseils : $adviceGiven donnés, $adviceEvaluated évalués, $adviceImproved suivis d'une amélioration mesurée.")
+            lastNoAdviceReason?.let { add("Dernier tour sans conseil : $it.") }
+            add(lastSaveMs?.let { "Profil enregistré le ${java.text.SimpleDateFormat("dd/MM HH:mm", java.util.Locale.FRANCE).format(java.util.Date(it))}." } ?: "Profil pas encore enregistré (il l'est à la fin de la session).")
+            lastError?.let { add("Erreur interne : $it.") }
+        }
+    }
+
+    private val rejectedCount = linkedMapOf<String, Int>()
+    private var lapsSeen = 0
+    private var lastNoAdvice: String? = null
+    private var lastSaveMs: Long? = null
+    private var lastError: String? = null
+
+    private fun reject(reason: String): List<EngineerMessage> {
+        rejectedCount[reason] = (rejectedCount[reason] ?: 0) + 1
+        return emptyList()
+    }
+
+    private fun noAdvice(reason: String): List<EngineerMessage> {
+        lastNoAdvice = reason
+        return emptyList()
+    }
+
+    fun diagnostics(): Diagnostics {
+        val p = profile
+        val checked = adviceLog.filter { it.lossAfterMs != null }
+        return Diagnostics(
+            profileKey = p?.key,
+            lapsSeen = lapsSeen,
+            lapsUsable = cleanLaps.size,
+            rejected = rejectedCount.toMap(),
+            cornersRecognized = p?.map?.corners?.size ?: 0,
+            passesThisSession = sessionPasses.size,
+            passesStored = p?.passes?.values?.sumOf { it.size } ?: 0,
+            sessionsStored = p?.sessionCount ?: 0,
+            adviceGiven = adviceLog.size,
+            adviceEvaluated = checked.size,
+            adviceImproved = checked.count { it.lossAfterMs!! < it.lossBeforeMs - DriverProfile.IMPROVED_MS },
+            lastNoAdviceReason = lastNoAdvice,
+            lastSaveMs = lastSaveMs,
+            lastError = lastError,
+        )
+    }
+
+    /** Constat mesuré du virage où la perte est la plus nette (sans attendre une consigne), vide sinon. */
+    fun findings(): List<String> {
+        val prof = profile ?: return emptyList()
+        val f = CornerCoach.worst(history(prof), recent(), CornerCoach.MIN_LOSS_PRACTICE_MS) ?: return emptyList()
+        return listOf(
+            CornerCoach.advice(f, race = false)
+                ?: "Virage ${f.corner} : tu y perds environ ${CornerCoach.tenths(f.lossMs)} par passage sur tes meilleurs passages, sans cause mesurable.",
+        )
+    }
     /** Contexte d'un tour bouclé, fourni par le contrôleur de course. */
     data class LapContext(
         val profileKey: String,
@@ -40,7 +122,14 @@ class DriverCoach(
         val wheelBaseM: Float? = null,
     )
 
-    private val book: DriverBook by lazy { DriverBook.parse(runCatching(load).getOrNull()) }
+    private val book: DriverBook by lazy {
+        DriverBook.parse(
+            runCatching(load).getOrElse { e ->
+                lastError = "lecture du profil impossible (${e.javaClass.simpleName})"
+                null
+            },
+        )
+    }
     private val recorder = LapRecorder()
     private val finished = HashMap<Int, List<LapSample>>()
     private var lastLap = -1
@@ -77,7 +166,14 @@ class DriverCoach(
         incompatibleNoted = false
         lastLap = -1
         recorder.invalidate()
+        rejectedCount.clear()
+        lapsSeen = 0
+        lastNoAdvice = null
+        stalled.clear()
     }
+
+    /** Virages dont la consigne n'a pas produit d'amélioration mesurée : plus conseillés dans cette session. */
+    private val stalled = mutableSetOf<Int>()
 
     private var waiting: Pair<LapRecord, LapContext>? = null
 
@@ -122,11 +218,14 @@ class DriverCoach(
 
     private fun analyze(lap: LapRecord, ctx: LapContext, continuation: List<LapSample>): List<EngineerMessage> {
         val samples = finished.remove(lap.lapNumber)
-        val time = lap.timeMs ?: return emptyList()
-        if (lap.lapNumber < 2 || lap.refuelled || lap.pitLane || ctx.pitLap || samples == null) return emptyList()
+        lapsSeen++
+        val time = lap.timeMs ?: return reject("sans chrono")
+        if (lap.lapNumber < 2) return reject("tour de départ")
+        if (lap.refuelled || lap.pitLane || ctx.pitLap) return reject("arrêt ou stands")
+        if (samples == null) return reject("non suivis en entier")
         val best = (cleanLaps.mapNotNull { it.timeMs } + time).min()
-        if (time > best * 1.07) return emptyList() // tour perturbé (trafic, incident) : hors comparaison
-        val prof = resolve(ctx.profileKey, samples) ?: return incompatible()
+        if (time > best * 1.07) return reject("perturbés (plus de 7 % du meilleur)") // trafic, incident : hors comparaison
+        val prof = resolve(ctx.profileKey, samples) ?: return reject("carte des virages impossible")
         cleanLaps += lap
         val map = prof.map ?: return emptyList()
         val passes = CornerMeasure.passes(map, lap.lapNumber, samples, ctx.wheelBaseM, continuation)
@@ -168,16 +267,19 @@ class DriverCoach(
                 val loss = CornerCoach.losses(history(prof), mapOf(pd.corner to after))[pd.corner]
                 adviceLog[adviceLog.lastIndex] = adviceLog.last().copy(lossAfterMs = loss)
                 val gained = loss?.let { pd.lossBefore - it }
+                if (gained == null || gained < DriverProfile.IMPROVED_MS) stalled += pd.corner
                 val text = when {
                     gained != null && gained >= DriverProfile.IMPROVED_MS ->
                         if (ctx.race) "Virage ${pd.corner}, c'est mieux." else "Virage ${pd.corner} : c'est mieux, tu as repris environ ${CornerCoach.tenths(gained)}."
                     ctx.race -> null
-                    else -> "Virage ${pd.corner} : pas encore d'amélioration mesurée. Garde la même consigne."
+                    // Pas d'amélioration : la consigne n'est pas répétée ; le virage n'est plus proposé dans cette session.
+                    gained == null -> "Virage ${pd.corner} : pas assez de passages comparables pour mesurer l'effet de la consigne."
+                    else -> "Virage ${pd.corner} : pas d'amélioration mesurée, je ne te le redis pas ; on regardera ce virage en fin de session."
                 }
                 text?.let { out += msg(it, ctx, lap) }
                 return out
             }
-            return out // une seule consigne à la fois
+            return noAdvice("consigne précédente en cours de vérification") // une seule consigne à la fois
         }
         val allowed = if (ctx.race) {
             raceAdvice < MAX_RACE_ADVICE && lap >= 3 && (ctx.totalLaps <= 0 || lap < ctx.totalLaps - 1) &&
@@ -185,9 +287,22 @@ class DriverCoach(
         } else {
             lap - lastAdviceLap >= 2
         }
-        if (!allowed) return out
-        val f = CornerCoach.worst(history(prof), rec, if (ctx.race) CornerCoach.MIN_LOSS_RACE_MS else CornerCoach.MIN_LOSS_PRACTICE_MS) ?: return out
-        val text = CornerCoach.advice(f, ctx.race) ?: return out
+        if (!allowed) {
+            return noAdvice(
+                when {
+                    ctx.race && raceAdvice >= MAX_RACE_ADVICE -> "trois conseils déjà donnés en course"
+                    ctx.race && ctx.positionChangedRecently -> "bataille en cours (place changée récemment)"
+                    else -> "conseil récent, on laisse le temps de l'appliquer"
+                },
+            )
+        }
+        val usable = rec.filterKeys { it !in stalled }
+        val f = CornerCoach.worst(history(prof), usable, if (ctx.race) CornerCoach.MIN_LOSS_RACE_MS else CornerCoach.MIN_LOSS_PRACTICE_MS)
+            ?: return noAdvice(
+                if (usable.values.none { it.size >= CornerCoach.RECENT }) "pas encore trois passages comparables par virage" else "aucune perte nette et répétée dans un virage",
+            )
+        val text = CornerCoach.advice(f, ctx.race) ?: return noAdvice("perte au virage ${f.corner} sans cause mesurable")
+        lastNoAdvice = null
         lastAdviceLap = lap
         if (ctx.race) raceAdvice++
         pending = Pending(f.corner, f.issue!!, f.lossMs, rec[f.corner].orEmpty().count { it.offTrack != true })
@@ -230,7 +345,13 @@ class DriverCoach(
             advice = (prof.advice.filter { it.sessionId != id } + adviceLog).takeLast(MAX_ADVICE),
         )
         book.put(updated)
-        runCatching { save(book.toJson()) }
+        try {
+            save(book.toJson())
+            lastSaveMs = clock()
+        } catch (e: Exception) {
+            // Un échec d'enregistrement n'interrompt pas la course, mais il est visible dans le diagnostic.
+            lastError = "enregistrement du profil impossible (${e.javaClass.simpleName})"
+        }
         profile = updated
         return updated
     }

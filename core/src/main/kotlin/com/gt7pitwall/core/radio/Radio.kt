@@ -35,6 +35,16 @@ enum class DriverQuery {
 
     /** « Au prochain arrêt, je mets quoi comme pneus ? » : choix de la prochaine gomme (jamais un rappel du carburant). */
     NEXT_TYRE,
+
+    /** Questions sur le pilotage (course du 26/10) : qualité des tours, où je perds du temps, freinage, progression, conseil. */
+    DRIVING_QUALITY,
+    DRIVING_LOSS,
+    DRIVING_BRAKING,
+    DRIVING_PROGRESS,
+    DRIVING_ADVICE,
+
+    /** « Qu'est-ce que tu as appris sur mon pilotage ? » : le diagnostic mesuré du profil de pilotage. */
+    DRIVING_LEARNED,
 }
 
 /** Événements de l'entrée vocale (mot de réveil puis phrase du pilote). */

@@ -378,6 +378,9 @@ class RaceEngineer {
             }
 
             DriverQuery.POSITION -> positionAnswer()
+            DriverQuery.DRIVING_QUALITY, DriverQuery.DRIVING_LOSS, DriverQuery.DRIVING_BRAKING, DriverQuery.DRIVING_PROGRESS,
+            DriverQuery.DRIVING_ADVICE, DriverQuery.DRIVING_LEARNED,
+            -> DrivingAnalysis.answer(query, snapshot.laps, emptySet())
             DriverQuery.PLACES -> placesAnswer()
 
             DriverQuery.SECTORS -> sectorReport(snapshot)

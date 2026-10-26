@@ -379,7 +379,7 @@ class RaceController(
         if (events.any { it is SessionEvent.SessionReset }) positionTracker.reset()
         positionTracker.enabled = profile.id.kind == SessionKind.RACE
         val nowMs = clock()
-        val positionChanges = runCatching { positionTracker.onPacket(p, nowMs) }.getOrDefault(emptyList())
+        val positionChanges = runCatching { positionTracker.onPacket(p, nowMs) }.getOrElse { diagnostic("position", it); emptyList() }
         // Nouvelle session : la précédente est archivée avant que le registre des arrêts soit vidé.
         if (events.any { it is SessionEvent.SessionReset }) {
             closeSession(SessionOutcome.INTERRUPTED)
@@ -392,7 +392,7 @@ class RaceController(
         if (sessionId != null && journal.sessionId != sessionId && p.currentLap >= 1) beginJournal()
         if (!replay) events.filterIsInstance<SessionEvent.LapCompleted>().forEach { checkReplay(it.lap) }
         if (replay) return emptyList()
-        val coached = if (sessionFinished) emptyList() else runCatching { driverCoach.onPacket(p, tracker.pitVisitOpen) }.getOrDefault(emptyList())
+        val coached = if (sessionFinished) emptyList() else runCatching { driverCoach.onPacket(p, tracker.pitVisitOpen) }.getOrElse { diagnostic("profil de pilotage (paquet)", it); emptyList() }
         if (positionChanges.isNotEmpty()) lastPositionChangeClockMs = pacer.packetClockMs
         journalPositions(positionChanges)
         val out = mutableListOf<EngineerMessage>()
@@ -607,7 +607,9 @@ class RaceController(
                 out += answer(tyres(command, lap))
                 out += replanOrWait()
             }
-            is DriverCommand.Ask -> out += if (command.query == DriverQuery.DETAILS && engineer.quietRace) {
+            is DriverCommand.Ask -> out += if (command.query in com.gt7pitwall.core.engineer.DrivingAnalysis.QUERIES) {
+                answer(listOf(drivingAnswer(command.query)))
+            } else if (command.query == DriverQuery.DETAILS && engineer.quietRace) {
                 // Analyse complète, seulement sur demande : tour, carburant, pneus et plan.
                 answer(
                     listOfNotNull(
@@ -651,7 +653,12 @@ class RaceController(
         tyreFamilyAnswer(original)?.let { return listOf(echo) + voiceCommand(it, it.text, source) }
         // « Moyens », « medium », « course tendres » juste après « Tu as monté quelle gomme ? » : c'est la réponse.
         (compoundAnswer(original) ?: compoundAnswer(text))?.let { return listOf(echo) + voiceCommand(it, it.text, source) }
-        val cmd = DriverCommandParser.parse(text)
+        // Question de pilotage reconnue sur la phrase libre quand le vocabulaire radio l'a déformée (26/10 : « est ce
+        // quelle tour sont mon » pour « puisque mes tours sont bons »). Seulement une question : jamais une commande.
+        val parsed = DriverCommandParser.parse(text)
+        val driving = com.gt7pitwall.core.engineer.DrivingAnalysis.classify(original)
+            ?.takeIf { parsed == null || parsed is DriverCommand.Ask }?.let { DriverCommand.Ask(it) }
+        val cmd = driving ?: parsed
         return listOf(echo) + if (cmd == null) deliver(listOf(engineer.notUnderstood(text))) else voiceCommand(cmd, original, source)
     }
 
@@ -833,7 +840,7 @@ class RaceController(
             return AiFacts(lines)
         }
         strategyBrief?.let { lines += it.facts() }
-        lines += runCatching { driverCoach.facts(driverKey) }.getOrDefault(emptyList())
+        lines += runCatching { driverCoach.facts(driverKey) }.getOrElse { diagnostic("profil de pilotage (faits)", it); emptyList() }
         forecastTrack().text()?.let { lines += "Justesse de mes prévisions comparables : $it" }
         lastReview?.lines()?.takeIf { it.isNotEmpty() }?.let { lines += "Dernier bilan : ${it.joinToString(" ")}" }
         activeObservations.forEach { o -> lines += "Déclaré par le pilote au tour ${o.lap} (non mesuré) : ${o.kind.label}." }
@@ -1001,6 +1008,7 @@ class RaceController(
         driverDeclaredDuringPitNumber = null
         gridPosition = null
         finishPosition = null
+        internalErrors.clear()
         briefed = false
         lastPositionChangeClockMs = null
         replay = false
@@ -1136,7 +1144,7 @@ class RaceController(
                 pitLap = stopped,
                 wheelBaseM = snapshot.packet?.wheelBaseM,
             )
-            out += journalCoaching(runCatching { driverCoach.onLap(lap, ctx) }.getOrDefault(emptyList()))
+            out += journalCoaching(runCatching { driverCoach.onLap(lap, ctx) }.getOrElse { diagnostic("profil de pilotage (tour)", it); emptyList() })
         }
         return out
     }
@@ -2140,6 +2148,43 @@ class RaceController(
         ledger.pending?.let { add("arrêt possible au tour ${it.lap}, à confirmer") }
     }
 
+    /** Erreurs internes rattrapées (la course continue), par module : visibles dans le diagnostic et le journal. */
+    val internalErrors = linkedMapOf<String, String>()
+
+    /**
+     * Un module a échoué : la course n'est pas interrompue et rien de trompeur n'est annoncé, mais l'échec est tracé
+     * (journal, diagnostic) au lieu d'être masqué. Une seule entrée de journal par module et par session.
+     */
+    fun diagnostic(module: String, e: Throwable) {
+        val what = "${e.javaClass.simpleName}${e.message?.let { ": " + it.take(120) } ?: ""}"
+        if (internalErrors.put(module, what) == null) {
+            runCatching { journal.record(JournalType.SESSION, JournalSource.SYSTEM, "Erreur interne ($module) : $what", decision = "module ignoré pour cette mesure, course non interrompue") }
+        }
+    }
+
+    /** « Qu'est-ce que Pitwall a appris sur mon pilotage ? » : uniquement les données mesurées et enregistrées. */
+    fun learningReport(): List<String> = buildList {
+        val d = driverCoach.diagnostics()
+        addAll(d.lines())
+        addAll(runCatching { driverCoach.facts(driverKey) }.getOrElse { emptyList() }.drop(1))
+        cornerFindings().firstOrNull()?.let { add("Constat : $it") }
+        if (d.adviceGiven == 0) add("Aucun conseil donné : ${d.lastNoAdviceReason ?: if (d.lapsUsable == 0) "aucun tour exploitable" else "pas de perte nette et répétée"}. Ce n'est pas la preuve d'un pilotage parfait.")
+        internalErrors.forEach { (m, e) -> add("Erreur interne ($m) : $e.") }
+    }
+
+    /** Analyse du pilotage sur les tours propres de la session, avec les constats du profil par virage s'il en a. */
+    fun drivingAnswer(query: DriverQuery): String {
+        if (query == DriverQuery.DRIVING_LEARNED) return learningReport().take(LEARNED_RADIO_LINES).joinToString(" ")
+        val pitLaps = ledger.stopList.flatMap { listOf(it.lap, it.lap + 1) }.toSet()
+        return com.gt7pitwall.core.engineer.DrivingAnalysis.answer(query, snapshot.laps, pitLaps, cornerFindings())
+    }
+
+    /** Constats mesurés virage par virage (profil de pilotage), vides tant qu'il n'y en a pas. */
+    fun cornerFindings(): List<String> = runCatching { driverCoach.findings() }.getOrElse { e ->
+        diagnostic("constats par virage", e)
+        emptyList()
+    }
+
     /** Une phrase vient d'être échangée : la suivante peut la continuer (« pourquoi ? »). */
     fun inConversation(nowMs: Long = clock()): Boolean =
         inAiConversation(nowMs) || raceMemory.lastExchange?.let { nowMs - it.atMs < AI_CONVERSATION_MS } == true
@@ -2154,6 +2199,7 @@ class RaceController(
             DriverQuery.NEXT_TYRE -> return nextTyreSentence()
             DriverQuery.TYRE_CHANGE -> return tyreChangeSentence()
             DriverQuery.TYRES -> return if (snapshot.packet != null) tyreSummary() else null
+            in com.gt7pitwall.core.engineer.DrivingAnalysis.QUERIES -> return drivingAnswer(q!!)
             null -> Unit
             else -> return engineer.answer(q, snapshot, fuel).text
         }
@@ -2686,10 +2732,14 @@ class RaceController(
 
         /** Un tour plus court n'est pas un circuit (tour incomplet, chargement). */
         const val MIN_LEARN_LAP_M = 1_000f
+
+        /** Réponse radio à « qu'as-tu appris ? » : l'essentiel ; tout le diagnostic est à l'écran. */
+        const val LEARNED_RADIO_LINES = 4
         const val POSITION_CALM_MS = 30_000L
 
         /** Réponses gardées entières : détail demandé, secteurs, règlement. */
-        val DETAILED_QUERIES = setOf(DriverQuery.DETAILS, DriverQuery.SECTORS, DriverQuery.OBLIGATIONS)
+        val DETAILED_QUERIES = setOf(DriverQuery.DETAILS, DriverQuery.SECTORS, DriverQuery.OBLIGATIONS) +
+            com.gt7pitwall.core.engineer.DrivingAnalysis.QUERIES
 
         /** Réponse à « quelle gomme ? » : quelques mots (« course mediums », « les moyens »). */
         const val COMPOUND_ANSWER_MAX_WORDS = 4
