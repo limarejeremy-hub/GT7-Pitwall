@@ -1,5 +1,8 @@
 package com.gt7pitwall.app.ui
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.layout.Arrangement
@@ -29,6 +32,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gt7pitwall.app.profile.Gt7ProfileStore
 import com.gt7pitwall.app.ui.theme.PitColors
+import com.gt7pitwall.core.profile.Gt7CareerJson
 import com.gt7pitwall.core.profile.Gt7CareerStats
 import com.gt7pitwall.core.profile.Gt7PlayerProfile
 import java.text.SimpleDateFormat
@@ -92,6 +96,15 @@ fun Gt7CareerPanel(store: Gt7ProfileStore, editable: Boolean) {
                     OutlinedButton(onClick = {
                         context.startActivity(Intent(Intent.ACTION_VIEW,Uri.parse(profile.officialProfileUrl)))
                     }) { Text("Voir profil GT7") }
+                }
+                if (editable && profile.psnId.isNotBlank()) {
+                    OutlinedButton(onClick = {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(
+                            ClipData.newPlainText("Pitwall GT7 profile export", Gt7CareerJson.encode(profile))
+                        )
+                        feedback="Export copié. Garde-le privé."
+                    }) { Text("Exporter mes données") }
                 }
                 if (editable) {
                     Button(onClick = { editing = !editing }) {
