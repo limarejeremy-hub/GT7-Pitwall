@@ -5,6 +5,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -267,9 +273,9 @@ fun PitwallScreen(
         )
     }
 
-    var showHistory by rememberSaveable { mutableStateOf(false) }
-    if (showHistory) {
-        HistoryScreen(engine, onBack = { showHistory = false })
+    var selectedTab by rememberSaveable { mutableStateOf("Live") }
+    if (selectedTab == "Historique") {
+        HistoryScreen(engine, onBack = { selectedTab = "Live" })
         return
     }
 
@@ -279,57 +285,148 @@ fun PitwallScreen(
             TopAppBar(
                 title = {
                     Column {
-                        Text("GT7 Pitwall", fontWeight = FontWeight.Bold)
+                        Text("GT7 Pitwall", fontWeight = FontWeight.ExtraBold)
                         FreshnessLine(freshness, onRefreshSchedule)
                     }
                 },
                 actions = {
-                    TextButton(onClick = { showHistory = true }) { Text("Historique") }
+                    TextButton(onClick = { selectedTab = "Atelier" }) {
+                        Text(if (running) "● PS5 active" else "○ Connecter PS5",
+                            color = if (running) PitColors.Green else PitColors.Muted)
+                    }
                     StatusPill(connection)
                 },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.background),
             )
         },
-    ) { padding ->
-        BoxWithConstraints(Modifier.fillMaxSize().padding(padding)) {
-            val wide = maxWidth >= 600.dp
-            if (wide) {
-                // Fold déplié : deux colonnes.
-                Row(
-                    Modifier.fillMaxSize().padding(horizontal = 12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    ScrollColumn(Modifier.weight(1f)) {
-                        DriveCard(state.snapshot.packet)
-                        LapCard(state)
-                        CarCard(state.snapshot.packet, state.gForce)
-                        LapHistoryCard(state.snapshot.laps)
-                        connectionCard()
+        bottomBar = {
+            // Android 15+/Samsung Fold: the persistent taskbar can overlap a
+            // custom Scaffold bottomBar when the Activity uses enableEdgeToEdge().
+            // Include the system's ACTUAL safe-drawing bottom inset in the bar's
+            // measured height, so Scaffold also reserves it for the dashboard.
+            // Do not hard-code a gap: the taskbar size changes with posture/mode.
+            Row(
+                Modifier.fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surface)
+                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom))
+                    .padding(horizontal = 6.dp, vertical = 7.dp),
+                horizontalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                listOf("Live", "Briefing", "Analyse", "Historique", "Atelier").forEach { tab ->
+                    val active = selectedTab == tab
+                    val symbol = when (tab) {
+                        "Live" -> "◉"
+                        "Briefing" -> "▤"
+                        "Analyse" -> "▥"
+                        "Historique" -> "◷"
+                        else -> "⚙"
                     }
-                    ScrollColumn(Modifier.weight(1f)) {
-                        RaceSetupCard(state, rules, engine.database, engine::setRules, engine::command, engine::selectProfile, engine::updateProfile, engine::confirmRules, onRefreshSchedule, engine::declareRules)
-                        TrackMapCard(state.snapshot.trackOutline, state.snapshot.packet)
-                        FuelCard(state.fuel, state.snapshot.packet)
-                        TyreCard(state, rules)
-                        RadioCard(radio, engine::command)
-                        voiceRadioCard()
+                    Column(
+                        Modifier.weight(1f)
+                            .background(
+                                if (active) PitColors.Orange.copy(alpha = 0.19f)
+                                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.18f),
+                                RoundedCornerShape(13.dp),
+                            )
+                            .clickable { selectedTab = tab }
+                            .padding(vertical = 6.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Text(symbol, fontSize = 17.sp,
+                            color = if (active) PitColors.Orange else PitColors.Muted)
+                        Text(tab, fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                            color = if (active) PitColors.Orange else MaterialTheme.colorScheme.onSurface)
                     }
                 }
-            } else {
-                // Écran externe (plié) : une colonne, l'essentiel en haut.
-                ScrollColumn(Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
+            }
+        },
+    ) { padding ->
+        BoxWithConstraints(
+            Modifier
+                .fillMaxSize()
+                .padding(padding)
+                // Pass consumed Scaffold paddings to nested content: no
+                // duplicate inset, and no final card hidden behind the taskbar.
+                .consumeWindowInsets(padding),
+        ) {
+            val wide = maxWidth >= 600.dp
+            when (selectedTab) {
+                "Live" -> PitwallLiveDashboard(
+                    state = state,
+                    messages = radio,
+                    onBriefing = { selectedTab = "Briefing" },
+                    onAnalysis = { selectedTab = "Analyse" },
+                    onAtelier = { selectedTab = "Atelier" },
+                )
+                "Briefing" -> ScrollColumn(Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
+                    Text("PRÉPARE TA COURSE", fontSize = 22.sp, fontWeight = FontWeight.Bold,
+                        color = PitColors.Orange)
+                    Text("Comprends le règlement et choisis ton plan avant de prendre le départ.",
+                        color = PitColors.Muted, style = MaterialTheme.typography.bodySmall)
+                    RaceSetupCard(state, rules, engine.database, engine::setRules, engine::command,
+                        engine::selectProfile, engine::updateProfile, engine::confirmRules,
+                        onRefreshSchedule, engine::declareRules)
                     if (!running) connectionCard()
-                    DriveCard(state.snapshot.packet)
+                }
+                "Analyse" -> ScrollColumn(Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
+                    Text("COMPRENDS TON PILOTAGE", fontSize = 22.sp,
+                        fontWeight = FontWeight.Bold, color = PitColors.Orange)
+                    Text("Tes points forts, ce que tu peux améliorer, et pourquoi.",
+                        color = PitColors.Muted, style = MaterialTheme.typography.bodySmall)
+                    DrivingCard(engine)
                     LapCard(state)
+                    TrackMapCard(state.snapshot.trackOutline, state.snapshot.packet)
+                    LapHistoryCard(state.snapshot.laps)
+                    CarCard(state.snapshot.packet, state.gForce)
                     FuelCard(state.fuel, state.snapshot.packet)
                     TyreCard(state, rules)
-                    RaceSetupCard(state, rules, engine.database, engine::setRules, engine::command, engine::selectProfile, engine::updateProfile, engine::confirmRules, onRefreshSchedule, engine::declareRules)
-                    CarCard(state.snapshot.packet, state.gForce)
-                    TrackMapCard(state.snapshot.trackOutline, state.snapshot.packet)
-                    RadioCard(radio, engine::command)
-                    voiceRadioCard()
-                    LapHistoryCard(state.snapshot.laps)
-                    if (running) connectionCard()
+                }
+                else -> {
+                    // All legacy tools and experiments stay accessible, but no longer
+                    // steal space from the PSVR2 / no-HUD cockpit.
+                    if (wide) {
+                        Row(Modifier.fillMaxSize().padding(horizontal = 12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            ScrollColumn(Modifier.weight(1f)) {
+                                Text("ATELIER & CONNEXION", fontSize = 20.sp,
+                                    fontWeight = FontWeight.Bold, color = PitColors.Orange)
+                                connectionCard()
+                                DriveCard(state.snapshot.packet)
+                                LapHistoryCard(state.snapshot.laps)
+                                CarCard(state.snapshot.packet, state.gForce)
+                            }
+                            ScrollColumn(Modifier.weight(1f)) {
+                                Text("OUTILS AVANCÉS", fontSize = 20.sp,
+                                    fontWeight = FontWeight.Bold, color = PitColors.Orange)
+                                RaceSetupCard(state, rules, engine.database, engine::setRules,
+                                    engine::command, engine::selectProfile, engine::updateProfile,
+                                    engine::confirmRules, onRefreshSchedule, engine::declareRules)
+                                TrackMapCard(state.snapshot.trackOutline, state.snapshot.packet)
+                                FuelCard(state.fuel, state.snapshot.packet)
+                                TyreCard(state, rules)
+                                RadioCard(radio, engine::command)
+                                voiceRadioCard()
+                            }
+                        }
+                    } else {
+                        ScrollColumn(Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
+                            Text("ATELIER & CONNEXION", fontSize = 20.sp,
+                                fontWeight = FontWeight.Bold, color = PitColors.Orange)
+                            connectionCard()
+                            RaceSetupCard(state, rules, engine.database, engine::setRules,
+                                engine::command, engine::selectProfile, engine::updateProfile,
+                                engine::confirmRules, onRefreshSchedule, engine::declareRules)
+                            DriveCard(state.snapshot.packet)
+                            CarCard(state.snapshot.packet, state.gForce)
+                            TrackMapCard(state.snapshot.trackOutline, state.snapshot.packet)
+                            FuelCard(state.fuel, state.snapshot.packet)
+                            TyreCard(state, rules)
+                            RadioCard(radio, engine::command)
+                            voiceRadioCard()
+                            LapHistoryCard(state.snapshot.laps)
+                        }
+                    }
                 }
             }
         }
