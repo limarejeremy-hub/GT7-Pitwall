@@ -73,6 +73,18 @@ class DgEdgeFeedTest {
         assertEquals(FieldStatus.PROBABLE, state.editions.getValue(Series.DAILY_C).laps.status)
     }
 
+    @Test fun explicitRequirementsInVisibleHeaderWorkWhenSeoIsShortened() {
+        // No inference from two allowed tyres: we only read the word "Required".
+        val shortSeo = c.replace(", Required: RM, RS.", ".")
+            .replace("<h1>Daily Race C</h1>", "<h1>Daily Race C</h1><p>Required: RM, RS</p>")
+        val item = DgEdgeFeed.parseDetail(shortSeo, urls.getValue("C"), 1L)
+        assertEquals(setOf(TyreCompound.RM, TyreCompound.RS),
+            assertNotNull(item).races.getValue(Series.DAILY_C).requiredTyres)
+        val noProof = c.replace(", Required: RM, RS.", ".")
+        assertNull(DgEdgeFeed.parseDetail(noProof, urls.getValue("C"), 1L)
+            ?.races?.getValue(Series.DAILY_C)?.requiredTyres)
+    }
+
     @Test fun malformedPagesCannotOverwriteKnownRegulations() {
         assertNull(DgEdgeFeed.parseDetail(c.replace("Week 44 2026", "Week 43 2026"), urls.getValue("C"), 1))
         assertNull(DgEdgeFeed.parseDetail(c, "https://attacker.invalid/events/dailies/week-44-2026-race-c-sugo/683", 1))
