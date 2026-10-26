@@ -841,7 +841,7 @@ class RaceEngineer {
         }
 
     /** Appel au stand au bon tour : celui du plan de course s'il existe, sinon le dernier tour possible. */
-    private fun boxCall(currentLap: Int, fuel: FuelReport?): String? {
+    internal fun boxCall(currentLap: Int, fuel: FuelReport?): String? {
         val planned = plan
         if (planned != null && planned.stops.isNotEmpty()) {
             val next = planned.nextStop(currentLap) ?: return null
