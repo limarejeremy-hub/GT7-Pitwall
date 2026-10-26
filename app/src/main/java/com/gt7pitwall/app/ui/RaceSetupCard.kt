@@ -387,6 +387,20 @@ private fun WeeklyEditionSection(
         "${id.series.label.uppercase()} — " + (ed?.let { "SEMAINE DU ${FrenchFormat.dayMonth(it.validFrom).uppercase()}" } ?: "PROGRAMME INCONNU"),
         fontWeight = FontWeight.Bold,
     )
+    // Course PS5 du 26/10 : profil B chargé pour 6 tours, GT7 annonce 14 tours. L'UDP
+    // connaît la distance mais PAS l'identité officielle A/B/C : ne jamais prétendre
+    // qu'un règlement hebdomadaire s'applique si la distance ne correspond pas.
+    val gt7Laps = state.snapshot.packet?.totalLaps?.takeIf { it > 0 }
+    if (id.kind == SessionKind.RACE && gt7Laps != null &&
+        rules.totalLaps != null && gt7Laps != rules.totalLaps
+    ) {
+        Text(
+            "⚠ Programme à vérifier : GT7 annonce $gt7Laps tours, mais le profil ${id.series.label} en prévoit ${rules.totalLaps}. " +
+                "La distance GT7 est prioritaire ; pneus imposés et arrêts du profil peuvent ne pas être ceux de cette course.",
+            color = PitColors.Yellow,
+            style = MaterialTheme.typography.bodySmall,
+        )
+    }
     fun st(f: RuleField): String = status[f]?.label ?: "saisi par toi"
     fun color(f: RuleField) = when (status[f]) {
         FieldStatus.CONFIRMED, FieldStatus.PILOT, null -> PitColors.Muted
