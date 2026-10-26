@@ -89,6 +89,22 @@ class RadioConversation(
         mutex.withLock { race.dialogue(heardFree, clock(), cloudReady) }?.let { return it }
         // « D'accord, on fait comme ça » juste après une discussion de stratégie : décision prise ensemble, sans IA.
         mutex.withLock { race.agreement(heardFree) }?.let { return it }
+        // Course réelle du 26/10 : « pourquoi je m'arrête au prochain tour ? » partait vers le cloud,
+        // expirait deux fois après 12 s, puis revenait au moteur qui savait déjà répondre.
+        // Les questions déterministes sur le plan, le carburant, les pneus et la position ont priorité sur Gemini.
+        val quick = DriverCommandParser.parse(text)
+        val localQueries = setOf(
+            com.gt7pitwall.core.radio.DriverQuery.PLAN,
+            com.gt7pitwall.core.radio.DriverQuery.FUEL,
+            com.gt7pitwall.core.radio.DriverQuery.TYRES,
+            com.gt7pitwall.core.radio.DriverQuery.TYRE_CHANGE,
+            com.gt7pitwall.core.radio.DriverQuery.NEXT_TYRE,
+            com.gt7pitwall.core.radio.DriverQuery.POSITION,
+        )
+        if (quick is DriverCommand.Ask && quick.query in localQueries) {
+            strategyDialogue(text, freeText)?.let { return it }
+            return mutex.withLock { race.utterance(text, heardFree, source) }
+        }
         // Conversation : questions ouvertes, conseils, analyses et relances vont au modèle cloud s'il est disponible,
         // avec le calcul du moteur sur le sujet. Sinon (non configuré, quota, panne), tout continue comme avant.
         var notice: EngineerMessage? = null
