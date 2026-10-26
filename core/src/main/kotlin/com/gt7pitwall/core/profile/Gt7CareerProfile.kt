@@ -109,7 +109,7 @@ object Gt7CareerImport {
         require(Gt7PlayerProfile.validPsnId(expectedPsn)) { "Configure ton ID PSN" }
         require(raw.length <= 120_000) { "Import trop volumineux" }
         // Never process or inadvertently retain a PlayStation session secret.
-        require(!Regex("""(?i)"(?:npsso|access_token|refresh_token|password|cookie|authorization)"\\s*:""")
+        require(!Regex("""(?i)"(?:npsso|access_token|refresh_token|password|cookie|authorization)"\s*:""")
             .containsMatchIn(raw)) { "Import contenant un secret de connexion : refusé" }
         val obj = JSONObject(raw)
         val driver = when {
