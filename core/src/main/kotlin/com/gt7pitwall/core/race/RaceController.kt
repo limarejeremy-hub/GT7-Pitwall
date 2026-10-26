@@ -1795,8 +1795,15 @@ class RaceController(
     private fun tyreStintText(): String {
         val lap = (snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)
         val st = ledger.tyreStint(lap, rules.startTyre)
+        if (!st.certain) {
+            val stop = ledger.stopList.lastOrNull { it.tyres == TyreService.UNKNOWN }
+            val suspect = stop?.thermal == TyreChangeVerdict.SUSPECTED.name
+            val whenStop = stop?.let { " au tour ${it.lap}" }.orEmpty()
+            return "Depuis l'arrêt$whenStop, âge et gomme des pneus non confirmés" +
+                if (suspect) " ; changement suspecté par les températures" else ""
+        }
         val compound = st.compound?.spoken ?: "gomme non déclarée"
-        return "Pneus de ${st.age} tour${if (st.age > 1) "s" else ""}, $compound" + if (st.certain) "" else ", âge incertain"
+        return "Pneus de ${st.age} tour${if (st.age > 1) "s" else ""}, $compound"
     }
 
     /**
@@ -1856,6 +1863,10 @@ class RaceController(
     private fun answerTyreLife(): String {
         val lap = (snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)
         val age = ledger.tyreAge(lap)
+        val unknown = ledger.stopList.lastOrNull { it.tyres == TyreService.UNKNOWN }
+        if (unknown != null) {
+            return "Je ne peux pas prévoir la durée restante : depuis l'arrêt au tour ${unknown.lap}, je ne sais pas si les pneus ont été changés. Confirme « pneus neufs » ou « mêmes pneus »."
+        }
         rules.tyreStintLaps?.let { life ->
             return "Tu m'as dit qu'ils tiennent $life tours (déclaré) : ils en ont $age, il en reste ${(life - age).coerceAtLeast(0)}."
         }
