@@ -98,7 +98,7 @@ data class Gt7PlayerProfile(
             return url.scheme == "https" &&
                 (host == "gran-turismo.com" || host == "www.gran-turismo.com") &&
                 url.userInfo == null && url.port == -1 &&
-                Regex("^/[a-z]{2}(?:-[a-z]{2})?/gt7/user/mymenu/[0-9a-fA-F-]{36}/profile/?$").matches(url.path ?: "")
+                Regex("^/[a-z]{2}(?:-[a-z]{2})?/gt7/user/mymenu/(?:[0-9a-fA-F-]{36}/profile/?)?$").matches(url.path ?: "")
         }
     }
 }

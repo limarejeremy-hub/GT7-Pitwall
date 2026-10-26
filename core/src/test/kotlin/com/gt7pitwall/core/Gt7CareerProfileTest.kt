@@ -44,6 +44,10 @@ class Gt7CareerProfileTest {
     @Test fun acceptsOnlySonyOfficialGt7ProfileLink() {
         assertTrue(Gt7PlayerProfile.validOfficialUrl(
             "https://www.gran-turismo.com/fr/gt7/user/mymenu/12345678-1234-1234-1234-123456789abc/profile/"))
+        assertTrue(Gt7PlayerProfile.validOfficialUrl(
+            "https://www.gran-turismo.com/fr/gt7/user/mymenu/"))
+        assertTrue(Gt7PlayerProfile.validOfficialUrl(
+            "https://www.gran-turismo.com/us/gt7/user/mymenu/"))
         assertFalse(Gt7PlayerProfile.validOfficialUrl("https://gran-turismo.com.evil.test/fr/gt7/user/mymenu/a/profile/"))
         assertFalse(Gt7PlayerProfile.validOfficialUrl("http://www.gran-turismo.com/fr/gt7/user/mymenu/12345678-1234-1234-1234-123456789abc/profile/"))
         assertFalse(Gt7PlayerProfile.validOfficialUrl("https://www.gran-turismo.com@evil.test/fr/gt7/user/mymenu/12345678-1234-1234-1234-123456789abc/profile/"))
