@@ -79,8 +79,25 @@ class PitLedger {
         awaitingTyreChangeAnswer = false
     }
 
-    fun recordRefuel(lap: Int, amount: Float): PitStopRecord {
+    /**
+     * Rapproche une déclaration faite *pendant le passage au stand* du ravitaillement GT7 qui arrive
+     * quelques secondes plus tard. Le contrôleur donne l'identifiant de la déclaration de CETTE visite ;
+     * on ne fusionne jamais deux arrêts distincts au seul motif que leurs tours sont voisins.
+     */
+    fun recordRefuel(lap: Int, amount: Float, declaredInThisVisitNumber: Int? = null): PitStopRecord {
         pending = null
+        if (declaredInThisVisitNumber != null) {
+            val i = stops.indexOfLast {
+                it.number == declaredInThisVisitNumber && it.evidence == StopEvidence.DRIVER_DECLARED &&
+                    it.lap - lap in 0..1
+            }
+            if (i >= 0) {
+                val previous = stops[i]
+                val measured = previous.copy(lap = lap, evidence = StopEvidence.REFUEL, fuelAdded = amount)
+                stops[i] = measured
+                return measured
+            }
+        }
         return add(lap, StopEvidence.REFUEL, amount)
     }
 
@@ -166,7 +183,10 @@ class PitLedger {
         val last = tyreChanges.lastOrNull()
         val since = last?.lap ?: 1
         val unknownSince = stops.any { it.tyres == TyreService.UNKNOWN && (last == null || it.lap >= last.lap - 1) }
-        return TyreStint(since, tyreAge(currentLap), currentTyre(start), certain = !unknownSince, fromStart = last == null)
+        // Arrêt sans essence observé : même avant le « oui » du pilote, il invalide la certitude
+        // de la gomme et de son âge. Son absence au registre ne doit pas effacer la suspicion.
+        val unresolved = pending?.let { it.lap >= since - 1 } == true
+        return TyreStint(since, tyreAge(currentLap), currentTyre(start), certain = !unknownSince && !unresolved, fromStart = last == null)
     }
 
     /** Gommes utilisées d'après les déclarations du pilote (départ + changements). */

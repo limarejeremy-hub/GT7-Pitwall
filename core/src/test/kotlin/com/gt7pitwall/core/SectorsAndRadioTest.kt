@@ -210,7 +210,8 @@ class SectorsAndRadioTest {
         val warn = said.indexOfFirst { it.startsWith("Stand au prochain tour") }
         assertEquals(said.indexOfFirst { it.startsWith("Tour 4 :") } - 1, warn, text)
         // Au tour suivant, l'appel au stand (et l'alerte carburant, critique aussi) précèdent le compte rendu du tour 5.
-        val boxIdx = said.indexOfFirst { it.startsWith("Box, box ! Rentre au stand à la fin de ce tour, ajoute environ") }
+        // Libellé du 26/10 : le numéro du tour est précisé (« à la fin de ce tour (tour 6), ajoute environ… »).
+        val boxIdx = said.indexOfFirst { it.startsWith("Box, box ! Rentre au stand à la fin de ce tour") && "ajoute environ" in it }
         assertTrue(boxIdx in (said.indexOfFirst { it.startsWith("Tour 4 :") } + 1) until said.indexOfFirst { it.startsWith("Tour 5 :") }, text)
         assertTrue("% du réservoir" in said[boxIdx])
         val lap5 = said.first { it.startsWith("Tour 5 :") }

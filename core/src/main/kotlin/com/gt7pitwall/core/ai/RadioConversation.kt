@@ -89,6 +89,26 @@ class RadioConversation(
         mutex.withLock { race.dialogue(heardFree, clock(), cloudReady) }?.let { return it }
         // « D'accord, on fait comme ça » juste après une discussion de stratégie : décision prise ensemble, sans IA.
         mutex.withLock { race.agreement(heardFree) }?.let { return it }
+        // Course réelle du 26/10 : « pourquoi je m'arrête au prochain tour ? » partait vers le cloud,
+        // expirait deux fois après 12 s, puis revenait au moteur qui savait déjà répondre.
+        // Les questions déterministes sur le plan, le carburant, les pneus et la position ont priorité sur Gemini.
+        val quick = DriverCommandParser.parse(text)
+        val localQueries = setOf(
+            com.gt7pitwall.core.radio.DriverQuery.PLAN,
+            com.gt7pitwall.core.radio.DriverQuery.FUEL,
+            com.gt7pitwall.core.radio.DriverQuery.TYRES,
+            com.gt7pitwall.core.radio.DriverQuery.TYRE_CHANGE,
+            com.gt7pitwall.core.radio.DriverQuery.NEXT_TYRE,
+            com.gt7pitwall.core.radio.DriverQuery.POSITION,
+        )
+        // Sauf une question sur l'aide de l'ingénieur (« tu vas m'aider pour l'essence ? ») ou une demande d'avis
+        // (« tu penses que ma stratégie tient la route ? ») : ce ne sont pas des demandes de chiffre.
+        val normalized = com.gt7pitwall.core.radio.DriverCommandParser.normalize(heardFree)
+        val opinion = OPINION.containsMatchIn(normalized) || IntentClassifier.helpTopic(heardFree) != null
+        if (quick is DriverCommand.Ask && quick.query in localQueries && !opinion) {
+            strategyDialogue(text, freeText)?.let { return it }
+            return mutex.withLock { race.utterance(text, heardFree, source) }
+        }
         // Conversation : questions ouvertes, conseils, analyses et relances vont au modèle cloud s'il est disponible,
         // avec le calcul du moteur sur le sujet. Sinon (non configuré, quota, panne), tout continue comme avant.
         var notice: EngineerMessage? = null
@@ -315,6 +335,9 @@ class RadioConversation(
     }
 
     private companion object {
+        /** Demande d'avis : la conversation (modèle cloud s'il est disponible), pas le chiffre seul. */
+        val OPINION = Regex("(^|\\s)(tu penses|ton avis|tu trouves|tu crois|tient la route|tiennent la route)(\\s|$)")
+
         /** En course, une réponse courte : la conclusion puis l'explication utile. */
         const val CLOUD_SENTENCES = 4
         const val CLOUD_CHARS = 520

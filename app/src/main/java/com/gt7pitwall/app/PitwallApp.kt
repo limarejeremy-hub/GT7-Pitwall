@@ -9,7 +9,7 @@ import com.gt7pitwall.app.service.TelemetryService
 import com.gt7pitwall.app.sport.SportScheduleRepository
 import com.gt7pitwall.app.settings.RaceStore
 import com.gt7pitwall.app.settings.SettingsStore
-import com.gt7pitwall.core.knowledge.Gt7Database
+import com.gt7pitwall.app.sport.DatabaseRepository
 import com.gt7pitwall.core.radio.RoutedVoiceOutput
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -57,6 +57,10 @@ class PitwallApp : Application() {
     lateinit var sport: SportScheduleRepository
         private set
 
+    /** Mise à jour automatique des voitures et circuits. */
+    lateinit var database: DatabaseRepository
+        private set
+
     /** Voix de l'ingénieur : Discord quand le bot est dans le salon, sinon le haut-parleur du Fold. */
     lateinit var radioOut: RoutedVoiceOutput
         private set
@@ -99,7 +103,7 @@ class PitwallApp : Application() {
                 if (settings.discordMicInput) voiceInput.restart()
             }
         }
-        engine = PitwallEngine(radioOut, voiceInput, loadDatabase(), RaceStore(this)).also {
+        engine = PitwallEngine(radioOut, voiceInput, DatabaseRepository.load(this), RaceStore(this)).also {
             voice.onAudible = it::onAudible
             discord.onAudible = it::onAudible
             it.voiceEnabled = settings.voiceEnabled
@@ -118,6 +122,10 @@ class PitwallApp : Application() {
             sport.state.collect { s -> if (s != null) engine.applySchedule(s) }
         }
         sport.start()
+        // Voitures et circuits : base communautaire relue chaque jour ; nouveaux circuits reconnus dans le programme Sport.
+        database = DatabaseRepository(this, engine.database) { sport.rebuildNow() }
+        engine.onUnknownCar = database::unknownCar
+        database.start()
     }
 
     /**
@@ -164,14 +172,6 @@ class PitwallApp : Application() {
     fun setDevTools(enabled: Boolean) {
         settings.devTools = enabled
         if (!enabled) bench.stop()
-    }
-
-    /** Base voitures / circuits de la communauté GT7 (gt7info, MIT-0), embarquée dans l'APK. */
-    private fun loadDatabase(): Gt7Database = try {
-        fun read(name: String) = assets.open("gt7db/$name").bufferedReader().use { it.readText() }
-        Gt7Database.parse(read("cars.csv"), read("maker.csv"), read("course.csv"))
-    } catch (e: Exception) {
-        Gt7Database.EMPTY
     }
 
     /** Lancement de la télémétrie : le bot rejoint le dernier salon si le réglage est actif. */

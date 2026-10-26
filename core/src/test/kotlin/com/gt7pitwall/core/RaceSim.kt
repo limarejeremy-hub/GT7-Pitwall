@@ -50,6 +50,15 @@ class FakeStorage(
     override fun loadJournal(sessionId: String): List<String> = journals[sessionId].orEmpty()
     override fun journalSessionIds(): List<String> = journals.keys.toList()
 
+    /** Driver DNA stored in the same way as on the Android device. */
+    var driverBook: String? = null
+    var learnedTracks: String? = null
+    override fun loadLearnedTracks(): String? = learnedTracks
+    override fun saveLearnedTracks(json: String) { learnedTracks = json }
+
+    override fun loadDriverBook(): String? = driverBook
+    override fun saveDriverBook(json: String) { driverBook = json }
+
     var pilotMemory: String? = null
     override fun loadPilotMemory(): String? = pilotMemory
     override fun savePilotMemory(json: String) {

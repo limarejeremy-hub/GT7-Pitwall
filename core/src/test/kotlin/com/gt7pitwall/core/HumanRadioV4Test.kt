@@ -32,6 +32,7 @@ import com.gt7pitwall.core.strategy.RaceRules
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
 import kotlin.math.PI
 import kotlin.math.sin
@@ -182,8 +183,9 @@ class HumanRadioV4Test {
         var calls = 0
         val flash = FakeCloud(AiBackend.FLASH) { calls++; if (calls == 1) gate.await(); AiResult.Text("Réponse à la question $calls.") }
         val conv = RadioConversation(c).also { it.cloud = router(flash, FakeCloud(AiBackend.FLASH_LITE) { calls++; if (calls == 1) gate.await(); AiResult.Text("Réponse à la question $calls.") }) }
-        val slow = async { conv.say("tu me conseilles quels pneus") }
-        while (calls == 0) yield()
+        // Question ouverte (envoyée au modèle) : « tu me conseilles quels pneus » est désormais calculé par le moteur, sans IA.
+        val slow = async { conv.say("comment tu vois la fin de course pour moi") }
+        withTimeout(5_000) { while (calls == 0) yield() }
         val fresh = conv.say("et le carburant pour finir on est bon")
         gate.complete(Unit)
         assertTrue(slow.await().none { it.category == MessageCategory.ANSWER }, "réponse périmée non dite")
@@ -192,7 +194,7 @@ class HumanRadioV4Test {
         // Changement de session pendant la génération.
         val gate2 = CompletableDeferred<Unit>()
         val conv2 = RadioConversation(c).also { it.cloud = router(FakeCloud(AiBackend.FLASH) { gate2.await(); AiResult.Text("Trop tard.") }, FakeCloud(AiBackend.FLASH_LITE) { gate2.await(); AiResult.Text("Trop tard.") }) }
-        val pending = async { conv2.say("tu me conseilles quels pneus") }
+        val pending = async { conv2.say("comment tu vois la fin de course pour moi") }
         yield()
         RaceSim(c, totalLaps = 5).start() // nouvelle course : nouvelle session
         gate2.complete(Unit)

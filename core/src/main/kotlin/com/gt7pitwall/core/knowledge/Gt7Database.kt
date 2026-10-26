@@ -20,15 +20,77 @@ data class Course(
     val layout: Int,
     val reverse: Boolean,
     val noRain: Boolean,
+    /**
+     * Circuit appris par Pitwall (absent de la base communautaire, par exemple SUGO à sa sortie) : nom tiré du programme
+     * Sport, longueur mesurée sur un tour complet. Remplacé par la fiche officielle dès qu'elle paraît.
+     */
+    val learned: Boolean = false,
 ) {
     val label: String get() = if (reverse) "$name (inversé)" else name
 }
 
-class Gt7Database(val cars: Map<Int, Car>, val courses: List<Course>) {
+class Gt7Database(cars: Map<Int, Car>, courses: List<Course>) {
+
+    /**
+     * Voitures et circuits courants. La base est mise à jour sans redémarrer ([replace]) : nouvelles voitures et nouveaux
+     * circuits de la base communautaire, circuits appris ([learn]).
+     */
+    @Volatile
+    var cars: Map<Int, Car> = cars
+        private set
+
+    @Volatile
+    private var official: List<Course> = courses
+
+    @Volatile
+    private var learnedCourses: List<Course> = emptyList()
+
+    /** Circuits officiels, puis circuits appris qui n'ont pas (encore) de fiche officielle du même nom. */
+    @Volatile
+    var courses: List<Course> = courses
+        private set
+
+    /** Liste combinée recalculée à chaque changement, jamais à chaque lecture (elle sert à chaque paquet). */
+    private fun recompute() {
+        val o = official
+        val names = o.map { key(it.name) }.toSet()
+        courses = o + learnedCourses.filter { key(it.name) !in names }
+    }
+
+    /** Circuits appris encore utiles (sans fiche officielle du même nom), pour l'enregistrement. */
+    val learned: List<Course> get() = courses.filter { it.learned }
+
+    /** Nouvelle version de la base communautaire : remplace voitures et circuits officiels, garde les circuits appris. */
+    fun replace(fresh: Gt7Database) {
+        cars = fresh.cars
+        official = fresh.official
+        recompute()
+    }
+
+    /** Circuits appris relus au lancement. */
+    fun restoreLearned(list: List<Course>) {
+        learnedCourses = list.filter { it.learned && it.id < 0 }.distinctBy { it.id }
+        recompute()
+    }
+
+    /**
+     * Nouveau circuit appris : identifiant négatif (jamais celui d'un circuit officiel). Un circuit appris du même nom
+     * est réutilisé.
+     */
+    fun learn(name: String, lengthM: Int): Course {
+        courses.firstOrNull { key(it.name) == key(name) }?.let { return it }
+        val id = minOf(LEARNED_FIRST_ID, (learnedCourses.minOfOrNull { it.id } ?: 0) - 1)
+        val c = Course(id, name, "circuit", lengthM, null, 1, reverse = false, noRain = false, learned = true)
+        learnedCourses = learnedCourses + c
+        recompute()
+        return c
+    }
 
     fun car(code: Int): Car? = cars[code]
 
+    /** Circuit par identifiant ; un circuit appris devenu officiel renvoie la fiche officielle du même nom. */
     fun course(id: Int): Course? = courses.firstOrNull { it.id == id }
+        ?: learnedCourses.firstOrNull { it.id == id }?.let { l -> official.firstOrNull { key(it.name) == key(l.name) && !it.reverse } }
 
     /**
      * Circuits dont la longueur officielle est proche de la distance mesurée sur un tour
@@ -44,7 +106,45 @@ class Gt7Database(val cars: Map<Int, Car>, val courses: List<Course>) {
     }
 
     companion object {
-        val EMPTY = Gt7Database(emptyMap(), emptyList())
+        /** Base vide, neuve à chaque appel (la base peut apprendre des circuits). */
+        val EMPTY: Gt7Database get() = Gt7Database(emptyMap(), emptyList())
+
+        /** Premier identifiant d'un circuit appris (les identifiants officiels sont positifs). */
+        const val LEARNED_FIRST_ID = -1
+
+        /** Une nouvelle version publiée ne remplace la base que si elle n'a pas perdu plus de 10 % de son contenu. */
+        const val MIN_KEPT = 0.9
+
+        /**
+         * Version téléchargée de la base communautaire, si elle est lisible et complète par rapport à [current]
+         * (fichier tronqué ou format changé : null, la base actuelle reste).
+         */
+        fun parseChecked(carsCsv: String, makersCsv: String, coursesCsv: String, current: Gt7Database): Gt7Database? {
+            val fresh = runCatching { parse(carsCsv, makersCsv, coursesCsv) }.getOrNull() ?: return null
+            if (fresh.cars.isEmpty() || fresh.official.isEmpty()) return null
+            if (fresh.cars.size < current.cars.size * MIN_KEPT || fresh.official.size < current.official.size * MIN_KEPT) return null
+            return fresh
+        }
+
+        /** Circuits appris, enregistrés sur le téléphone (JSON). */
+        fun learnedJson(list: List<Course>): String = org.json.JSONArray(
+            list.map { org.json.JSONObject().put("id", it.id).put("name", it.name).put("lengthM", it.lengthM) },
+        ).toString()
+
+        fun learnedFrom(json: String?): List<Course> = runCatching {
+            val a = org.json.JSONArray(json ?: return emptyList())
+            (0 until a.length()).mapNotNull { i ->
+                val o = a.getJSONObject(i)
+                val id = o.optInt("id", 0).takeIf { it < 0 } ?: return@mapNotNull null
+                val name = o.optString("name").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                Course(id, name, "circuit", o.optInt("lengthM", 0), null, 1, reverse = false, noRain = false, learned = true)
+            }
+        }.getOrDefault(emptyList())
+
+        /** Nom comparable (« SUGO International Racing Course » = « sugo international racing course »). */
+        fun key(name: String): String =
+            java.text.Normalizer.normalize(name.lowercase(), java.text.Normalizer.Form.NFD).replace(Regex("\\p{Mn}+"), "")
+                .replace(Regex("[^a-z0-9]+"), " ").trim()
 
         fun parse(carsCsv: String, makersCsv: String, coursesCsv: String): Gt7Database {
             val makers = rows(makersCsv).associate { it[0].toInt() to it[1] }

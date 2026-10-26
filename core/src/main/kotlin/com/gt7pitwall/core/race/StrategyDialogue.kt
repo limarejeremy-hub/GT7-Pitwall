@@ -124,7 +124,9 @@ object StrategyDialogue {
         if (has(t, " (gagner|gagnerait|gagnerais|gagne) du temps en (rentrant|s'arretant|m'arretant|changeant)", " rentrer maintenant .*(gagn|rentable|interet)")) {
             return Ask.GainPitNow
         }
-        if (tyreWord && has(t, " combien de tours", " tiennent encore", " tenir encore", " encore combien")) return Ask.TyreLife
+        if (tyreWord && has(t, " combien de tours", " tiennent encore", " tenir encore", " encore combien",
+                " tiennent jusqu", " tenir jusqu", " tiendront jusqu", " vont tenir jusqu", " ca tient jusqu",
+                " tenir jusqu au bout", " tiennent jusqu au bout", " encore tenir jusqu")) return Ask.TyreLife
         if (tyreWord && has(t, " (doit|faut|faudrait|devrait|devrais|dois)( il| on| je)? (changer|change)", " on change (les )?pneus", " changer (les )?pneus ")) {
             if (asking || has(t, " est ce qu", " faut il ", " faut ")) return Ask.TyreChange
         }

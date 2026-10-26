@@ -25,6 +25,8 @@ class TyreRadioTest {
             "Radio, comment vont mes pneus ?" to Ask.TyreStatus,
             "Ils sont encore bons ?" to Ask.TyreStatus,
             "Il me reste combien de tours avec ces gommes ?" to Ask.TyreLife,
+            "Est ce que mes pneus tiennent jusqu\u0027a la fin ?" to Ask.TyreLife,
+            "Mes pneus vont tenir jusqu\u0027au bout ?" to Ask.TyreLife,
             "Je perds l'avant, tu vois quelque chose ?" to Ask.GripQuestion(ObservationKind.GRIP_FRONT),
             "Je patine beaucoup en sortie, pourquoi ?" to Ask.GripQuestion(ObservationKind.WHEELSPIN),
             "Est-ce qu'on doit changer les pneus ?" to Ask.TyreChange,

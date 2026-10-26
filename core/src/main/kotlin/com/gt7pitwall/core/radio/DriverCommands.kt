@@ -150,6 +150,13 @@ object DriverCommandParser {
         if (has(t, "repete", "repeter", "redis")) return DriverCommand.Repeat
         if (t == "oui" || t == "affirmatif" || t == "confirme" || t == "c'est ca" || t == "exact") return DriverCommand.Yes
         if (t == "non" || t == "negatif" || t == "non non") return DriverCommand.No
+        // Un « une » isolé à cause du bruit ne signifie jamais « je suis P1 » (incident PS5 26/10).
+        if (t == "un" || t == "une") return null
+        // Essai PS5 26/10 : « pourquoi je m\u0027arrête / je rends au prochain tour ? » ne doit pas
+        // devenir une demande générique de nombre de tours ni partir 12 secondes vers Gemini.
+        if (has(t, "pourquoi") && has(t, "prochain tour", "prochain tours") &&
+            has(t, "rentr", "arret", "arrete", "stand", "box", "rends")
+        ) return DriverCommand.Ask(DriverQuery.PLAN)
         keptIn(t)?.let { return it }
         // « Quand est-ce que je dois changer mes pneus ? » : une question, pas une déclaration de changement.
         val tyreWords = has(t, "pneu", "gomme")
