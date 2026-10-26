@@ -116,5 +116,8 @@ class Gt7ProfileStore(context: Context) {
         return persist(read().add(stats, ProfileEvidence.GRIDSTATS_PUBLIC, System.currentTimeMillis()))
     }
 
-    fun clear(): Gt7PlayerProfile = persist(Gt7PlayerProfile())
+    fun clear(): Gt7PlayerProfile {
+        disablePublicSync()
+        return persist(Gt7PlayerProfile())
+    }
 }
