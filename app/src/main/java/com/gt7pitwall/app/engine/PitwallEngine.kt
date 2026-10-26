@@ -19,6 +19,8 @@ import com.gt7pitwall.core.engineer.MessageCategory
 import com.gt7pitwall.core.engineer.Priority
 import com.gt7pitwall.core.engineer.RadioLevel
 import com.gt7pitwall.core.knowledge.CarTrackRecord
+import com.gt7pitwall.core.knowledge.DriverGarage
+import com.gt7pitwall.core.knowledge.GarageCar
 import com.gt7pitwall.core.knowledge.Course
 import com.gt7pitwall.core.knowledge.Gt7Database
 import com.gt7pitwall.core.race.EventProfile
@@ -77,6 +79,8 @@ data class PitwallUiState(
     val raining: Boolean = false,
     /** Nom de la voiture d'après le code GT7 (base communautaire). */
     val carName: String? = null,
+    /** Voiture confirmée par la PS5 ou dernière connue avec provenance, sans hypothèse déguisée. */
+    val garageCar: GarageCar = GarageCar(null, null, com.gt7pitwall.core.knowledge.CarEvidence.UNKNOWN),
     val course: Course? = null,
     /** Circuits possibles d'après la distance mesurée d'un tour, quand il y a ambiguïté. */
     val trackCandidates: List<Course> = emptyList(),
@@ -156,6 +160,11 @@ class PitwallEngine(
     /** L'ingénieur parle déjà (téléphone ou Discord) : une place mise en file serait périmée à son tour. */
     var voiceBusy: () -> Boolean = { false }
 
+    private var lastGarageComputeMs = 0L
+    private var lastGarageCode: Int? = null
+    private var lastGarageEditionId: String? = null
+    private var lastGarageProfile: com.gt7pitwall.core.race.ProfileId? = null
+    private var lastGarageTrack: Int? = null
     private val _rules = MutableStateFlow(race.rules)
     val rules: StateFlow<RaceRules> = _rules.asStateFlow()
 
@@ -531,6 +540,28 @@ class PitwallEngine(
         // Voiture absente de la base (nouvelle voiture du jeu) : la base est relue sans attendre.
         snap.packet?.carCode?.takeIf { it > 0 && race.carName == null }?.let { onUnknownCar() }
         _rules.value = race.rules
+        val currentCarCode = snap.packet?.carCode?.takeIf { it > 0 }
+        val editionId = race.edition?.id
+        val profileId = race.profile.id
+        val trackId = race.rules.trackId
+        val garageChanged = currentCarCode != lastGarageCode ||
+            editionId != lastGarageEditionId || profileId != lastGarageProfile || trackId != lastGarageTrack
+        val garage = if (force || garageChanged || now - lastGarageComputeMs >= 2_000L) {
+            lastGarageComputeMs = now
+            lastGarageCode = currentCarCode
+            lastGarageEditionId = editionId
+            lastGarageProfile = profileId
+            lastGarageTrack = trackId
+            DriverGarage.resolve(
+                telemetryCarCode = currentCarCode,
+                telemetryConnected = race.telemetryLive(),
+                profile = race.profile,
+                trackId = trackId,
+                edition = race.edition,
+                sessions = race.archivedSessions,
+                db = database,
+            )
+        } else _state.value.garageCar
         _state.value = PitwallUiState(
             snapshot = snap,
             fuel = race.fuel,
@@ -543,6 +574,7 @@ class PitwallEngine(
             gForce = race.gForce,
             raining = race.engineer.raining,
             carName = race.carName,
+            garageCar = garage,
             course = race.course,
             trackCandidates = race.trackCandidates,
             plan = race.plan,
