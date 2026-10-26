@@ -38,7 +38,7 @@ import java.net.URL
 @Composable
 fun PitwallCarArtwork(carCode: Int?, modifier: Modifier = Modifier) {
     val context = LocalContext.current
-    val preview = context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
+    val preview = (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
     val photo = produceState<Bitmap?>(initialValue = null, key1 = carCode, key2 = preview) {
         value = if (preview && carCode != null) withContext(Dispatchers.IO) {
             CarImagePreview.load(context, carCode)
