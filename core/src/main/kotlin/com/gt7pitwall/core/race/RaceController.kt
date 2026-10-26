@@ -1062,7 +1062,8 @@ class RaceController(
     private fun lapEntry(l: com.gt7pitwall.core.session.LapRecord): LapEntry {
         val change = ledger.changes.lastOrNull { it.lap <= l.lapNumber }
         val since = change?.lap ?: 1
-        val certain = ledger.stopList.none { it.tyres == TyreService.UNKNOWN && it.lap >= since - 1 && it.lap < l.lapNumber }
+        val certain = ledger.stopList.none { it.tyres == TyreService.UNKNOWN && it.lap >= since - 1 && it.lap < l.lapNumber } &&
+            ledger.pending?.let { it.lap >= since - 1 && it.lap < l.lapNumber } != true
         fun ev(a: Int?, b: Int?) = if (a == null && b == null) null else (a ?: 0) + (b ?: 0)
         return LapEntry(
             l.lapNumber, l.timeMs, l.fuelUsed, l.refuelled,
@@ -2773,18 +2774,33 @@ class RaceController(
                 "À vérifier : les ${compound.spoken} ne sont pas dans le règlement enregistré, qui n'est pas confirmé."
             }
         }
-        // « Je suis en durs » sans arrêt depuis le départ : ce sont les pneus de départ, pas un changement.
-        val atStart = c.atStart || lap < 1 || (c.current && ledger.stopCount == 0 && ledger.changes.isEmpty())
+        // « Je suis en medium » après une signature thermique n'est PAS une correction du pneu de départ.
+        // La déclaration explicite d'une nouvelle gomme par le pilote confirme le candidat observé
+        // (et lui seul). Le train commence au premier tour APRÈS le passage aux stands.
+        val recentCandidate = ledger.pending?.takeIf {
+            c.current && !c.atStart && lap - it.lap in 0..2 &&
+                ledger.currentTyre(rules.startTyre) != compound
+        }
+        val atStart = c.atStart || lap < 1 ||
+            (c.current && ledger.stopCount == 0 && ledger.changes.isEmpty() && recentCandidate == null && ledger.pending == null)
         if (atStart) {
             applyRules(rules.copy(startTyre = compound))
             raceMemory.fact(lap.coerceAtLeast(0), clock(), "départ en ${compound.spoken}", Provenance.DRIVER)
             out += "Noté : départ en ${compound.spoken}."
         } else {
-            val passage = ledger.changeForPassage(lap)
-            val replaced = ledger.fitTyres(lap, compound)
+            val confirmedStop = recentCandidate?.let { candidate ->
+                ledger.confirmPending()?.also { rec ->
+                    pendingStopTyreSuspect = false
+                    ledger.setThermal(rec.lap, lastThermal?.verdict?.name ?: TyreChangeVerdict.SUSPECTED.name)
+                    out += "Arrêt au tour ${rec.lap} confirmé par ta déclaration de pneus."
+                }
+            }
+            val effectiveLap = confirmedStop?.lap?.plus(1) ?: lap
+            val passage = ledger.changeForPassage(effectiveLap)
+            val replaced = ledger.fitTyres(effectiveLap, compound)
             labelThermal(changed = true)
             performanceTyreLaps = emptyList()
-            if (passage == null) engineer.onTyresChanged(lap)
+            if (passage == null) engineer.onTyresChanged(effectiveLap)
             out += when {
                 replaced != null -> {
                     journal.record(
@@ -2795,7 +2811,7 @@ class RaceController(
                     "Corrigé : ${compound.spoken} au lieu de ${replaced.spoken}."
                 }
                 passage != null -> "Noté : ${compound.spoken} montés à cet arrêt.".also { raceMemory.fact(lap, clock(), "${compound.spoken} montés", Provenance.DRIVER) }
-                else -> "Noté : ${compound.spoken} montés au tour $lap.".also { raceMemory.fact(lap, clock(), "${compound.spoken} montés", Provenance.DRIVER) }
+                else -> "Noté : ${compound.spoken} montés au tour $effectiveLap.".also { raceMemory.fact(effectiveLap, clock(), "${compound.spoken} montés", Provenance.DRIVER) }
             }
         }
         if (rules.requiredTyres.isNotEmpty()) {
@@ -2829,7 +2845,7 @@ class RaceController(
         val guess = current?.let { TyreCompound.of(it, hardness) }
         if (guess != null) {
             pendingConfirmation = c.copy(text = "${current.spoken} ${hardness.spoken}")
-            return listOf("${hardness.spoken.replaceFirstChar { it.uppercase() }} : course, sport ou confort ? ${guess.spoken.replaceFirstChar { it.uppercase() }}, comme tes pneus actuels ?")
+            return listOf("Tu confirmes des pneus ${guess.spoken} actuellement ?")
         }
         return listOf("${hardness.spoken.replaceFirstChar { it.uppercase() }} : course, sport ou confort ?")
     }
