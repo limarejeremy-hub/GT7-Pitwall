@@ -93,4 +93,12 @@ class GridStatsDailyFeedTest {
         assertNull(merged.laps.value)
         assertEquals(FieldStatus.CONFIRMED, merged.requiredTyres.status)
     }
+
+    /** Domaine officiel « gt-gridstats.com » (avec tiret) : la clé du pilote n'est jamais envoyée ailleurs. */
+    @org.junit.jupiter.api.Test
+    fun theKeyOnlyGoesToTheOfficialDomain() {
+        val url = java.net.URI(com.gt7pitwall.core.sport.GridStatsDailyFeed.URL)
+        kotlin.test.assertEquals("https", url.scheme)
+        kotlin.test.assertEquals("gt-gridstats.com", url.host)
+    }
 }

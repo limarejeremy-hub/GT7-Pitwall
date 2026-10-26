@@ -5,7 +5,7 @@ GTPlanet RSS n'a pas systématiquement publié la nouvelle fiche à l'heure du r
 
 ## Sources et flux
 1. **GTPlanet** : flux RSS public, reste la source par défaut, aucune clé nécessaire.
-2. **GT GridStats** : API documentée `GET https://gtgridstats.com/api/dailies/this-week`, avec `Authorization: Bearer`. **Opt-in** : aucun appel sans clé personnelle, jamais incluse dans l'APK, jamais envoyée à un autre site ou dans les journaux.
+2. **GT GridStats** : API documentée `GET https://gt-gridstats.com/api/dailies/this-week (domaine avec tiret ; corrigé le 26/10, le code appelait « gtgridstats.com »)`, avec `Authorization: Bearer`. **Opt-in** : aucun appel sans clé personnelle, jamais incluse dans l'APK, jamais envoyée à un autre site ou dans les journaux.
 3. **Fusion champ par champ** : une source seule = probable ; deux sources qui concordent = confirmé ; conflit = inconnu et non appliqué. Une clé manquante ne bloque pas GTPlanet.
 4. **Dates** : date de début issue du payload (lundi local), jamais le jour de téléchargement ; cache par semaine, édition expirée le lundi suivant. Les courses terminées ne peuvent pas polluer le nouveau règlement.
 5. **Règles essentielles** : `required_compounds` n'est pas équivalent à `pit_constraint`. La course C peut indiquer 0 arrêt imposé directement tout en imposant **deux gommes**, ce qui requiert une transition aux stands pour satisfaire le règlement.

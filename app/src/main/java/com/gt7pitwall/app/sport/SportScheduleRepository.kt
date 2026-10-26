@@ -127,7 +127,10 @@ class SportScheduleRepository(context: Context, private val database: Gt7Databas
     }
 
     private fun fetchGridStats(token: String) {
-        val conn = (URL(GridStatsDailyFeed.URL).openConnection() as HttpURLConnection).apply {
+        val url = URL(GridStatsDailyFeed.URL)
+        // La clé personnelle ne part que vers le domaine officiel, en HTTPS.
+        if (url.protocol != "https" || url.host != GridStatsDailyFeed.HOST) error("domaine GridStats inattendu")
+        val conn = (url.openConnection() as HttpURLConnection).apply {
             connectTimeout = 15_000
             readTimeout = 20_000
             instanceFollowRedirects = false

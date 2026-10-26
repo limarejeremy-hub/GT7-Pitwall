@@ -8,7 +8,8 @@ import java.time.LocalDate
 /**
  * Deuxième source indépendante du programme Sport hebdomadaire.
  *
- * Contrat public GET https://gtgridstats.com/api/dailies/this-week
+ * Contrat public GET https://gt-gridstats.com/api/dailies/this-week (domaine officiel avec tiret, vu sur la page « Public API »
+ * du site le 26/10 ; « gtgridstats.com » sans tiret est un autre domaine : la clé du pilote n'y est jamais envoyée).
  * Authorization: Bearer <clé fournie par le pilote>.
  *
  * Seul le règlement explicite est lu, jamais les statistiques des voitures « méta » comme règlement.
@@ -16,7 +17,9 @@ import java.time.LocalDate
  */
 object GridStatsDailyFeed {
     const val NAME = "GT GridStats"
-    const val URL = "https://gtgridstats.com/api/dailies/this-week"
+    /** Seul domaine auquel la clé personnelle du pilote peut être envoyée. */
+    const val HOST = "gt-gridstats.com"
+    const val URL = "https://$HOST/api/dailies/this-week"
 
     fun parse(json: String, fetchedAtMs: Long): List<WeeklyPost> {
         val root = runCatching { JSONObject(json) }.getOrNull() ?: return emptyList()
