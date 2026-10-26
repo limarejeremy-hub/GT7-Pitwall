@@ -512,6 +512,8 @@ class RaceController(
     /** A second, one-shot call in Pitwall's last equal-distance sector. */
     private fun finalSectorPitCall(p: TelemetryPacket): List<EngineerMessage> {
         if (!raceMode || sessionFinished || p.isPaused || p.isLoading || p.speedKmh < 20f) return emptyList()
+        // Wait for a calmer point in the last sector; never call "Box" at a heavy braking point.
+        if (pacer.busy(p)) return emptyList()
         val end = p.totalLaps.takeIf { it > 0 } ?: return emptyList()
         // Manual, *confirmed* "I pit this lap" is independent of a potentially
         // misidentified weekly profile. Automated calls require a matching event.
