@@ -52,6 +52,7 @@ import com.gt7pitwall.core.strategy.StrategyReport
 import com.gt7pitwall.core.strategy.PitLedger
 import com.gt7pitwall.core.strategy.PitStopRecord
 import com.gt7pitwall.core.strategy.RacePlan
+import com.gt7pitwall.core.strategy.PitApproachReminder
 import com.gt7pitwall.core.strategy.RacePlanner
 import com.gt7pitwall.core.strategy.RaceRules
 import com.gt7pitwall.core.strategy.StopEvidence
@@ -227,6 +228,7 @@ class RaceController(
      * « box » et annoncerait un nouveau plan en pleine voie des stands.
      */
     private var pitWindowPackets = 0
+    private val pitApproachReminder = PitApproachReminder()
     /** Déclaration vocale pendant CE passage physique aux stands, à rapprocher du plein mesuré. */
     private var driverDeclaredDuringPitNumber: Int? = null
     private var tyreLifeAsked = false
@@ -426,6 +428,7 @@ class RaceController(
                 trackCandidates = emptyList()
                 candidatesAnnounced = false
                 pitWindowPackets = 0
+                pitApproachReminder.reset()
                 aiExchanges.clear()
                 raceMemory.clear()
                 intentions.clear()
@@ -491,12 +494,48 @@ class RaceController(
             out += drivingReportAtFinish()
         }
         out += briefingIfDue(p)
+        out += finalSectorPitCall(p)
         updateMood(events, positionChanges, p)
         if (events.any { it is SessionEvent.LapCompleted || it is SessionEvent.RaceFinished || it is SessionEvent.PitVisitEnded }) saveSession()
         // Messages non urgents différés pendant un gros freinage ou un virage (au plus quelques secondes).
         if (events.any { it is SessionEvent.SessionReset }) pacer.clear()
         val busy = pacer.busy(p)
         return deliver(pacer.pace(out, busy, pacer.packetClockMs, p.currentLap))
+    }
+
+
+    /** A second, one-shot call in Pitwall's last equal-distance sector. */
+    private fun finalSectorPitCall(p: TelemetryPacket): List<EngineerMessage> {
+        if (!raceMode || sessionFinished || p.isPaused || p.isLoading || p.speedKmh < 20f) return emptyList()
+        val end = p.totalLaps.takeIf { it > 0 } ?: return emptyList()
+        // Wrong weekly series (Sport A selected during a 14-lap C race): never order a pit.
+        val reference = if (profile.id.sport) edition?.laps?.value ?: return emptyList() else null
+        val progress = tracker.liveLapProgress()
+        val stop = pitApproachReminder.onProgress(
+            lap = p.currentLap, totalLaps = end, referenceLaps = reference,
+            progress = progress, plannedStop = plan?.nextStop(p.currentLap),
+            pitVisitOpen = tracker.pitVisitOpen,
+        ) ?: return emptyList()
+        val instruction = buildString {
+            append("Dernier secteur. Box à la fin de ce tour.")
+            if (stop.tyreToFit != null) append(" Monte les ${stop.tyreToFit.spoken}.")
+            else if (stop.changeTyres) append(" Pneus à changer.")
+            if (stop.noFuelNeeded) append(" Sans ravitaillement.")
+            else if (stop.forFuel) append(" Ravitaillement prévu.")
+        }
+        journal.record(
+            JournalType.STRATEGY, JournalSource.ENGINE,
+            "Rappel de stand dernier secteur Pitwall : ${stop.endOfLap}",
+            lap = p.currentLap, details = mapOf(
+                "fraction_piste" to "%.2f".format(java.util.Locale.ROOT, progress ?: 0f),
+                "preuve" to "tour complet précédent et arrêt du plan",
+            ),
+        )
+        return listOf(
+            EngineerMessage(instruction, Priority.CRITICAL, MessageCategory.ALERT,
+                dedupKey = "approche-stand:$sessionId:${stop.endOfLap}", topic = "pit-approach",
+                validUntilLap = p.currentLap),
+        )
     }
 
     private val pacer = com.gt7pitwall.core.radio.RadioPacer()
@@ -1121,6 +1160,7 @@ class RaceController(
         ambiguityAnnounced = false
         lastDrivingReport = null
         briefed = false
+        pitApproachReminder.reset()
         lastPositionChangeClockMs = null
         replay = false
         replaySuspect = null
