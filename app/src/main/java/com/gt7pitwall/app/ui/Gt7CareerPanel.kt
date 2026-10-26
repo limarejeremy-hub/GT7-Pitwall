@@ -22,6 +22,10 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+import com.gt7pitwall.app.profile.Gt7GridStatsPublicPage
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -53,9 +57,38 @@ fun Gt7CareerPanel(store: Gt7ProfileStore, editable: Boolean, localCareer: Pitwa
     var editing by rememberSaveable { mutableStateOf(false) }
     var feedback by remember { mutableStateOf("") }
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var refreshingPublic by remember { mutableStateOf(false) }
     fun acknowledge(text: String) {
         feedback=text
         Toast.makeText(context,text,Toast.LENGTH_LONG).show()
+    }
+
+    // Opt-in lookup of a public, third-party rating page. No PlayStation login.
+    suspend fun refreshPublicRating() {
+        if (refreshingPublic) return
+        refreshingPublic = true
+        val requestedPsn = store.read().psnId
+        store.markPublicAttempt()
+        try {
+            val stats = Gt7GridStatsPublicPage.fetch(requestedPsn)
+            if (!store.read().psnId.equals(requestedPsn, ignoreCase = true)) {
+                feedback = "Le compte PSN a changé pendant la lecture : résultat ignoré."
+            } else {
+                store.recordPublicRating(stats)
+                feedback = "Classements DR/SR lus depuis la page publique GridStats. " +
+                    "Les autres chiffres de carrière restent inconnus."
+            }
+        } catch (ex: Exception) {
+            feedback = "GridStats public indisponible : " +
+                (ex.message ?: "lecture impossible") + ". Données existantes conservées."
+        } finally {
+            refreshingPublic = false
+        }
+    }
+
+    LaunchedEffect(profile.psnId, profile.samples.size) {
+        if (store.publicRefreshDue()) refreshPublicRating()
     }
 
     Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp),
@@ -120,6 +153,34 @@ fun Gt7CareerPanel(store: Gt7ProfileStore, editable: Boolean, localCareer: Pitwa
                 Text("Lien court Google enregistré : la destination Gran Turismo n'est pas vérifiée. " +
                     "Il s'ouvre dans ton navigateur ; il ne synchronise pas les statistiques.",
                     color = PitColors.Yellow, fontSize = 11.sp)
+            }
+            if (profile.psnId.isNotBlank()) {
+                Text("GT GridStats public : DR/SR uniquement. Source non officielle, " +
+                    "sans connexion à PlayStation. Autres chiffres non synchronisés.",
+                    color = PitColors.Muted, fontSize = 11.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(enabled = !refreshingPublic, onClick = {
+                        if (!store.publicSyncEnabled()) store.enablePublicSync()
+                        scope.launch { refreshPublicRating() }
+                    }) {
+                        Text(when {
+                            refreshingPublic -> "Lecture..."
+                            store.publicSyncEnabled() -> "Actualiser DR/SR"
+                            else -> "Activer le profil public"
+                        })
+                    }
+                    TextButton(onClick = {
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(
+                            "https://gt-gridstats.com/player/" + Uri.encode(profile.psnId)
+                        )))
+                    }) { Text("Voir la source") }
+                }
+                if (store.publicSyncEnabled()) {
+                    TextButton(onClick = {
+                        store.disablePublicSync()
+                        feedback = "Synchronisation publique désactivée. Historique conservé."
+                    }) { Text("Désactiver les mises à jour publiques") }
+                }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (Gt7PlayerProfile.validProfileLink(profile.officialProfileUrl)) {
