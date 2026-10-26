@@ -83,6 +83,23 @@ class October26PitRadioRegressionTest {
     }
 
     @Test
+    fun uncertainTyresAfterRefuellingNeverGetAFakeRemainingLife() {
+        val c = RaceController(storage = FakeStorage())
+        val sim = RaceSim(c, totalLaps = 7, perLap = 10f)
+        sim.start()
+        sim.driveLaps(2)
+        sim.pitStop(fuel = 30f, changeTyres = true)
+        val summary = c.tyreSummary()
+        assertTrue("âge et gomme des pneus non confirmés" in summary, summary)
+        val conversation = com.gt7pitwall.core.ai.RadioConversation(c)
+        val question = "est ce que mes pneus tiennent jusqu'a la fin"
+        val answer = kotlinx.coroutines.runBlocking {
+            conversation.onUtterance(question, question, null)
+        }
+        assertTrue(answer.any { "Je ne peux pas prévoir la durée restante" in it.text }, answer.toString())
+    }
+
+    @Test
     fun declarationDuringAPhysicalStopIsNotCountedTwiceAtPitExit() {
         val c = RaceController(storage = FakeStorage())
         val sim = RaceSim(c, totalLaps = 7, perLap = 10f)
