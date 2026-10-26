@@ -53,6 +53,21 @@ class Gt7CareerProfileTest {
         assertFalse(Gt7PlayerProfile.validOfficialUrl("https://www.gran-turismo.com@evil.test/fr/gt7/user/mymenu/12345678-1234-1234-1234-123456789abc/profile/"))
     }
 
+    @Test fun googleShortLinksAreAcceptedOnlyAsUnverifiedUserLinks() {
+        val shared="https://share.google/LBiUCiAmYwkWNBrzM"
+        assertTrue(Gt7PlayerProfile.validGoogleShareLink(shared))
+        assertTrue(Gt7PlayerProfile.validProfileLink(shared))
+        assertFalse(Gt7PlayerProfile.validOfficialUrl(shared))
+        assertTrue(Gt7PlayerProfile.validProfileLink("https://search.app/abcdefgh12345678"))
+        assertFalse(Gt7PlayerProfile.validGoogleShareLink("https://share.google.evil.test/LBiUCiAmYwkWNBrzM"))
+        assertFalse(Gt7PlayerProfile.validGoogleShareLink("http://share.google/LBiUCiAmYwkWNBrzM"))
+        assertFalse(Gt7PlayerProfile.validGoogleShareLink("https://share.google@evil.test/LBiUCiAmYwkWNBrzM"))
+        assertFalse(Gt7PlayerProfile.validGoogleShareLink("https://share.google/evil/path"))
+        assertFalse(Gt7PlayerProfile.validGoogleShareLink("https://share.google/LBiUCiAmYwkWNBrzM?auth=x"))
+        val profile=Gt7PlayerProfile(psnId="TestRacer42",officialProfileUrl=shared)
+        assertEquals(shared,Gt7CareerJson.decode(Gt7CareerJson.encode(profile)).officialProfileUrl)
+    }
+
     @Test fun importRejectsAnUnrelatedPsnIdAndInvalidNumbers() {
         val valid="""{"PSN_ID":"TestRacer42","DR":"C","SR":"S","stats":{"dr_points":5313,"total_races":71,"victories":4,"poles":0}}"""
         val data=Gt7CareerImport.fromRacerJson(valid,psn)

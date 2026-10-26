@@ -116,11 +116,19 @@ fun Gt7CareerPanel(store: Gt7ProfileStore, editable: Boolean, localCareer: Pitwa
                     "Un ID PSN seul ne permet pas de récupérer automatiquement DR, SR et victoires.",
                     color = PitColors.Yellow, fontSize = 12.sp)
             }
+            if (Gt7PlayerProfile.validGoogleShareLink(profile.officialProfileUrl)) {
+                Text("Lien court Google enregistré : la destination Gran Turismo n'est pas vérifiée. " +
+                    "Il s'ouvre dans ton navigateur ; il ne synchronise pas les statistiques.",
+                    color = PitColors.Yellow, fontSize = 11.sp)
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (Gt7PlayerProfile.validOfficialUrl(profile.officialProfileUrl)) {
+                if (Gt7PlayerProfile.validProfileLink(profile.officialProfileUrl)) {
                     OutlinedButton(onClick = {
                         context.startActivity(Intent(Intent.ACTION_VIEW,Uri.parse(profile.officialProfileUrl)))
-                    }) { Text("Voir profil GT7") }
+                    }) {
+                        Text(if (Gt7PlayerProfile.validOfficialUrl(profile.officialProfileUrl))
+                            "Voir profil GT7" else "Ouvrir le partage Google")
+                    }
                 }
                 if (editable && profile.psnId.isNotBlank()) {
                     OutlinedButton(onClick = {
@@ -190,7 +198,7 @@ private fun CareerEditor(
     OutlinedTextField(value=nick,onValueChange={nick=it},singleLine=true,
         label={Text("Nom de pilote")},modifier=Modifier.fillMaxWidth())
     OutlinedTextField(value=url,onValueChange={url=it.trim()},maxLines=2,
-        label={Text("Lien officiel GT7 (facultatif)")},modifier=Modifier.fillMaxWidth())
+        label={Text("Lien GT7 ou partage Google (facultatif)")},modifier=Modifier.fillMaxWidth())
     Text("2 · Statistiques Sport",fontWeight=FontWeight.Bold)
     Text("Copie les chiffres visibles dans ton profil GT7, sans mot de passe PSN.",
         color=PitColors.Muted,fontSize=12.sp)
