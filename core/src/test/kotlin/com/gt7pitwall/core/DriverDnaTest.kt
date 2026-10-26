@@ -226,4 +226,19 @@ class DriverDnaTest {
         assertTrue(DriverBook.parse(storage.driverBook).profiles.single().sessionCount == 1)
         assertTrue(c.aiFacts().lines.any { it.startsWith("Profil de pilotage") }, c.aiFacts().lines.toString())
     }
+
+    /** Courses réelles du pilote : courses personnalisées à 20 voitures. Le coaching y suit les règles de course (rare, bref). */
+    @Test
+    fun aCustomRaceIsCoachedLikeARaceAndPracticeLikePractice() {
+        val c = com.gt7pitwall.core.race.RaceController(storage = FakeStorage())
+        val race = com.gt7pitwall.core.race.SessionKind.RACE
+        c.selectProfile(com.gt7pitwall.core.race.ProfileId(com.gt7pitwall.core.race.Series.OTHER, race))
+        assertTrue(c.raceMode, "course personnalisée")
+        c.selectProfile(com.gt7pitwall.core.race.ProfileId(com.gt7pitwall.core.race.Series.DAILY_A, race))
+        assertTrue(c.raceMode, "Course Sport officielle")
+        c.selectProfile(com.gt7pitwall.core.race.ProfileId(com.gt7pitwall.core.race.Series.DAILY_A, race, com.gt7pitwall.core.race.SessionMode.SPORT_PRACTICE))
+        assertFalse(c.raceMode, "entraînement Sport : coach")
+        c.selectProfile(com.gt7pitwall.core.race.ProfileId(com.gt7pitwall.core.race.Series.DAILY_A, com.gt7pitwall.core.race.SessionKind.QUALIFYING))
+        assertFalse(c.raceMode, "qualification : coach")
+    }
 }

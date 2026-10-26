@@ -1098,8 +1098,12 @@ class RaceController(
         }
     }
 
-    /** Course Sport officielle : l'ingénieur est un stratège ; sinon (entraînement, chrono, personnalisée) un coach. */
-    val raceMode: Boolean get() = profile.id.mode == SessionMode.SPORT_OFFICIAL && profile.id.kind == SessionKind.RACE
+    /**
+     * Course (Sport officielle ou personnalisée) : l'ingénieur est un stratège, coaching de virage rare et bref ; sinon
+     * (entraînement Sport, chrono, qualification) un coach. Les courses réelles du pilote sont des courses personnalisées
+     * à 20 voitures : y donner une consigne tous les deux tours contredirait la radio silencieuse en course.
+     */
+    val raceMode: Boolean get() = profile.id.kind == SessionKind.RACE && profile.id.mode != SessionMode.SPORT_PRACTICE
 
     /** Clé du profil de pilotage : voiture × circuit × type de session (jamais mélangés). */
     val driverKey: String

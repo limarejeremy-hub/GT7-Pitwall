@@ -24,3 +24,10 @@ Le premier vrai arrêt avec changement confirmé, le 25/10 au Mans, a montré un
 6. Ne pas activer la confirmation automatique tant que la reproductibilité n'a pas été établie sur plusieurs situations.
 
 **Attention** : le Driver DNA et les seuils de pneus sont encore expérimentaux sur le terrain. Ne pas fusionner sans tests techniques et validation PS5.
+
+## Correction (relecture Claude)
+Le coaching de virage ne suivait les règles de course (3 consignes au plus, espacées de 4 tours, brèves) qu'en Course
+Sport officielle. Les courses réelles du pilote sont des **courses personnalisées** à 20 voitures : elles recevaient une
+consigne tous les deux tours, avec relance, contre la radio silencieuse. Désormais toute course (Sport officielle ou
+personnalisée) suit les règles de course ; l'entraînement Sport, la qualification et le chrono restent en mode coach.
+Test : `DriverDnaTest.aCustomRaceIsCoachedLikeARaceAndPracticeLikePractice`.
