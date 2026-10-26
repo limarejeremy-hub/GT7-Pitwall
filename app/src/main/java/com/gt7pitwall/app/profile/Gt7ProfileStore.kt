@@ -51,8 +51,8 @@ class Gt7ProfileStore(context: Context) {
         require(!newIdentity || stats == null) {
             "Nouvel ID PSN : enregistre d'abord l'identité seule pour ne pas mélanger deux pilotes."
         }
-        require(officialUrl.isBlank() || Gt7PlayerProfile.validOfficialUrl(officialUrl)) {
-            "Lien invalide : colle une URL du site officiel Gran Turismo, ou laisse vide."
+        require(officialUrl.isBlank() || Gt7PlayerProfile.validProfileLink(officialUrl)) {
+            "Lien invalide : utilise gran-turismo.com ou un lien Google share.google / search.app."
         }
         require(stats == null || stats.validate() == null) {
             stats?.validate() ?: "Données invalides"
@@ -67,8 +67,8 @@ class Gt7ProfileStore(context: Context) {
 
     fun saveIdentity(psn: String, nick: String, officialUrl: String): Gt7PlayerProfile {
         val next = read().changeIdentity(psn)
-        require(officialUrl.isBlank() || Gt7PlayerProfile.validOfficialUrl(officialUrl)) {
-            "Utilise uniquement le lien officiel de ton profil Gran Turismo"
+        require(officialUrl.isBlank() || Gt7PlayerProfile.validProfileLink(officialUrl)) {
+            "Utilise gran-turismo.com ou un lien Google share.google / search.app"
         }
         return persist(next.copy(nickname = nick.trim().take(80),
             officialProfileUrl = officialUrl.trim()))
