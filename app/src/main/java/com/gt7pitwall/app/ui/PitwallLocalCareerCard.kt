@@ -64,7 +64,7 @@ fun PitwallLocalCareerCard(stats: PitwallLocalCareer) {
                     "Aucune course locale archivée pour le moment. Démarre la télémétrie depuis Atelier, puis roule dans GT7."
                 stats.verifiedSportRaces==0 ->
                     "Les sessions existent. Impossible de les compter comme courses Sport officielles sans mode confirmé."
-                else -> "Ces chiffres progressent avec tes courses. Les 71 courses de ton profil PSN sont un historique différent."
+                else -> "Ces chiffres reflètent uniquement les sessions observées par Pitwall. L'historique officiel GT7 reste séparé tant qu'il n'est pas disponible depuis une source vérifiée."
             }, color=PitColors.Muted,fontSize=11.sp)
         }
     }
