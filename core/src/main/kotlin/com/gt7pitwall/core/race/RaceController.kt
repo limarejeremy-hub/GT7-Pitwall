@@ -230,6 +230,7 @@ class RaceController(
     private var pitWindowPackets = 0
     private val pitApproachReminder = PitApproachReminder()
     private var driverRequestedPitLap: Int? = null
+    private var sportRuleMismatchWarned = false
     /** Déclaration vocale pendant CE passage physique aux stands, à rapprocher du plein mesuré. */
     private var driverDeclaredDuringPitNumber: Int? = null
     private var tyreLifeAsked = false
@@ -431,6 +432,7 @@ class RaceController(
                 pitWindowPackets = 0
                 pitApproachReminder.reset()
                 driverRequestedPitLap = null
+                sportRuleMismatchWarned = false
                 aiExchanges.clear()
                 raceMemory.clear()
                 intentions.clear()
@@ -1173,6 +1175,7 @@ class RaceController(
         briefed = false
         pitApproachReminder.reset()
         driverRequestedPitLap = null
+        sportRuleMismatchWarned = false
         lastPositionChangeClockMs = null
         replay = false
         replaySuspect = null
@@ -1569,6 +1572,26 @@ class RaceController(
     private fun replan(): List<EngineerMessage> {
         val snap = tracker.snapshot
         val p = snap.packet ?: return emptyList()
+        // Never optimize stops using the wrong weekly regulations (e.g. Sport A
+        // selected while actual GT7 race has 14 laps, corresponding to Sport C).
+        // Telemetry fuel is still monitored independently and the event can be
+        // reidentified after a complete track lap.
+        val publishedLaps = if (profile.id.sport) edition?.laps?.takeIf { it.known }?.value else null
+        if (publishedLaps != null && p.totalLaps > 0 && p.totalLaps != publishedLaps) {
+            plan = null
+            strategy = null
+            engineer.onPlan(null, p.currentLap)
+            if (sportRuleMismatchWarned) return emptyList()
+            sportRuleMismatchWarned = true
+            val warning = "Règlement Sport incompatible : GT7 annonce " + p.totalLaps +
+                " tours, la course sélectionnée en prévoit " + publishedLaps +
+                ". Je suspends les arrêts planifiés jusqu'à reconnaissance de l'épreuve."
+            journal.record(JournalType.STRATEGY, JournalSource.ENGINE, warning,
+                details = mapOf("tours_gt7" to p.totalLaps.toString(), "tours_programme" to publishedLaps.toString()))
+            return listOf(EngineerMessage(warning, Priority.HIGH, MessageCategory.ALERT,
+                dedupKey = "sport-laps-mismatch:" + sessionId))
+        }
+        sportRuleMismatchWarned = false
         val live = FuelStrategy.compute(snap)
         val rec = memoryRecord
         // Historique : sessions comparables archivées d'abord (avec leur niveau de confiance), sinon l'ancienne mémoire.
