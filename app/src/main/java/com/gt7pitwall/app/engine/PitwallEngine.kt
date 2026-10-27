@@ -99,6 +99,8 @@ data class PitwallUiState(
     val drivingReport: List<String> = emptyList(),
     /** Préparation intégrale au départ, affichée sans multiplier les annonces vocales. */
     val preRaceBrief: List<String> = emptyList(),
+    /** Arrivée franchie (la télémétrie continue mais la course est finie : « Course terminée — 5/5 »). */
+    val raceFinished: Boolean = false,
     /** Épreuve reconnue par la télémétrie pour la session en cours (null : rien à dire). */
     val sessionIdentity: String? = null,
     /** Tours bouclés avec les pneus actuels (d'après les changements déclarés par le pilote). */
@@ -663,6 +665,7 @@ class PitwallEngine(
             drivingReport = race.lastDrivingReport?.lines.orEmpty(),
             preRaceBrief = if (force || snap.packet?.currentLap == 0) race.victoryBriefing() else _state.value.preRaceBrief,
             sessionIdentity = race.sessionIdentityText,
+            raceFinished = race.raceFinished,
             tyreAgeLaps = race.ledger.tyreAge((race.snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)),
             askTyreChange = race.ledger.awaitingTyreChangeAnswer,
             profile = race.profile,

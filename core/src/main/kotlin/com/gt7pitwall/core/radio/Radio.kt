@@ -30,6 +30,9 @@ enum class DriverQuery {
     /** État des obligations du règlement (arrêts, gommes), avec leurs preuves. */
     OBLIGATIONS,
 
+    /** « As-tu enlevé l'arrêt ? » : état du plan d'arrêt, sans rien modifier. */
+    STOP_STATUS,
+
     /** « Quand dois-je changer mes pneus ? » : âge des pneus, durée de vie et changement prévu. */
     TYRE_CHANGE,
 

@@ -127,9 +127,10 @@ class LivePositionTest {
         assertEquals(7, lap1After6, "un 6 de 0,3 s (roue dans roue) n'est pas retenu")
         assertEquals("Tu es P10 sur 12.", atHudP10, "HUD P10 au tour 3")
 
-        // Anti-spam : jamais deux annonces de position à moins de 8 s, malgré la bagarre du dernier tour.
+        // Anti-spam : jamais deux annonces de position à moins de 5 s (27/10 : 8 s faisaient dire les places trop tard),
+        // malgré la bagarre du dernier tour.
         assertTrue(announceTimes.isNotEmpty(), said.toString())
-        assertTrue(announceTimes.zipWithNext().all { (a, b) -> b - a >= 7.99 }, announceTimes.toString())
+        assertTrue(announceTimes.zipWithNext().all { (a, b) -> b - a >= 4.99 }, announceTimes.toString())
 
         // Arrivée : P8 sur 11 (une voiture s'est déconnectée au tour 5), figée malgré la fin de session.
         val m = r.c.engineer.measured
@@ -155,8 +156,10 @@ class LivePositionTest {
         )
         val said = texts(replay(segs))
         val announces = said.filter { Regex("^P\\d+\\.$").containsMatchIn(it) }
-        // Deux dépassements à 5 s d'intervalle : regroupés, seule la nouvelle place est dite.
-        assertEquals(listOf("P7."), announces, said.toString())
+        // Course du 27/10 : le pilote veut entendre chaque nouvelle place vite (« P9. », « P8. », « P7. »). Trois
+        // dépassements espacés de 5 s sont dits chacun, toujours avec la place stable ; ceux à moins de 3,5 s restent
+        // regroupés (voir aDoubleOvertakeOrAPileUpIsAnnouncedAsTheNewPlaceOnly).
+        assertEquals(listOf("P9.", "P8.", "P7."), announces, said.toString())
     }
 
     @Test
@@ -340,7 +343,7 @@ class LivePositionTest {
         }
         val quiet = announces(quietRun)
         assertTrue(quiet.size in 2 until loud.size, "${quiet.size} annonces contre ${loud.size}")
-        assertTrue(times.zipWithNext().all { (a, b) -> b.first - a.first >= 30_000 }, times.toString())
+        assertTrue(times.zipWithNext().all { (a, b) -> b.first - a.first >= com.gt7pitwall.core.engineer.RaceEngineer.QUIET_POSITION_ANNOUNCE_MS }, times.toString())
         // Chaque annonce donne la place mesurée au moment où elle est dite.
         quiet.zip(times).forEach { (m, t) -> assertEquals("P${t.second}.", announce.find(m.text)!!.value, m.text) }
     }

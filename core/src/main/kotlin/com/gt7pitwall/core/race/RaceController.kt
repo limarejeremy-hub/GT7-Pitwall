@@ -166,6 +166,9 @@ class RaceController(
     private var sessionStartMs = 0L
     private var sessionFinished = false
 
+    /** L'arrivée de la session en cours a été franchie (affichage « Course terminée »). */
+    val raceFinished: Boolean get() = sessionFinished
+
     /**
      * Rediffusion (replay) d'une course déjà archivée : GT7 renvoie la télémétrie de la course rejouée, tour par tour.
      * Reconnue quand les deux premiers chronos reproduisent à la milliseconde près ceux d'une course archivée avec la même
@@ -532,14 +535,13 @@ class RaceController(
             progress = progress, plannedStop = planned,
             pitVisitOpen = tracker.pitVisitOpen,
         ) ?: return emptyList()
+        // Course du 27/10 : « Dernier secteur. Box à la fin de ce tour. Sans ravitaillement. » était trop long. Le pilote
+        // veut l'ordre seul ; une précision seulement si elle change ce qu'il fait au stand (gomme à monter, pneus).
+        // Le carburant et la réserve réglementaire ont été dits au début du tour.
         val instruction = buildString {
-            append(if (voluntary) "Dernier secteur. Rappel de ton choix : box à la fin de ce tour."
-                else "Dernier secteur. Box à la fin de ce tour.")
+            append("Box à la fin de ce tour.")
             if (stop.tyreToFit != null) append(" Monte les ${stop.tyreToFit.spoken}.")
-            else if (stop.changeTyres) append(" Pneus à changer.")
-            if (stop.noFuelNeeded) append(" Sans ravitaillement.")
-            else if (stop.forFuel) append(" Ravitaillement prévu.")
-            if (!voluntary && (stop.mandatory || stop.tyreToFit != null)) regulationDoubt()?.let { append(" Obligation à confirmer : $it.") }
+            else if (stop.changeTyres) append(" Change les pneus.")
         }
         journal.record(
             JournalType.STRATEGY, JournalSource.ENGINE,
@@ -577,10 +579,11 @@ class RaceController(
             }
             DriverCommand.Yes -> {
                 // Déclaration confirmée par le pilote : appliquée telle quelle.
-                pendingConfirmation?.let { pending ->
+                pendingConfirmation?.takeIf { clock() - pendingConfirmationMs <= CONFIRMATION_WINDOW_MS }?.let { pending ->
                     pendingConfirmation = null
                     return command(pending)
                 }
+                pendingConfirmation = null
                 val suspect = pendingStopTyreSuspect
                 pendingStopTyreSuspect = false
                 val confirmed = ledger.confirmPending()
@@ -661,10 +664,18 @@ class RaceController(
                 out += replanOrWait()
             }
             DriverCommand.CancelStop -> {
-                val removed = ledger.cancelLast()
-                out += answer(listOf(if (removed != null) "Arrêt ${removed.number} retiré du décompte." else "Aucun arrêt à retirer."))
-                out += replan()
+                // « Annule l'arrêt » : l'arrêt enregistré s'il est récent (déclaré ou détecté ce tour-ci ou le
+                // précédent) ; sinon, c'est l'arrêt PRÉVU dont le pilote parle (course du 27/10).
+                val last = ledger.stopList.lastOrNull()
+                if (last != null && last.lap >= lap - 1) {
+                    val removed = ledger.cancelLast()
+                    out += answer(listOf(if (removed != null) "Arrêt ${removed.number} retiré du décompte." else "Aucun arrêt à retirer."))
+                    out += replan()
+                } else {
+                    out += cancelPlannedStop(lap)
+                }
             }
+            DriverCommand.CancelPlannedStop -> out += cancelPlannedStop(lap)
             is DriverCommand.Tyres -> {
                 out += answer(tyres(command, lap))
                 out += replanOrWait()
@@ -682,6 +693,8 @@ class RaceController(
                 )
             } else if (command.query == DriverQuery.OBLIGATIONS) {
                 answer(listOf(obligationsSentence()))
+            } else if (command.query == DriverQuery.STOP_STATUS) {
+                answer(listOf(stopStatusSentence()))
             } else if (command.query == DriverQuery.TYRE_CHANGE) {
                 answer(listOf(tyreChangeSentence()))
             } else if (command.query == DriverQuery.NEXT_TYRE) {
@@ -728,6 +741,12 @@ class RaceController(
 
     /** Commande en attente du « oui » du pilote (déclaration incertaine, ou proposée par Gemini). */
     private var pendingConfirmation: DriverCommand? = null
+        set(value) {
+            field = value
+            pendingConfirmationMs = clock()
+        }
+    /** Heure de la question de confirmation : un « oui » plus tardif ne l'applique plus. */
+    private var pendingConfirmationMs = 0L
 
     /** Intentions et préférences du pilote (pas des faits) : données à l'IA pour discuter la stratégie. */
     private val intentions = ArrayDeque<String>()
@@ -754,8 +773,12 @@ class RaceController(
      * Les boutons de l'écran passent par [command] directement.
      */
     fun voiceCommand(command: DriverCommand, text: String, source: CommandSource): List<EngineerMessage> {
-        // Une autre phrase que « oui » / « non » abandonne la confirmation en attente : rien n'est appliqué.
-        if (command != DriverCommand.Yes && command != DriverCommand.No) pendingConfirmation = null
+        // Une autre phrase que « oui » / « non » abandonne la confirmation en attente : rien n'est appliqué. Sauf une
+        // question sur l'arrêt dont on parle (27/10 : « as-tu enlevé l'arrêt ? » entre la demande et le « oui »).
+        val aboutPendingStop = command is DriverCommand.Ask &&
+            command.query in setOf(DriverQuery.STOP_STATUS, DriverQuery.OBLIGATIONS, DriverQuery.PLAN) &&
+            (pendingConfirmation == DriverCommand.CancelPlannedStop || pendingConfirmation == DriverCommand.CancelStop)
+        if (command != DriverCommand.Yes && command != DriverCommand.No && !aboutPendingStop) pendingConfirmation = null
         if (command !is DriverCommand.Tyres && command != DriverCommand.Yes) pendingTyreFamily = null
         val v = vet(command, text, source)
         journal.record(
@@ -914,6 +937,7 @@ class RaceController(
         for (q in DriverQuery.entries) {
             val text = when (q) {
                 DriverQuery.OBLIGATIONS -> obligationsSentence()
+                DriverQuery.STOP_STATUS -> stopStatusSentence()
                 DriverQuery.TYRE_CHANGE -> tyreChangeSentence()
                 DriverQuery.NEXT_TYRE -> nextTyreSentence()
                 else -> engineer.answer(q, snap, fuel).text
@@ -3223,6 +3247,7 @@ class RaceController(
             DriverQuery.PLAN to "Stratégie",
             DriverQuery.DETAILS to "Détail du dernier tour",
             DriverQuery.OBLIGATIONS to "Obligations du règlement",
+            DriverQuery.STOP_STATUS to "Arrêt prévu",
             DriverQuery.TYRE_CHANGE to "Changement de pneus",
             DriverQuery.NEXT_TYRE to "Prochaine gomme",
         )
@@ -3238,6 +3263,9 @@ class RaceController(
 
         /** Délai pour répondre « course », « sport » ou « confort » à la question sur la gomme. */
         const val TYRE_FAMILY_WINDOW_MS = 30_000L
+
+        /** « Tu confirmes … ? » : le « oui » est attendu 45 s au plus. */
+        const val CONFIRMATION_WINDOW_MS = 45_000L
 
         /** « B ou C ? » : la réponse est attendue une minute (grille, premier tour). */
         const val SERIES_QUESTION_WINDOW_MS = 60_000L
@@ -3503,6 +3531,115 @@ class RaceController(
     }
 
     /** État des obligations avec leurs preuves. N'affirme jamais « règlement respecté ». */
+    /**
+     * Le pilote renonce à l'arrêt PRÉVU (« oublie l'arrêt, tu n'en as pas besoin »). Selon la raison de cet arrêt :
+     * - arrêt obligatoire d'un règlement non vérifié (course personnalisée mémorisée, fiche d'une seule source, épreuve
+     *   reconnue automatiquement) : l'obligation est retirée, notée « saisie par le pilote », et le plan recalculé ;
+     * - obligation vérifiée (deux sources concordantes, règlement confirmé ou saisi par le pilote) en course Sport :
+     *   jamais retirée en silence ; l'ingénieur l'explique et garde l'arrêt ;
+     * - arrêt pour le carburant : impossible à supprimer sans risque de panne ; l'ingénieur donne la cible de
+     *   consommation qui permettrait de finir sans ;
+     * - changement de pneus pour la durée de vie donnée : on garde les pneus jusqu'à l'arrivée.
+     * Toujours une confirmation claire de ce qui a réellement changé.
+     */
+    private fun cancelPlannedStop(lap: Int): List<EngineerMessage> {
+        val next = plan?.nextStop(lap.coerceAtLeast(1))
+        if (next == null) {
+            val last = ledger.stopList.lastOrNull()
+            return answer(listOf(
+                if (last != null) "Aucun arrêt n'est prévu. Le dernier arrêt enregistré est au tour ${last.lap} : dis « retire le dernier arrêt » s'il est faux."
+                else "Aucun arrêt n'est prévu : tu restes en piste jusqu'à l'arrivée.${obligationCaveat()}",
+            ))
+        }
+        val changes = mutableListOf<String>()
+        var newRules = rules
+        val fields = mutableSetOf<RuleField>()
+        fun verified(f: RuleField): Boolean {
+            val st = profile.ruleStatus[f]
+            return profile.id.sport && (profile.confirmed || st == com.gt7pitwall.core.sport.FieldStatus.CONFIRMED || st == com.gt7pitwall.core.sport.FieldStatus.PILOT)
+        }
+        if (next.mandatory || next.mandatoryOnly) {
+            if (verified(RuleField.MANDATORY_STOPS)) {
+                journal.record(JournalType.DECISION, JournalSource.ENGINE, "Annulation d'arrêt refusée : obligation vérifiée",
+                    decision = "arrêt obligatoire conservé", details = mapOf("epreuve" to profile.id.label))
+                return answer(listOf(
+                    "Je garde l'arrêt fin du tour ${next.endOfLap} : il est obligatoire dans le règlement vérifié de ${profile.id.label}. " +
+                        "Si le règlement a changé, dis « pas d'arrêt obligatoire ».",
+                ))
+            }
+            newRules = newRules.copy(mandatoryStops = 0)
+            fields += RuleField.MANDATORY_STOPS
+            changes += "plus d'arrêt obligatoire"
+        }
+        if (next.tyreToFit != null && rules.requiredTyres.isNotEmpty()) {
+            if (verified(RuleField.REQUIRED_TYRES)) {
+                return answer(listOf(
+                    "Je garde l'arrêt fin du tour ${next.endOfLap} : les ${next.tyreToFit.spoken} sont imposés par le règlement vérifié de ${profile.id.label}.",
+                ))
+            }
+            newRules = newRules.copy(requiredTyres = emptySet())
+            fields += RuleField.REQUIRED_TYRES
+            changes += "plus de gomme imposée"
+        }
+        if (next.changeTyres && next.tyreToFit == null && rules.tyreStintLaps != null) {
+            newRules = newRules.copy(tyreStintLaps = null)
+            changes += "on garde ces pneus jusqu'à l'arrivée"
+        }
+        if (next.forFuel) {
+            // Le carburant ne se négocie pas : sans arrêt, panne sèche. Cible de consommation pour tenter sans.
+            val f = fuel
+            val total = plan?.totalLaps ?: snapshot.packet?.totalLaps?.takeIf { it > 0 }
+            val remaining = total?.let { (it - lap + 1).coerceAtLeast(1) }
+            val target = f?.fuelLevel?.let { lvl -> remaining?.let { lvl / it } }
+            val cap = snapshot.packet?.fuelCapacity
+            journal.record(JournalType.DECISION, JournalSource.ENGINE, "Annulation d'arrêt refusée : carburant insuffisant",
+                decision = "arrêt carburant conservé")
+            return answer(listOf(
+                "Je ne peux pas l'enlever : sans arrêt, le carburant ne suffit pas jusqu'à l'arrivée." +
+                    (target?.let { " Pour finir sans t'arrêter, il faudrait consommer au plus ${FuelUnits.amount(it, cap)} par tour." } ?: ""),
+            ))
+        }
+        if (changes.isEmpty()) {
+            return answer(listOf("Je n'ai pas pu retirer l'arrêt fin du tour ${next.endOfLap} : je ne sais pas ce qui l'impose."))
+        }
+        // Le pilote corrige lui-même le règlement local : provenance « saisi par le pilote », jamais « confirmé par la PS5 ».
+        rules = if (fields.isNotEmpty()) profiles.declare(newRules, fields).rules else newRules.also { applyRules(it) }
+        storage?.saveRules(rules)
+        storage?.saveProfiles(profiles)
+        pitApproachReminder.reset()
+        pacer.drop { it.topic == "pit-approach" || it.text.startsWith("Box") || it.text.startsWith("Stand au prochain tour") }
+        journal.record(
+            JournalType.DECISION, JournalSource.TRANSCRIPT, "Arrêt prévu annulé par le pilote (fin du tour ${next.endOfLap})",
+            decision = changes.joinToString(", "), details = mapOf("provenance" to "déclaré par le pilote", "epreuve" to profile.id.label),
+        )
+        val replanned = replan()
+        val still = plan?.nextStop(lap.coerceAtLeast(1))
+        val confirmation = if (still == null) {
+            "C'est noté : ${changes.joinToString(", ")}. Plus d'arrêt prévu, tu restes en piste jusqu'à l'arrivée."
+        } else {
+            "C'est noté : ${changes.joinToString(", ")}. Il reste un arrêt fin du tour ${still.endOfLap}" +
+                (if (still.forFuel) ", pour le carburant." else ".")
+        }
+        return answer(listOf(confirmation)) + replanned.filter { it.category != MessageCategory.ANSWER }
+    }
+
+    /** « As-tu enlevé l'arrêt ? » : état du plan, sans rien modifier. */
+    fun stopStatusSentence(): String {
+        val lap = (snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)
+        val next = plan?.nextStop(lap)
+        return if (next == null) {
+            "Oui : aucun arrêt n'est prévu, tu restes en piste jusqu'à l'arrivée.${obligationCaveat()}"
+        } else {
+            val why = listOfNotNull(
+                "obligatoire".takeIf { next.mandatory || next.mandatoryOnly },
+                "pour le carburant".takeIf { next.forFuel },
+                next.tyreToFit?.let { "pour monter les ${it.spoken}" },
+                "pour les pneus".takeIf { next.changeTyres && next.tyreToFit == null },
+            )
+            "Non : un arrêt est encore prévu fin du tour ${next.endOfLap}" + (if (why.isEmpty()) "." else ", ${why.joinToString(", ")}.")
+        }
+    }
+
     fun obligationsSentence(): String {
         if (rules.mandatoryStops == 0 && rules.requiredTyres.isEmpty()) {
             return "Aucune obligation dans le règlement que tu m'as donné."

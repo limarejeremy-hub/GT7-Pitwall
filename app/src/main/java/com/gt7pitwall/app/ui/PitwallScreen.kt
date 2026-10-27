@@ -647,12 +647,7 @@ private fun LapCard(state: PitwallUiState) {
             Text("En attente de télémétrie", color = PitColors.Muted)
             return@PitCard
         }
-        val lapText = when {
-            p.currentLap <= 0 -> "Avant départ"
-            p.totalLaps > 0 && p.currentLap > p.totalLaps -> "Terminée"
-            p.totalLaps > 0 -> "${p.currentLap} / ${p.totalLaps}"
-            else -> "${p.currentLap}"
-        }
+        val lapText = com.gt7pitwall.core.session.LapDisplay.of(p.currentLap, p.totalLaps, state.raceFinished).line
         // Type de session toujours visible : un entraînement n'est jamais pris pour une Course Sport officielle.
         Text(
             state.profile.id.label,
