@@ -45,6 +45,9 @@ class TractionMonitor {
         var tcs = 0
         var accel = 0.0
         var temp = 0.0
+        /** Couple moteur normalisé (0x154, expérimental) : somme et nombre de paquets qui le portent. */
+        var torque = 0.0
+        var torqueN = 0
         fun add(s: LapSample) {
             val sl = s.slips!!
             n++
@@ -53,10 +56,14 @@ class TractionMonitor {
             if (s.tcs) tcs++
             accel += s.longAccel!!
             temp += s.tyreTemps?.toList()?.average() ?: 0.0
+            s.engineTorque?.let { torque += it; torqueN++ }
         }
         fun merge(o: Agg) {
             n += o.n; front += o.front; rear += o.rear; tcs += o.tcs; accel += o.accel; temp += o.temp
+            torque += o.torque; torqueN += o.torqueN
         }
+        /** Couple moyen, seulement si tous les paquets le portent. */
+        val meanTorque: Double? get() = if (torqueN == n && n > 0) torque / n else null
         val frontSlip get() = front / n
         val rearSlip get() = rear / n
         val tcsShare get() = tcs.toDouble() / n
@@ -88,7 +95,19 @@ class TractionMonitor {
         val refLaps: List<Int> = emptyList(),
         val recentLaps: List<Int> = emptyList(),
         val surfaceKnown: Boolean = false,
+        /**
+         * Dernier niveau **valide** quand la comparaison est suspendue (pluie, pneus froids, données manquantes) :
+         * historique seulement, jamais présenté comme confirmé maintenant (revue PR #37, P0-A).
+         */
+        val previous: Level? = null,
+        /** Fenêtres où la baisse d'accélération s'explique par un couple délivré plus faible sans TCS (0x154, expérimental). */
+        val torqueExplained: Int = 0,
     ) {
+        /**
+         * La stratégie ne tient compte que d'une perte répétée, constatée sur la comparaison en cours, avec des surfaces de
+         * roues connues (format C) : sinon un vibreur indétectable pourrait passer pour une usure (P0-A, P0-C).
+         */
+        val strategyEligible: Boolean get() = level == Level.DEGRADATION_REPEATED && surfaceKnown
         fun text(label: (Int) -> String = { "V$it" }): String = buildString {
             append(level.label.replaceFirstChar { it.uppercase() })
             if (flaggedCorners.isNotEmpty()) append(" en sortie de ${flaggedCorners.joinToString(", ") { label(it) }}")
@@ -101,7 +120,8 @@ class TractionMonitor {
                 append(".")
             }
             if (reasons.isNotEmpty()) append(" ${reasons.joinToString(" ; ").replaceFirstChar { it.uppercase() }}.")
-            if (!surfaceKnown && level != Level.INSUFFICIENT) append(" Surface des roues inconnue (format sans surface) : vibreurs non exclus.")
+            if (!surfaceKnown && level != Level.INSUFFICIENT) append(" Surface des roues inconnue (format sans surface) : vibreurs non exclus, constat jamais confirmé.")
+            previous?.let { append(" Dernier constat valide : ${it.label}, plus confirmé tant que la comparaison est suspendue.") }
         }
 
         private fun signed(v: Double, decimals: Int) =
@@ -112,6 +132,10 @@ class TractionMonitor {
 
     /** Augmente à chaque tour ajouté : l'appelant sait quand réévaluer. */
     var version = 0
+        private set
+
+    /** Augmente à chaque évaluation : la radio et la stratégie lisent le dernier constat sans le recalculer. */
+    var evaluations = 0
         private set
     private var stintStart: Int? = null
     private var level = Level.INSUFFICIENT
@@ -221,7 +245,15 @@ class TractionMonitor {
                 }
             }
         }
-        last = if (r.level == Level.INSUFFICIENT && level != Level.DEGRADATION_REPEATED) r else r.copy(level = level)
+        // Sans surface (formats A, B, ~), une perte n'est jamais « répétée » : vibreurs indétectables (P0-C).
+        if (r.level != Level.INSUFFICIENT && !r.surfaceKnown && level == Level.DEGRADATION_REPEATED) level = Level.DEGRADATION_SUSPECTED
+        // Comparaison suspendue : le niveau actif est « insuffisant » ; l'ancien niveau n'est qu'un historique (P0-A).
+        last = if (r.level == Level.INSUFFICIENT) {
+            r.copy(previous = level.takeIf { it >= Level.DEGRADATION_SUSPECTED })
+        } else {
+            r.copy(level = level)
+        }
+        evaluations++
         return last
     }
 
@@ -255,7 +287,7 @@ class TractionMonitor {
         // Pneus nettement plus chauds : la perte peut venir de la surchauffe autant que de l'usure (dit, pas exclu).
         if (tRef > 0 && tRecent > tRef + HOT_RISE_C) reasons += "pneus ${(tRecent - tRef).roundToInt()} °C plus chauds qu'en début de relais : surchauffe possible"
 
-        data class Cmp(val corner: Int, val loss: Boolean, val dSlip: Double, val dAcc: Double, val dTcs: Double)
+        data class Cmp(val corner: Int, val loss: Boolean, val dSlip: Double, val dAcc: Double, val dTcs: Double, val torqueExplained: Boolean = false)
         val perLap = recent.map { lp ->
             lp.windows.mapNotNull { (k, a) ->
                 val r = refAgg[k] ?: return@mapNotNull null
@@ -263,7 +295,13 @@ class TractionMonitor {
                 val dSlip = driven(a) - driven(r)
                 val dAcc = a.meanAccel - r.meanAccel
                 val dTcs = a.tcsShare - r.tcsShare
-                Cmp(k.corner, dAcc <= -ACCEL_DROP && (dSlip >= SLIP_RISE || dTcs >= TCS_RISE), dSlip, dAcc, dTcs)
+                // 0x154 (expérimental) ne sert qu'à écarter : moins de couple délivré sans TCS ni patinage en hausse, la
+                // baisse d'accélération vient du moteur ou de la commande, pas des pneus. Jamais pour confirmer une perte.
+                val ta = a.meanTorque
+                val tr = r.meanTorque
+                val torqueDrop = ta != null && tr != null && tr > TORQUE_MIN && (ta - tr) / tr <= -TORQUE_DROP
+                val explained = torqueDrop && dTcs < TCS_RISE && dSlip < SLIP_RISE
+                Cmp(k.corner, !explained && dAcc <= -ACCEL_DROP && (dSlip >= SLIP_RISE || dTcs >= TCS_RISE), dSlip, dAcc, dTcs, explained)
             }
         }
         // Virage retenu s'il montre la perte sur chacun des deux derniers tours (une sortie ratée ne suffit pas).
@@ -276,13 +314,15 @@ class TractionMonitor {
         val flags = perLap.map { flagged(it) }.reduce { a, b -> a intersect b }.intersect(compared).sorted()
         val all = perLap.flatten().filter { it.corner in compared }
         val level = if (flags.size >= MIN_CORNERS && flags.size * 3 >= compared.size) Level.DEGRADATION_SUSPECTED else Level.STABLE
-        if (level == Level.STABLE && all.count { it.dAcc <= -ACCEL_DROP } * 2 > all.size) {
+        val torqueExplained = all.count { it.torqueExplained }
+        if (torqueExplained > 0) reasons += "$torqueExplained fenêtres où le couple délivré (0x154, expérimental) baisse sans TCS : moteur ou commande, pas les pneus"
+        if (level == Level.STABLE && torqueExplained == 0 && all.count { it.dAcc <= -ACCEL_DROP } * 2 > all.size) {
             reasons += "accélération plus faible sans patinage ni TCS en hausse : pas une perte de motricité (aspiration, trajectoire, moteur ?)"
         }
         return Report(
             level, reasons, compared.size, flags, axle,
             all.map { it.dSlip }.average(), all.map { it.dAcc }.average(), all.map { it.dTcs }.average(),
-            ref.map { it.lap }, recent.map { it.lap }, surfaceKnown,
+            ref.map { it.lap }, recent.map { it.lap }, surfaceKnown, torqueExplained = torqueExplained,
         )
     }
 
@@ -316,5 +356,8 @@ class TractionMonitor {
         const val AXLE_MARGIN = 0.01
         const val COLD_DROP_C = 10.0
         const val HOT_RISE_C = 15.0
+        /** Baisse relative du couple délivré (0x154) qui explique une moindre accélération sans les pneus. */
+        const val TORQUE_DROP = 0.15
+        const val TORQUE_MIN = 0.05
     }
 }

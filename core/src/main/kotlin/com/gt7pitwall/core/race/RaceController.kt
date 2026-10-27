@@ -1350,6 +1350,9 @@ class RaceController(
         sessionStartMs = clock()
         sessionId = "$sessionStartMs-${snapshot.packet?.carCode ?: 0}"
         driverCoach.start(sessionId!!)
+        driverCoach.tractionContext = {
+            tyreStintContext().let { com.gt7pitwall.core.driver.DriverCoach.TractionContext(it.startLap, it.excludedLaps, it.raining) }
+        }
         tractionVersion = 0
         tractionLevel = com.gt7pitwall.core.tyres.TractionMonitor.Level.INSUFFICIENT
         sessionFinished = false
@@ -2048,8 +2051,8 @@ class RaceController(
             if (model.quarantined.isNotEmpty()) add("${model.quarantined.size} course(s) au règlement contredit par GT7 : rythme et consommation seulement (${model.quarantined.first().substringAfter(" : ")})")
             if (model.relatedUsed > 0) add("dont ${model.relatedUsed} entraînement(s) ou session(s) au type non précisé : BoP et réglages non vérifiés, confiance limitée")
         }
-        val degrading = engineer.grip.degrading || (stint != null && stint.first > 0) ||
-            tractionLevel == com.gt7pitwall.core.tyres.TractionMonitor.Level.DEGRADATION_REPEATED
+        // Motricité : seulement une perte répétée, active et à surfaces connues (P0-A, P0-C).
+        val degrading = engineer.grip.degrading || (stint != null && stint.first > 0) || driverCoach.traction.last.strategyEligible
         return StrategyOptions.compare(input, pace, basis, unverifiedRuleLabels(), TyreInputs(degrading = degrading))
     }
 
@@ -2787,9 +2790,12 @@ class RaceController(
     fun tyreOrDriving(): com.gt7pitwall.core.tyres.TyreOrDriving.Report = runCatching {
         val ctx = tyreStintContext()
         val labels = cornerLabels()
-        com.gt7pitwall.core.tyres.TyreOrDriving.analyze(
-            driverCoach.passes.filter { it.lap !in ctx.excludedLaps }, ctx.startLap,
-        ) { labels[it]?.text ?: "V$it" }
+        com.gt7pitwall.core.tyres.TyreOrDriving.crossCheck(
+            com.gt7pitwall.core.tyres.TyreOrDriving.analyze(
+                driverCoach.passes.filter { it.lap !in ctx.excludedLaps }, ctx.startLap,
+            ) { labels[it]?.text ?: "V$it" },
+            driverCoach.traction.last,
+        )
     }.getOrElse { diagnostic("pneus ou pilotage", it); com.gt7pitwall.core.tyres.TyreOrDriving.Report(com.gt7pitwall.core.tyres.TyreOrDriving.Verdict.UNKNOWN) }
 
     private var tractionVersion = 0
@@ -2808,10 +2814,11 @@ class RaceController(
      */
     private fun tractionCheck(): List<EngineerMessage> {
         val m = driverCoach.traction
-        if (m.version == tractionVersion) return emptyList()
-        tractionVersion = m.version
+        // Évaluée par le coach au moment de l'analyse du tour (avant son conseil) : ici, on lit seulement.
+        if (m.evaluations == tractionVersion) return emptyList()
+        tractionVersion = m.evaluations
         val st = tyreStintContext()
-        val r = m.evaluate(st.startLap, st.excludedLaps, st.raining)
+        val r = m.last
         val before = tractionLevel
         tractionLevel = r.level
         if (r.level == before) return emptyList()
@@ -2823,20 +2830,22 @@ class RaceController(
                 "virages" to r.flaggedCorners.joinToString("/"),
                 "tours_reference" to r.refLaps.joinToString("/"),
                 "tours_recents" to r.recentLaps.joinToString("/"),
-                lossMs?.let { "perte_ms_par_tour" to it.toString() },
+                // Temps complet des virages concernés (freinage et corde compris) : pas une perte due à la seule motricité.
+                lossMs?.let { "ecart_virages_concernes_ms" to it.toString() },
+                r.previous?.let { "dernier_constat_valide" to it.name.lowercase() },
                 "relais_certain" to if (st.certain) "oui" else "non",
                 "surface_connue" to if (r.surfaceKnown) "oui" else "non",
             ).toMap(),
         )
         // Relais incertain (arrêt sans réponse sur les pneus) : consigné, pas dit.
         if (!st.certain) return emptyList()
+        // Pas de dixièmes à la radio : le temps des virages concernés n'est pas la seule perte de motricité (P1-D).
         val text = when {
             r.level == TractionLevel.DEGRADATION_SUSPECTED && before < TractionLevel.DEGRADATION_SUSPECTED ->
-                "Les pneus semblent perdre de la motricité en sortie de virage. Je surveille."
-            r.level == TractionLevel.DEGRADATION_REPEATED ->
-                "Motricité en baisse confirmée sur ${r.flaggedCorners.size} virages" +
-                    (lossMs?.takeIf { it >= 100 }?.let { ", environ ${com.gt7pitwall.core.driver.CornerCoach.tenths(it)} par tour" } ?: "") +
-                    ". J'en tiens compte pour la stratégie."
+                if (r.surfaceKnown) "Les pneus semblent perdre de la motricité en sortie de virage. Je surveille."
+                else "Possible perte de motricité en sortie de virage, à confirmer. Je surveille."
+            r.level == TractionLevel.DEGRADATION_REPEATED && r.strategyEligible ->
+                "Motricité en baisse confirmée sur ${r.flaggedCorners.size} virages. J'en tiens compte pour la stratégie."
             else -> null
         } ?: return emptyList()
         return listOf(

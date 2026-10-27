@@ -134,6 +134,15 @@ class DriverCoach(
 
     /** Motricité en sortie de virage, à commande comparable (issue #35) : alimentée par les tours propres mesurés. */
     val traction = com.gt7pitwall.core.tyres.TractionMonitor()
+
+    /** Relais en cours (premier tour, tours écartés, pluie déclarée), fourni par la course. */
+    data class TractionContext(val stintStartLap: Int, val excludedLaps: Set<Int>, val raining: Boolean)
+
+    /**
+     * Fourni par la course. La motricité est évaluée ici, **avant** le conseil du tour : ingestion → calcul → arbitrage
+     * → radio, jamais un conseil fondé sur le constat du tour précédent (revue PR #37, P0-B).
+     */
+    var tractionContext: () -> TractionContext? = { null }
     private val finished = HashMap<Int, List<LapSample>>()
     private var lastLap = -1
     private var pitThisLap = false
@@ -236,12 +245,17 @@ class DriverCoach(
         sessionPasses += passes
         // Sorties de virage (de la vitesse minimale à la fin de la zone) pour la motricité ; sorties de piste écartées.
         runCatching {
-            val placed = TrackProjection.project(map, samples).filterNotNull()
+            // Comme les passages : la sortie du dernier virage se prolonge au-delà de la ligne (début du tour suivant).
+            val lastTick = samples.lastOrNull()?.tick ?: 0
+            val next = TrackProjection.project(map, continuation.map { it.copy(tick = it.tick + lastTick + 1) })
+                .map { it?.copy(m = it.m + map.lengthM) }
+            val placed = (TrackProjection.project(map, samples) + next).filterNotNull()
             val exits = passes.filter { it.offTrack != true }.mapNotNull { pass ->
                 val c = map.corners.firstOrNull { it.number == pass.corner } ?: return@mapNotNull null
                 pass.corner to placed.filter { it.m >= pass.minAtM && it.m <= c.zoneEndM && it.s.offTrack != true }.map { it.s }
             }.toMap()
             traction.addLap(lap.lapNumber, exits)
+            tractionContext()?.let { tc -> traction.evaluate(tc.stintStartLap, tc.excludedLaps, tc.raining) }
         }
         return advise(lap.lapNumber, ctx, prof)
     }

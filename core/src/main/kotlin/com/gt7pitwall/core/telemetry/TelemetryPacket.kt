@@ -60,6 +60,9 @@ data class TyreSurfaces(val fl: Surface, val fr: Surface, val rl: Surface, val r
     }
 }
 
+/** Plan de la route sous la voiture (expérimental) : normale (nx, ny, nz) et distance de la voiture à ce plan. */
+data class RoadPlane(val nx: Float, val ny: Float, val nz: Float, val distance: Float)
+
 /**
  * Contenu d'un paquet de télémétrie GT7 (formats 'A', 'B', '~' et 'C').
  * Chaque champ correspond strictement à une valeur transmise par le jeu : rien n'est inventé.
@@ -156,6 +159,29 @@ data class TelemetryPacket(
     val carType: Int? = null,
     /** Récupération d'énergie (format ~ ; voitures électriques/hybrides). */
     val energyRecovery: Float? = null,
+    /**
+     * **Expérimental** (issue #37, revue P1-E) — 0x154, dernier flottant du format ~ (et donc de C). Nommé
+     * « UNKNOWNFLOAT11 » par gt7-udp et « Unk7 » par PDTools ; décodé par la communauté (gt7-datalogger #150, PR #158)
+     * comme **couple ou charge moteur délivré, normalisé** : corrélation +0,87 à +0,90 avec l'accélérateur, +0,92 avec le
+     * turbo, négatif en frein moteur, exactement 0 embrayage débrayé ou au point mort, non borné à ±1 (Taycan
+     * −2,7 à +9,9). Notre seul relevé (21/10, Gr.3) : −0,71 à 1,66. **Ni unité, ni Nm, ni puissance à la roue** ; à
+     * valider sur PS5 avant tout usage décisionnel. Bruit inférieur à 1e-5 ramené à 0 ; valeur non finie : null.
+     */
+    val engineTorqueNorm: Float? = null,
+    /**
+     * **Expérimental** — 0x140..0x14C (format ~) : « torqueVectors » de gt7-udp, couple par roue des voitures à vectorisation
+     * (positif = motricité, négatif = freinage ou récupération). Toujours 0 sur nos voitures thermiques (21/10).
+     */
+    val wheelTorque: Wheels? = null,
+    /** **Expérimental** — 0x13F (format ~) : 1 quand la récupération d'énergie est transmise (gt7-datalogger #150). */
+    val energyRecoveryFlag: Int? = null,
+    /**
+     * **Expérimental** — 0x94..0x9C : normale du plan de la route sous la voiture (« roadPlane », inclinaison et
+     * dévers) ; 0xA0 : distance au-dessus ou au-dessous de ce plan. Tous formats. Axes et signes non vérifiés en jeu.
+     */
+    val roadPlane: RoadPlane? = null,
+    /** **Expérimental** — 0x12C (formats B, ~, C) : vitesse de rotation du volant (rad/s) selon gt7-udp ; −31 à 101 le 21/10. */
+    val steeringRateRadS: Float? = null,
     /** Surface sous chaque pneu (format C uniquement). */
     val surfaces: TyreSurfaces? = null,
     /**
@@ -309,6 +335,12 @@ object TelemetryParser {
             brakeFiltered = if (full) b.get(0x13D).toInt() and 0xFF else null,
             carType = if (full) b.get(0x13E).toInt() and 0xFF else null,
             energyRecovery = if (full) b.getFloat(0x150) else null,
+            engineTorqueNorm = if (full) finite(b.getFloat(0x154))?.let { if (kotlin.math.abs(it) < TORQUE_NOISE) 0f else it } else null,
+            wheelTorque = if (full) wheels(b, 0x140).takeIf { w -> w.toList().all { it.isFinite() } } else null,
+            energyRecoveryFlag = if (full) b.get(0x13F).toInt() and 0xFF else null,
+            roadPlane = RoadPlane(b.getFloat(0x94), b.getFloat(0x98), b.getFloat(0x9C), b.getFloat(0xA0))
+                .takeIf { r -> listOf(r.nx, r.ny, r.nz, r.distance).all { it.isFinite() } && (r.nx != 0f || r.ny != 0f || r.nz != 0f) },
+            steeringRateRadS = if (ext) finite(b.getFloat(0x12C)) else null,
             surfaces = if (c) TyreSurfaces.parse(plain.copyOfRange(0x158, 0x15C)) else null,
             currentLapTimeMs = if (c) b.getInt(0x15C) else null,
             frontWheelAngleLeftRad = if (c) b.getFloat(0x160) else null,
@@ -317,6 +349,12 @@ object TelemetryParser {
             carCategory = if (c) category(plain, 0x16C) else null,
         )
     }
+
+    /** Bruit des replays sur 0x154 (gt7-datalogger #150). */
+    const val TORQUE_NOISE = 1e-5f
+
+    /** Un flottant non fini (NaN, infini) existe dans certains paquets GT7 (jegr78/gt-racing-broadcast #717) : null. */
+    private fun finite(f: Float): Float? = f.takeIf { it.isFinite() }
 
     /** Texte ASCII terminé par un octet nul ; null s'il est vide ou contient un caractère non imprimable. */
     private fun category(plain: ByteArray, offset: Int): String? {

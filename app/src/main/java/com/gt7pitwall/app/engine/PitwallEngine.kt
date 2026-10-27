@@ -269,6 +269,9 @@ class PitwallEngine(
      * stratégie ni annoncé à la radio.
      */
     val positionProbe = PositionProbe()
+
+    /** Validation des champs expérimentaux (0x154 couple moteur ?, 0x140, 0x94) : observe seulement. */
+    val torqueProbe = com.gt7pitwall.core.telemetry.TorqueProbe()
     private val _probe = MutableStateFlow(positionProbe.summary())
     val probe: StateFlow<PositionProbe.Summary> = _probe.asStateFlow()
     private var lastProbeMs = 0L
@@ -582,6 +585,7 @@ class PitwallEngine(
         if (p.carCode > 0) lastCarPacketAtMs = now
         runCatching {
             positionProbe.onPacket(p, now)
+            torqueProbe.onPacket(p)
             if (now - lastProbeMs >= PROBE_REFRESH_MS) {
                 lastProbeMs = now
                 refreshProbe()

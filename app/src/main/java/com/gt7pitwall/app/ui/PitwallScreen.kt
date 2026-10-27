@@ -214,6 +214,7 @@ fun PitwallScreen(
         )
         if (devTools) BenchCard(bench)
         if (devTools) PositionProbeCard(engine)
+        ExperimentalFieldsCard(engine)
         if (devTools) GapHunterCard(engine)
         DiscordCard(
             discord = discord,
@@ -1366,6 +1367,24 @@ private fun CornerReportCard(state: PitwallUiState) {
             Text("Motricité en sortie : ${state.traction}", style = MaterialTheme.typography.bodySmall)
             Text("Même virage, même tranche d'accélérateur, rapport et vitesse ; vibreurs exclus (format C). Mesure de motricité, pas d'usure en %.",
                 style = MaterialTheme.typography.bodySmall, color = PitColors.Muted)
+        }
+    }
+}
+
+/**
+ * Champs GT7 expérimentaux (0x154, 0x140, 0x94) : ce que la PS5 envoie réellement, comparé aux affirmations de la
+ * communauté. Rien n'est utilisé pour décider tant que ce n'est pas validé.
+ */
+@Composable
+private fun ExperimentalFieldsCard(engine: PitwallEngine) {
+    var lines by remember { mutableStateOf(engine.torqueProbe.report()) }
+    PitCard("Champs GT7 expérimentaux") {
+        Text("Couple moteur (0x154) et autres champs non documentés : observés pour validation, jamais utilisés pour décider.",
+            style = MaterialTheme.typography.bodySmall, color = PitColors.Muted)
+        lines.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall) }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { lines = engine.torqueProbe.report() }) { Text("Actualiser") }
+            OutlinedButton(onClick = { engine.torqueProbe.reset(); lines = engine.torqueProbe.report() }) { Text("Remettre à zéro") }
         }
     }
 }
