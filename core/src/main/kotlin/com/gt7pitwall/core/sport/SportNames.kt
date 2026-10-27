@@ -56,6 +56,18 @@ object SportNames {
         return n
     }
 
+    /**
+     * Catégories GT7 citées par une fiche (« Gr.3 », « Group 4 », « N300 »), au format de `cargrp.csv` (« 3 », « 4 »,
+     * « B », « N »). Null si la fiche ne cite aucune catégorie (voiture imposée nommée, texte vide) : pas de preuve.
+     */
+    fun carGroups(text: String?): Set<String>? {
+        val n = normalize(text ?: return null)
+        val out = mutableSetOf<String>()
+        Regex("(?:^| )(?:gr|group|groupe) ?([1-4b])(?: |$)").findAll(n).forEach { out += it.groupValues[1].uppercase() }
+        Regex("(?:^| )n ?(100|200|300|400|500|600|700|800|1000)(?: |$)").findAll(n).forEach { out += "N" }
+        return out.takeIf { it.isNotEmpty() }
+    }
+
     fun sameTrack(a: String, b: String): Boolean = trackKey(a) == trackKey(b)
     fun sameCar(a: String, b: String): Boolean = carKey(a) == carKey(b)
 }

@@ -4,19 +4,40 @@ import com.gt7pitwall.core.race.Series
 import java.time.LocalDate
 
 /**
- * Quelle course Sport de la semaine le pilote est-il en train de courir ? GT7 ne transmet pas l'épreuve (A, B ou C)
- * mais donne le nombre de tours ; le circuit est reconnu après un tour. On ne retient une épreuve que si au moins une
- * preuve la désigne (tours ou circuit identiques à la fiche publiée) et qu'aucune autre ne correspond aussi bien ;
- * une preuve contraire (tours ou circuit différents) l'exclut. Sinon : rien n'est choisi, l'état est dit.
+ * Quelle course Sport de la semaine le pilote est-il en train de courir ? GT7 ne transmet pas l'épreuve (A, B ou C) :
+ * Pitwall compare ce que la PS5 mesure à ce que les fiches publiques annoncent.
+ *
+ * Trois preuves indépendantes :
+ * - le nombre de tours annoncé par GT7 (dès la grille) ;
+ * - la catégorie de la voiture (Gr.3, Gr.4, N…), d'après la base communautaire, si la fiche cite une catégorie ;
+ * - le circuit reconnu par la télémétrie (après un tour).
+ *
+ * Une preuve contraire exclut l'épreuve. Une épreuve n'est retenue que si elle seule reste compatible. Elle est
+ * « reconnue » seulement quand tours ET circuit concordent (et que la voiture ne la contredit pas) ; avec moins, elle
+ * est « probable ». Même reconnue, rien ne prouve qu'il s'agit de la course officielle plutôt que d'un salon aux mêmes
+ * réglages : c'est dit comme tel, jamais affirmé.
  *
  * Course du 26/10 : profil B (6 tours) chargé pour une course GT7 de 14 tours ; avec cette règle, le profil B est exclu.
  */
 object SessionMatcher {
-    sealed interface Result {
-        /** Une seule épreuve correspond ; [evidence] : ce qui la désigne (« 14 tours », « circuit »). */
-        data class Match(val series: Series, val edition: Edition, val evidence: List<String>) : Result
+    enum class Confidence(val label: String) {
+        /** Tours et circuit concordent, la voiture ne contredit pas. */
+        RECOGNIZED("reconnue"),
 
-        /** Plusieurs épreuves correspondent : il faut une preuve de plus (le circuit, après un tour). */
+        /** Une seule épreuve compatible, mais pas encore toutes les preuves. */
+        PROBABLE("probable"),
+    }
+
+    sealed interface Result {
+        /** Une seule épreuve correspond ; [evidence] : ce qui la désigne (« 14 tours », « voiture Gr.3 », « circuit »). */
+        data class Match(
+            val series: Series,
+            val edition: Edition,
+            val evidence: List<String>,
+            val confidence: Confidence = Confidence.PROBABLE,
+        ) : Result
+
+        /** Plusieurs épreuves correspondent : il faut une preuve de plus (le circuit, après un tour) ou le pilote. */
         data class Ambiguous(val candidates: List<Series>) : Result
 
         /** Des preuves existent et aucune épreuve de la semaine ne correspond : course hors programme Sport. */
@@ -28,34 +49,51 @@ object SessionMatcher {
 
     /**
      * [gt7Laps] : tours annoncés par GT7 (null ou 0 si inconnu) ; [trackId] : circuit reconnu par la télémétrie, s'il
-     * l'est ; [today] : date du jour (heure de Paris).
+     * l'est ; [carGroup] : catégorie de la voiture d'après la base (« 3 », « N »…), si elle est connue ; [today] : date
+     * du jour (heure de Paris).
      */
-    fun match(editions: Map<Series, Edition>, gt7Laps: Int?, trackId: Int?, today: LocalDate): Result {
+    fun match(editions: Map<Series, Edition>, gt7Laps: Int?, trackId: Int?, today: LocalDate, carGroup: String? = null): Result {
         val laps = gt7Laps?.takeIf { it > 0 }
         val current = editions.filter { (s, e) -> s != Series.OTHER && e.covers(today) }
-        if (current.isEmpty() || (laps == null && trackId == null)) return Result.Unknown
+        if (current.isEmpty() || (laps == null && trackId == null && carGroup == null)) return Result.Unknown
+        data class Scored(val series: Series, val edition: Edition, val evidence: List<String>, val laps: Boolean, val track: Boolean)
         val scored = current.mapNotNull { (series, ed) ->
             val edLaps = ed.laps.takeIf { it.known }?.value
             val evidence = mutableListOf<String>()
+            var lapsOk = false
+            var trackOk = false
             if (laps != null && edLaps != null) {
                 if (edLaps != laps) return@mapNotNull null
                 evidence += "$laps tours"
+                lapsOk = true
+            }
+            val groups = ed.cars.takeIf { it.known }?.value?.let(SportNames::carGroups)
+            if (carGroup != null && groups != null) {
+                if (carGroup !in groups) return@mapNotNull null
+                evidence += "voiture ${groupLabel(carGroup)}"
             }
             if (trackId != null && ed.trackId != null) {
                 if (ed.trackId != trackId) return@mapNotNull null
                 evidence += "circuit"
+                trackOk = true
             }
-            Triple(series, ed, evidence)
+            Scored(series, ed, evidence, lapsOk, trackOk)
         }
         if (scored.isEmpty()) {
-            val what = listOfNotNull(laps?.let { "$it tours" }, trackId?.let { "ce circuit" }).joinToString(" sur ")
+            val what = listOfNotNull(laps?.let { "$it tours" }, carGroup?.let { "une voiture ${groupLabel(it)}" }, trackId?.let { "ce circuit" })
+                .joinToString(", ")
             return Result.NoMatch("aucune course Sport de la semaine avec $what")
         }
-        if (scored.all { it.third.isEmpty() }) return Result.Unknown
+        if (scored.all { it.evidence.isEmpty() }) return Result.Unknown
         // Une seule épreuve compatible, désignée par au moins une preuve. Une autre épreuve non contredite (circuit
         // publié non reconnu, tours non publiés) reste possible : on ne tranche pas contre elle.
-        val compatible = scored.map { it.first }
-        if (scored.size == 1) return Result.Match(scored[0].first, scored[0].second, scored[0].third)
-        return Result.Ambiguous(compatible)
+        if (scored.size == 1) {
+            val s = scored[0]
+            val confidence = if (s.laps && s.track) Confidence.RECOGNIZED else Confidence.PROBABLE
+            return Result.Match(s.series, s.edition, s.evidence, confidence)
+        }
+        return Result.Ambiguous(scored.map { it.series })
     }
+
+    fun groupLabel(group: String): String = if (group == "N") "de route (N)" else "Gr.$group"
 }

@@ -11,6 +11,10 @@ enum class Series(val label: String) {
     DAILY_B("Course Sport B"),
     DAILY_C("Course Sport C"),
     OTHER("Autre épreuve"),
+    ;
+
+    /** Lettre de la course Sport (« A », « B », « C ») ; espace pour une autre épreuve. */
+    val letter: Char get() = if (this == OTHER) ' ' else name.last()
 }
 
 /** Qualification et course ne se mélangent jamais : rythme, essence et pneus n'y ont pas le même sens. */
@@ -31,9 +35,20 @@ enum class SessionMode(val label: String, val detail: String) {
 
     /** Session archivée avant la séparation des types : officielle ou entraînement, on ne le sait pas. */
     UNVERIFIED("Type non précisé", "Session archivée avant la séparation des types de session"),
+
+    /**
+     * Course A, B ou C reconnue automatiquement par la télémétrie (tours, voiture, circuit). La PS5 ne dit pas si la
+     * course est en ligne ou dans un salon privé qui la reproduit : son règlement de la semaine sert à la stratégie,
+     * mais elle n'est jamais comptée comme course Sport officielle (carrière locale) sans confirmation du pilote.
+     */
+    SPORT_IDENTIFIED(
+        "Sport reconnu",
+        "Course A, B ou C reconnue par la télémétrie ; en ligne ou salon privé : la PS5 ne le dit pas. Touche « Sport officiel » pour la compter dans ta carrière",
+    ),
     ;
 
-    val selectable: Boolean get() = this != UNVERIFIED
+    /** Types que le pilote choisit lui-même ; « Sport reconnu » n'est posé que par la reconnaissance automatique. */
+    val selectable: Boolean get() = this != UNVERIFIED && this != SPORT_IDENTIFIED
 
     companion object {
         fun default(series: Series, kind: SessionKind): SessionMode = when {
@@ -52,6 +67,7 @@ data class ProfileId(val series: Series, val kind: SessionKind, val mode: Sessio
         SessionMode.CUSTOM -> "Course personnalisée"
         SessionMode.TIME_TRIAL -> if (series == Series.OTHER) "Qualification / chrono" else "${series.label}, qualification"
         SessionMode.UNVERIFIED -> "${series.label}, ${kind.label.lowercase()} (type non précisé)"
+        SessionMode.SPORT_IDENTIFIED -> "${series.label} (reconnue automatiquement)"
     }
     val code: String get() = "${series.name}/${kind.name}/${mode.name}"
 
@@ -72,7 +88,7 @@ data class ProfileId(val series: Series, val kind: SessionKind, val mode: Sessio
         fun of(mode: SessionMode, series: Series): ProfileId = when (mode) {
             SessionMode.CUSTOM -> ProfileId(Series.OTHER, SessionKind.RACE, mode)
             SessionMode.TIME_TRIAL -> ProfileId(series, SessionKind.QUALIFYING, mode)
-            SessionMode.SPORT_OFFICIAL, SessionMode.SPORT_PRACTICE, SessionMode.UNVERIFIED ->
+            SessionMode.SPORT_OFFICIAL, SessionMode.SPORT_PRACTICE, SessionMode.UNVERIFIED, SessionMode.SPORT_IDENTIFIED ->
                 ProfileId(if (series == Series.OTHER) Series.DAILY_A else series, SessionKind.RACE, mode)
         }
 
@@ -101,7 +117,7 @@ enum class HistoryRelation {
     ;
 
     companion object {
-        private val SPORT_LIKE = setOf(SessionMode.SPORT_OFFICIAL, SessionMode.SPORT_PRACTICE, SessionMode.UNVERIFIED)
+        private val SPORT_LIKE = setOf(SessionMode.SPORT_OFFICIAL, SessionMode.SPORT_PRACTICE, SessionMode.UNVERIFIED, SessionMode.SPORT_IDENTIFIED)
 
         fun of(target: ProfileId, other: ProfileId): HistoryRelation = when {
             target == other -> SAME
@@ -143,6 +159,7 @@ data class EventProfile(
                 add(RuleField.LAPS)
                 add(RuleField.MANDATORY_STOPS)
                 add(RuleField.FUEL_MULTIPLIER)
+                add(RuleField.TYRE_MULTIPLIER)
                 // Une seule gomme autorisée : l'obligation de gomme est sans objet.
                 if (rules.allowedTyres.size != 1) add(RuleField.REQUIRED_TYRES)
             }

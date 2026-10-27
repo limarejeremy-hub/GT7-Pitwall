@@ -79,6 +79,15 @@ class DatabaseRepository(context: Context, private val database: Gt7Database, pr
                 tmp.writeText(texts.getValue(name))
                 tmp.renameTo(File(dir, name))
             }
+            // Catégories des voitures (Gr.3, N…) : fichier facultatif ; s'il manque ou est illisible, l'ancien reste.
+            runCatching { download(GROUPS) }.getOrNull()
+                ?.takeIf { Gt7Database.parseGroups(it).size >= MIN_GROUPS }
+                ?.let { text ->
+                    fresh.carGroups = Gt7Database.parseGroups(text)
+                    val tmp = File(dir, "$GROUPS.tmp")
+                    tmp.writeText(text)
+                    tmp.renameTo(File(dir, GROUPS))
+                }
             database.replace(fresh)
             val now = System.currentTimeMillis()
             prefs.edit().putLong(KEY_FETCH, now).putLong(KEY_SUCCESS, now).remove(KEY_ERROR).apply()
@@ -124,6 +133,9 @@ class DatabaseRepository(context: Context, private val database: Gt7Database, pr
         const val MAKERS = "maker.csv"
         const val COURSES = "course.csv"
         val FILES = listOf(CARS, MAKERS, COURSES)
+        const val GROUPS = "cargrp.csv"
+        /** En dessous, le fichier de catégories téléchargé est jugé incomplet (507 lignes le 27/10/2026). */
+        const val MIN_GROUPS = 400
         const val REFRESH_MS = 24 * 3_600_000L
         const val RETRY_MS = 3_600_000L
         const val UNKNOWN_RETRY_MS = 3_600_000L
@@ -143,7 +155,11 @@ class DatabaseRepository(context: Context, private val database: Gt7Database, pr
                 fun file(name: String) = File(dir, name).readText()
                 Gt7Database.parseChecked(file(CARS), file(MAKERS), file(COURSES), bundled)
             }.getOrNull()
-            return cached ?: bundled
+            val base = cached ?: bundled
+            base.carGroups = runCatching { Gt7Database.parseGroups(File(dir, GROUPS).readText()) }.getOrNull()
+                ?.takeIf { it.size >= MIN_GROUPS }
+                ?: runCatching { Gt7Database.parseGroups(asset(GROUPS)) }.getOrDefault(emptyMap())
+            return base
         }
     }
 }

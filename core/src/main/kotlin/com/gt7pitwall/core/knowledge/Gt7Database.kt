@@ -57,12 +57,23 @@ class Gt7Database(cars: Map<Int, Car>, courses: List<Course>) {
         courses = o + learnedCourses.filter { key(it.name) !in names }
     }
 
+    /**
+     * Catégorie de chaque voiture (« 1 », « 2 », « 3 », « 4 », « B », « N », « X ») : fichier `cargrp.csv` de la même
+     * base communautaire. Vide si le fichier manque : aucune preuve de catégorie, jamais une catégorie devinée.
+     */
+    @Volatile
+    var carGroups: Map<Int, String> = emptyMap()
+
+    /** Catégorie GT7 de la voiture [code] (« 3 » pour Gr.3, « N » pour les voitures de route), si la base la donne. */
+    fun carGroup(code: Int): String? = carGroups[code]
+
     /** Circuits appris encore utiles (sans fiche officielle du même nom), pour l'enregistrement. */
     val learned: List<Course> get() = courses.filter { it.learned }
 
     /** Nouvelle version de la base communautaire : remplace voitures et circuits officiels, garde les circuits appris. */
     fun replace(fresh: Gt7Database) {
         cars = fresh.cars
+        if (fresh.carGroups.isNotEmpty()) carGroups = fresh.carGroups
         official = fresh.official
         recompute()
     }
@@ -145,6 +156,14 @@ class Gt7Database(cars: Map<Int, Car>, courses: List<Course>) {
         fun key(name: String): String =
             java.text.Normalizer.normalize(name.lowercase(), java.text.Normalizer.Form.NFD).replace(Regex("\\p{Mn}+"), "")
                 .replace(Regex("[^a-z0-9]+"), " ").trim()
+
+        /** `cargrp.csv` (ID,Group) ; lignes illisibles ignorées. */
+        fun parseGroups(csv: String): Map<Int, String> = csv.lineSequence().drop(1).mapNotNull { line ->
+            val parts = line.trim().split(',')
+            val id = parts.getOrNull(0)?.trim()?.toIntOrNull() ?: return@mapNotNull null
+            val g = parts.getOrNull(1)?.trim()?.uppercase()?.takeIf { it.matches(Regex("[1-4BNX]")) } ?: return@mapNotNull null
+            id to g
+        }.toMap()
 
         fun parse(carsCsv: String, makersCsv: String, coursesCsv: String): Gt7Database {
             val makers = rows(makersCsv).associate { it[0].toInt() to it[1] }

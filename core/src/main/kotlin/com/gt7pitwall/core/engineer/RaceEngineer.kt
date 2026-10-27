@@ -574,6 +574,22 @@ class RaceEngineer {
     /** Pourquoi le plan vient de changer (dit avec l'annonce du nouveau plan, puis oublié). */
     var planReason: String? = null
 
+    /**
+     * Pourquoi les obligations appliquées (arrêt obligatoire, gomme imposée) ne sont pas certaines, ou null si elles le
+     * sont (deux sources concordantes, saisies ou confirmées par le pilote). Fourni par le contrôleur de course.
+     */
+    var regulationDoubt: () -> String? = { null }
+
+    /** Arrêt dicté par le règlement (et non par le carburant mesuré ou l'usure). */
+    private fun regulated(s: com.gt7pitwall.core.strategy.PlannedStop) = s.mandatory || s.mandatoryOnly || s.tyreToFit != null
+
+    /** « Obligation à confirmer : … » quand l'arrêt dépend d'un règlement incertain ; vide sinon. */
+    private fun doubt(s: com.gt7pitwall.core.strategy.PlannedStop?): String =
+        s?.takeIf(::regulated)?.let { regulationDoubt() }?.let { " Obligation à confirmer : $it." } ?: ""
+
+    /** Obligations du règlement non confirmées, dites avec un plan sans arrêt (jamais « aucune obligation »). */
+    var obligationCaveat: String? = null
+
     fun onPlan(newPlan: RacePlan?, currentLap: Int = snapshotLap): List<EngineerMessage> {
         plan = newPlan
         if (raceOver || newPlan == null) return emptyList()
@@ -635,6 +651,7 @@ class RaceEngineer {
         }
         stopTyres(next)?.let { append(", ").append(it) }
         append(".")
+        append(doubt(next))
         val others = p.stops.size - 1
         if (others > 0) append(" Puis encore $others arrêt${if (others > 1) "s" else ""}.")
     }
@@ -673,6 +690,7 @@ class RaceEngineer {
         if (p.stops.isEmpty()) {
             append("Stratégie : pas d'arrêt, le carburant suffit")
             append(sourceSentence(p)).append('.')
+            obligationCaveat?.let { append(' ').append(it) }
         } else {
             append("Stratégie : ${p.stops.size} arrêt${if (p.stops.size > 1) "s" else ""}${sourceSentence(p)}. ")
             append(
@@ -694,6 +712,7 @@ class RaceEngineer {
             p.pitLaneDeltaS?.let { append(" Chaque passage par les stands coûte environ ${it.roundToInt()} secondes plus le plein.") }
         }
         if (p.requiredTyres.isNotEmpty()) append(" Gommes imposées : ${p.requiredTyres.joinToString(", ") { it.spoken }}.")
+        if (p.stops.any(::regulated) || p.requiredTyres.isNotEmpty()) regulationDoubt()?.let { append(" Obligation à confirmer : $it.") }
         if (p.startTyreUnknown) append(" Je ne connais pas tes pneus de départ : dis-moi par exemple « je pars en mediums ».")
     }
 
@@ -876,6 +895,7 @@ class RaceEngineer {
                     if (isLastStop && missingTyres.size > 1) {
                         append(" Attention, il te manque encore ${missingTyres.joinToString(" et ") { it.spoken }}.")
                     }
+                    append(doubt(next))
                 }
                 currentLap + 1 -> buildString {
                     append("Stand au prochain tour : box à la fin du tour ${next.endOfLap}. Reste en piste pendant le tour $currentLap, ne rentre pas à la fin de celui-ci.")
@@ -883,6 +903,7 @@ class RaceEngineer {
                     if (isLastStop && missingTyres.isNotEmpty()) {
                         append(" C'est ton dernier arrêt prévu et il te manque les ${missingTyres.joinToString(" et ") { it.spoken }}.")
                     }
+                    append(doubt(next))
                 }
                 else -> null
             }
