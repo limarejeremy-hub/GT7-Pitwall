@@ -1367,9 +1367,15 @@ private fun CornerReportCard(state: PitwallUiState) {
 @Composable
 private fun CarImageDiagnosticCard() {
     val status by CarImageLoader.status.collectAsStateWithLifecycle()
+    val request by CarImageLoader.request.collectAsStateWithLifecycle()
+    val context = LocalContext.current
     PitCard("Photo de la voiture") {
         Text(status.text, style = MaterialTheme.typography.bodySmall,
             color = if (status is com.gt7pitwall.core.knowledge.CarImagePolicy.Outcome.Shown) PitColors.Green else PitColors.Muted)
+        request?.let { Text("Dernière requête : $it", style = MaterialTheme.typography.bodySmall, color = PitColors.Muted) }
+        Text("Vignette du catalogue officiel GT7 (images Sony / Polyphony, une seule voiture, en cache sur le téléphone).",
+            style = MaterialTheme.typography.bodySmall, color = PitColors.Muted)
+        OutlinedButton(onClick = { CarImageLoader.retryNow(context) }) { Text("Réessayer la photo maintenant") }
     }
 }
 

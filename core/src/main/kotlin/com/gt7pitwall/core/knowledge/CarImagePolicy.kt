@@ -8,10 +8,16 @@ package com.gt7pitwall.core.knowledge
  *
  * Course du 27/10 (APK #420) : la silhouette restait affichée sans aucune explication. Chaque tentative produit
  * maintenant un [Outcome] lisible dans l'Atelier.
+ *
+ * Adresse (issue #33) : l'APK #426 demandait `car_images/carNNNN.webp`, chemin supposé, jamais vérifié. Le chemin
+ * utilisé est celui des vignettes du catalogue officiel, `car_thumbnails/carNNNN.png`, employé tel quel par plusieurs
+ * projets publics indépendants qui lisent le même identifiant (nikitafedorov008/gt7-companion, francmarra/bop-radar,
+ * patkosmarci/GT7_Tuning_Share). Il reste à confirmer sur le Fold : l'environnement de développement n'atteint pas le
+ * site officiel.
  */
 object CarImagePolicy {
     const val HOST = "www.gran-turismo.com"
-    const val PATH = "/common/dist/gt7/carlist/car_images/"
+    const val PATH = "/common/dist/gt7/carlist/car_thumbnails/"
     const val MAX_BYTES = 2_500_000
     const val MAX_REDIRECTS = 3
 
@@ -22,8 +28,11 @@ object CarImagePolicy {
     const val CACHE_MAX_AGE_MS = 30L * 24 * 3_600_000L
     const val MAX_CACHED = 60
 
+    /** Version du cache : l'ancien chemin (webp supposé) n'est jamais relu. */
+    const val CACHE_VERSION = 2
+
     /** Adresse de l'image d'après l'identifiant GT7 reçu en UDP (même identifiant que la base gt7info : 3474 = BRZ GT300 '21). */
-    fun url(carCode: Int): String? = carCode.takeIf { it in 1..20_000 }?.let { "https://$HOST${PATH}car$it.webp" }
+    fun url(carCode: Int): String? = carCode.takeIf { it in 1..20_000 }?.let { "https://$HOST${PATH}car$it.png" }
 
     /** Redirection acceptée seulement en HTTPS vers le site officiel (jamais vers un autre domaine). */
     fun redirectAllowed(location: String?): Boolean {
@@ -50,7 +59,7 @@ object CarImagePolicy {
         data class Http(val carCode: Int, val code: Int) : Outcome {
             override val text get() = "HTTP $code pour la voiture $carCode" + when (code) {
                 403 -> " : accès refusé par le site officiel"
-                404 -> " : pas d'image publiée pour cet identifiant"
+                404 -> " : aucune image à cette adresse (chemin ou voiture absente du catalogue en ligne)"
                 in 300..399 -> " : redirection non autorisée"
                 else -> ""
             } + " — silhouette affichée"
@@ -68,7 +77,7 @@ object CarImagePolicy {
             override val text get() = "réseau : $error (voiture $carCode) — silhouette affichée"
         }
         data class Waiting(val carCode: Int, val lastFailure: String) : Outcome {
-            override val text get() = "$lastFailure ; nouvel essai dans quelques heures"
+            override val text get() = "$lastFailure ; nouvel essai automatique dans quelques heures, ou « Réessayer maintenant »"
         }
         data class Disabled(val reason: String) : Outcome {
             override val text get() = reason
