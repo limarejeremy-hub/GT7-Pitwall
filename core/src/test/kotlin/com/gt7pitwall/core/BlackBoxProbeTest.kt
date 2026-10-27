@@ -35,4 +35,35 @@ class BlackBoxProbeTest {
         assertTrue(r[2].startsWith("Trace 20 Hz : 2,6 Mo brut"), r[2])
         assertEquals("Batterie : 80 % → 74 %, soit 18 % par heure (téléphone entier), 36 °C au maximum.", r[3])
     }
+
+    @Test
+    fun theReportStaysCorrectAfterStopping() {
+        var now = 1_000_000L
+        val probe = BlackBoxProbe { now }
+        probe.start()
+        probe.battery(90, 30f)
+        repeat(15 * 60 * 60) { k ->
+            now += 16
+            probe.onPacket(TelemetryParser.parseDecrypted(TestPackets.plain(speedMps = 50f, packetId = k + 1, posX = k.toFloat()))!!, 200_000L)
+        }
+        now = 1_000_000L + 15 * 60_000L
+        probe.battery(86, 33f)
+        val during = probe.report()
+        probe.stop()
+        // Une heure plus tard, l'écran relit le compte rendu : la durée et les volumes par heure ne bougent pas.
+        now += 3_600_000L
+        val after = probe.report()
+        assertEquals(false, probe.running)
+        assertEquals(during, after)
+        assertTrue(after[0].startsWith("Durée mesurée : 15 min, 54000 paquets (60/s)"), after[0])
+        assertTrue(after[2].startsWith("Trace 20 Hz : 2,6 Mo brut"), after[2])
+        assertEquals("Batterie : 90 % → 86 %, soit 16 % par heure (téléphone entier), 33 °C au maximum.", after[3])
+        // Rien n'est compté après l'arrêt.
+        probe.onPacket(TelemetryParser.parseDecrypted(TestPackets.plain(speedMps = 50f, packetId = 99_999))!!, 1L)
+        assertEquals(after, probe.report())
+        // Une nouvelle mesure repart de zéro.
+        probe.start()
+        assertTrue(probe.running)
+        assertTrue(probe.report()[0].startsWith("Durée mesurée : 0 min, 0 paquets"), probe.report()[0])
+    }
 }

@@ -150,4 +150,18 @@ class TrackGeometryTest {
         for ((x, z) in drive(s, 300f)) r.onPosition(x, z, moving = true)
         assertEquals(Verdict.Pending, r.verdict)
     }
+
+    @Test
+    fun aMirroredFrameIsDetectedByTheDiagnostic() {
+        // Si la PS5 envoyait Z inversé par rapport aux signatures : le circuit ne serait pas reconnu, mais le
+        // diagnostic montrerait le bon tracé tout proche dans le repère « z inversé ».
+        val s = sigs.first { it.course == 10 } // Suzuka
+        val r = TrackGeometryRecognizer(sigs)
+        for ((x, z) in drive(s, 1500f)) r.onPosition(x, -z, moving = true)
+        assertIs<Verdict.Unknown>(r.verdict)
+        val byFrame = r.closest().associateBy { it.frame }
+        assertEquals("Suzuka Circuit", byFrame.getValue("z inversé").name)
+        assertTrue(byFrame.getValue("z inversé").meanDevM < 15f, byFrame.toString())
+        assertTrue(byFrame.getValue("normal").meanDevM > 25f, byFrame.toString())
+    }
 }

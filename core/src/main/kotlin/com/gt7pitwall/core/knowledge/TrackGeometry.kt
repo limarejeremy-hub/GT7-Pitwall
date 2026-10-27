@@ -96,6 +96,7 @@ class TrackGeometryRecognizer(private val signatures: List<TrackSignature>) {
         lastZ = Float.NaN
         distanceM = 0f
         samples = 0
+        recent.clear()
         verdict = Verdict.Pending
     }
 
@@ -126,6 +127,8 @@ class TrackGeometryRecognizer(private val signatures: List<TrackSignature>) {
 
     private fun sample(x: Float, z: Float) {
         samples++
+        recent.addLast(x to z)
+        if (recent.size > RECENT) recent.removeFirst()
         for (c in candidates) {
             if (!c.alive) continue
             val s = c.sig
@@ -160,6 +163,32 @@ class TrackGeometryRecognizer(private val signatures: List<TrackSignature>) {
         verdict = decide()
     }
 
+    /** Derniers points échantillonnés (diagnostic seulement). */
+    private val recent = ArrayDeque<Pair<Float, Float>>()
+
+    /** Tracé le plus proche des derniers points, dans un repère donné (« normal », « x inversé »…). */
+    data class Closest(val name: String, val meanDevM: Float, val frame: String)
+
+    /**
+     * Diagnostic pour un circuit resté « inconnu » : tracé le plus proche des [RECENT] derniers points, dans le repère
+     * normal et dans les repères en miroir. Si le bon circuit n'apparaît proche qu'avec X ou Z inversé, le repère des
+     * signatures diffère de celui de la PS5 ; s'il n'apparaît nulle part, le circuit manque aux signatures.
+     */
+    fun closest(): List<Closest> {
+        if (recent.size < 5) return emptyList()
+        val frames = listOf<Pair<String, (Pair<Float, Float>) -> Pair<Float, Float>>>(
+            "normal" to { it }, "x inversé" to { (x, z) -> -x to z }, "z inversé" to { (x, z) -> x to -z }, "x et z inversés" to { (x, z) -> -x to -z },
+        )
+        return frames.mapNotNull { (label, f) ->
+            val pts = recent.map(f)
+            signatures.map { s -> s to pts.sumOf { (x, z) -> nearest(s.path, x, z).second.toDouble() } / pts.size }
+                .minByOrNull { it.second }?.let { Closest(it.first.name, it.second.toFloat(), label) }
+        }
+    }
+
+    /** Échantillons pris depuis le début de la session. */
+    val sampleCount: Int get() = samples
+
     private fun decide(): Verdict {
         if (distanceM < MIN_DISTANCE_M || samples < MIN_SAMPLES) return Verdict.Pending
         data class Option(val course: Int, val c: Candidate, val reverse: Boolean)
@@ -182,6 +211,7 @@ class TrackGeometryRecognizer(private val signatures: List<TrackSignature>) {
 
     companion object {
         const val STEP_M = 10f
+        const val RECENT = 60
         const val JUMP_M = 300f
         const val BOX_MARGIN_M = 40f
         /** Largeur de piste et dégagements : au-delà, la voiture n'est pas sur ce tracé. */

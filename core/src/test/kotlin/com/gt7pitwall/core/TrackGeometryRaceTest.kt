@@ -115,7 +115,9 @@ class TrackGeometryRaceTest {
         // par la longueur, en fin de tour, garde son rôle).
         assertEquals(901, c.rules.trackId)
         assertIs<TrackGeometryRecognizer.Verdict.Unknown>(c.trackGeometryVerdict)
-        assertTrue(store.journals.values.flatten().any { "Géométrie : aucune signature ne correspond" in it }, store.journals.toString())
+        val line = store.journals.values.flatten().first { "Géométrie : aucune signature ne correspond" in it }
+        // Diagnostic du repère pour l'essai PS5 : tracé le plus proche, écart moyen, première position.
+        assertTrue("plus_proche" in line && "normal : Ailleurs" in line && "x inversé" in line && "premiere_position" in line, line)
     }
 
     @Test

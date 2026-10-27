@@ -524,10 +524,25 @@ class PitwallEngine(
     private val _blackBoxReport = MutableStateFlow(listOf("Mesure arrêtée."))
     val blackBoxReport: StateFlow<List<String>> = _blackBoxReport.asStateFlow()
     private var lastBlackBoxReportMs = 0L
+    private var lastBlackBoxJournalMs = 0L
 
     fun setBlackBoxMeasure(enabled: Boolean) {
         if (enabled) blackBox.start() else blackBox.stop()
         _blackBoxReport.value = if (enabled) listOf("Mesure en cours : lance une course.") else blackBox.report()
+        if (!enabled) journalBlackBox("Mesure Black Box terminée")
+    }
+
+    /** Compte rendu de la mesure dans le journal de course (exportable) : preuve réelle, pas une simulation. */
+    private fun journalBlackBox(title: String) {
+        val lines = blackBox.report()
+        runCatching {
+            race.journal.record(
+                com.gt7pitwall.core.race.JournalType.DECISION, com.gt7pitwall.core.race.JournalSource.SYSTEM, title,
+                decision = "mesure seulement, rien n'est enregistré",
+                details = lines.mapIndexed { i, l -> "mesure_${i + 1}" to l }.toMap() +
+                    mapOf("appareil" to "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}", "android" to android.os.Build.VERSION.RELEASE),
+            )
+        }
     }
 
     private suspend fun onPacket(p: TelemetryPacket) {
@@ -553,6 +568,11 @@ class PitwallEngine(
                 if (now - lastBlackBoxReportMs >= 5_000L) {
                     lastBlackBoxReportMs = now
                     _blackBoxReport.value = blackBox.report()
+                }
+                // Point de mesure au journal toutes les 10 minutes : chaque course mesurée garde ses chiffres.
+                if (now - lastBlackBoxJournalMs >= 600_000L) {
+                    if (lastBlackBoxJournalMs > 0) journalBlackBox("Mesure Black Box (point d'étape)")
+                    lastBlackBoxJournalMs = now
                 }
             }
             publish(force = messages.isNotEmpty())

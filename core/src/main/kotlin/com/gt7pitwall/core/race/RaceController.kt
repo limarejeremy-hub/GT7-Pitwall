@@ -1270,6 +1270,7 @@ class RaceController(
         trackInconsistencyNoted = false
         geometry?.reset()
         geometryHandled.clear()
+        firstGeometryPosition = "aucune"
         sessionIdentity = SessionMatcher.Result.Unknown
         sessionIdentitySettled = false
         sessionTrackEvidence = null
@@ -3545,6 +3546,8 @@ class RaceController(
     private var geometrySignatures: List<com.gt7pitwall.core.knowledge.TrackSignature>? = null
     /** Dernier verdict géométrique déjà traité dans cette session (journal et décision une seule fois). */
     private val geometryHandled = mutableSetOf<String>()
+    /** Première position échantillonnée de la session (diagnostic du repère X/Z au journal). */
+    private var firstGeometryPosition = "aucune"
 
     /** Ce que la géométrie a conclu dans cette session (diagnostic). */
     val trackGeometryVerdict: com.gt7pitwall.core.knowledge.TrackGeometryRecognizer.Verdict?
@@ -3566,13 +3569,30 @@ class RaceController(
         }
         val g = geometry ?: return
         val moving = raceActive && !tracker.pitVisitOpen && p.speedKmh > 10f
+        if (moving && firstGeometryPosition == "aucune") {
+            firstGeometryPosition = String.format(java.util.Locale.ROOT, "x=%.0f z=%.0f", p.positionX, p.positionZ)
+        }
         val v = g.onPosition(p.positionX, p.positionZ, moving)
         // Chaque conclusion n'est traitée qu'une fois par session (pas de journal à chaque échantillon).
         val key = when (v) {
             is com.gt7pitwall.core.knowledge.TrackGeometryRecognizer.Verdict.Identified -> "circuit ${v.course}"
             is com.gt7pitwall.core.knowledge.TrackGeometryRecognizer.Verdict.Ambiguous -> "ambigu ${v.courses}"
             is com.gt7pitwall.core.knowledge.TrackGeometryRecognizer.Verdict.Unknown -> "inconnu"
-            com.gt7pitwall.core.knowledge.TrackGeometryRecognizer.Verdict.Pending -> return
+            com.gt7pitwall.core.knowledge.TrackGeometryRecognizer.Verdict.Pending -> {
+                // Diagnostic : toujours rien après un tour complet (positions non échantillonnées, voiture aux stands…).
+                if (p.currentLap >= 2 && geometryHandled.add("sans conclusion")) {
+                    journal.record(
+                        JournalType.DECISION, JournalSource.ENGINE, "Géométrie : pas de conclusion après un tour",
+                        decision = "reconnaissance par la longueur",
+                        details = mapOf(
+                            "distance_m" to g.distanceM.roundToInt().toString(),
+                            "echantillons" to g.sampleCount.toString(),
+                            "premiere_position" to firstGeometryPosition,
+                        ),
+                    )
+                }
+                return
+            }
         }
         if (!geometryHandled.add(key)) return
         when (v) {
@@ -3591,6 +3611,7 @@ class RaceController(
                         "ecart_moyen_m" to String.format(java.util.Locale.ROOT, "%.1f", v.meanDevM),
                         "sens" to if (v.reverse) "inverse" else "normal",
                         "signature" to v.name,
+                        "premiere_position" to firstGeometryPosition,
                         "source" to "gt7-datalogger-track-data (CC0)",
                     ),
                 )
@@ -3611,7 +3632,15 @@ class RaceController(
             is com.gt7pitwall.core.knowledge.TrackGeometryRecognizer.Verdict.Unknown -> journal.record(
                 JournalType.DECISION, JournalSource.ENGINE, "Géométrie : aucune signature ne correspond",
                 decision = "circuit absent des signatures ou repère à vérifier ; reconnaissance par la longueur",
-                details = mapOf("distance_m" to v.distanceM.roundToInt().toString(), "circuit_enregistre" to (rules.trackId?.toString() ?: "aucun")),
+                details = listOfNotNull(
+                    "distance_m" to v.distanceM.roundToInt().toString(),
+                    "echantillons" to g.sampleCount.toString(),
+                    "circuit_enregistre" to (rules.trackId?.toString() ?: "aucun"),
+                    g.closest().takeIf { it.isNotEmpty() }?.let { list ->
+                        "plus_proche" to list.joinToString(" ; ") { c -> "${c.frame} : ${c.name} à ${String.format(java.util.Locale.ROOT, "%.0f", c.meanDevM)} m" }
+                    },
+                    "premiere_position" to firstGeometryPosition,
+                ).toMap(),
             )
             com.gt7pitwall.core.knowledge.TrackGeometryRecognizer.Verdict.Pending -> Unit
         }

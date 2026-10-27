@@ -18,6 +18,8 @@ import kotlin.math.roundToInt
  */
 class BlackBoxProbe(private val clock: () -> Long = System::currentTimeMillis) {
     private var startMs = 0L
+    /** Fin de la mesure (null : en cours) ; gardée pour que le compte rendu reste juste après l'arrêt. */
+    private var endMs: Long? = null
     private var packets = 0L
     private var lost = 0L
     private var lastPacketId = -1
@@ -35,17 +37,18 @@ class BlackBoxProbe(private val clock: () -> Long = System::currentTimeMillis) {
     private var batteryNow: Pair<Long, Int>? = null
     private var temperatureMaxC: Float? = null
 
-    val running: Boolean get() = startMs > 0
+    val running: Boolean get() = startMs > 0 && endMs == null
 
     @Synchronized
     fun start() {
         reset()
         startMs = clock()
+        endMs = null
     }
 
     @Synchronized
     fun stop() {
-        startMs = 0L
+        if (running) endMs = clock()
     }
 
     private fun reset() {
@@ -115,8 +118,8 @@ class BlackBoxProbe(private val clock: () -> Long = System::currentTimeMillis) {
     /** Compte rendu lisible (Atelier, journal). */
     @Synchronized
     fun report(): List<String> {
-        if (startMs == 0L && packets == 0L) return listOf("Mesure arrêtée.")
-        val elapsedS = ((clock() - startMs) / 1000.0).coerceAtLeast(1.0)
+        if (startMs == 0L) return listOf("Mesure arrêtée.")
+        val elapsedS = (((endMs ?: clock()) - startMs) / 1000.0).coerceAtLeast(1.0)
         val hours = elapsedS / 3600.0
         fun mb(b: Double) = String.format(java.util.Locale.FRANCE, "%.1f Mo", b / 1_000_000.0)
         fun ms(ns: Double) = String.format(java.util.Locale.FRANCE, "%.2f ms", ns / 1_000_000.0)
