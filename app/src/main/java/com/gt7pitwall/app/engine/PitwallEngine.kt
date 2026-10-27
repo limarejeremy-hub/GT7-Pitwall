@@ -109,6 +109,8 @@ data class PitwallUiState(
     val tyreOrDriving: String = "",
     /** Motricité à commande comparable en sortie de virage (issue #35) : niveau, virages, écarts mesurés. */
     val traction: String = "",
+    /** Freinage à pression égale, équilibre en virage, stress thermique (croisements n°2 à 4, non validés sur PS5). */
+    val handling: List<String> = emptyList(),
     /** Arrivée franchie (la télémétrie continue mais la course est finie : « Course terminée — 5/5 »). */
     val raceFinished: Boolean = false,
     /** Épreuve reconnue par la télémétrie pour la session en cours (null : rien à dire). */
@@ -654,6 +656,7 @@ class PitwallEngine(
         val cornersDue = force || now - lastCornerMs >= 2_000L
         val tyreOrDriving = if (cornersDue) race.tyreOrDriving().text else _state.value.tyreOrDriving
         val traction = if (cornersDue) runCatching { race.tractionReport() }.getOrDefault("") else _state.value.traction
+        val handling = if (cornersDue) race.handlingReport() else _state.value.handling
         val corners = if (cornersDue) {
             lastCornerMs = now
             val labels = race.cornerLabels()
@@ -710,6 +713,7 @@ class PitwallEngine(
             cornerNumbering = corners.third,
             tyreOrDriving = tyreOrDriving,
             traction = traction,
+            handling = handling,
             tyreAgeLaps = race.ledger.tyreAge((race.snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)),
             askTyreChange = race.ledger.awaitingTyreChangeAnswer,
             profile = race.profile,

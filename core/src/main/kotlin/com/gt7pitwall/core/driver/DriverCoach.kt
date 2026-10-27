@@ -143,6 +143,15 @@ class DriverCoach(
      * → radio, jamais un conseil fondé sur le constat du tour précédent (revue PR #37, P0-B).
      */
     var tractionContext: () -> TractionContext? = { null }
+
+    /** Freinages des tours propres mesurés (croisement n°2), bornés aux 30 derniers. */
+    private val brakingLaps = ArrayDeque<com.gt7pitwall.core.tyres.BrakingMonitor.Lap>()
+
+    /** Efficacité de freinage à pression égale, relais en cours. */
+    fun braking(): com.gt7pitwall.core.tyres.BrakingMonitor.Report {
+        val tc = tractionContext() ?: return com.gt7pitwall.core.tyres.BrakingMonitor.Report(com.gt7pitwall.core.tyres.BrakingMonitor.Level.INSUFFICIENT, listOf("relais inconnu"))
+        return com.gt7pitwall.core.tyres.BrakingMonitor.compare(brakingLaps.toList(), tc.stintStartLap, tc.excludedLaps, tc.raining)
+    }
     private val finished = HashMap<Int, List<LapSample>>()
     private var lastLap = -1
     private var pitThisLap = false
@@ -179,6 +188,7 @@ class DriverCoach(
         lastLap = -1
         recorder.invalidate()
         traction.reset()
+        brakingLaps.clear()
         rejectedCount.clear()
         lapsSeen = 0
         lastNoAdvice = null
@@ -255,6 +265,13 @@ class DriverCoach(
                 pass.corner to placed.filter { it.m >= pass.minAtM && it.m <= c.zoneEndM && it.s.offTrack != true }.map { it.s }
             }.toMap()
             traction.addLap(lap.lapNumber, exits)
+            // Freinages : du début de la zone du virage jusqu'à sa vitesse minimale.
+            val entries = passes.filter { it.offTrack != true }.mapNotNull { pass ->
+                val c = map.corners.firstOrNull { it.number == pass.corner } ?: return@mapNotNull null
+                pass.corner to placed.filter { it.m >= c.zoneStartM && it.m <= pass.minAtM && it.s.offTrack != true }.map { it.s }
+            }.toMap()
+            brakingLaps.addLast(com.gt7pitwall.core.tyres.BrakingMonitor.lap(lap.lapNumber, entries))
+            while (brakingLaps.size > 30) brakingLaps.removeFirst()
             tractionContext()?.let { tc -> traction.evaluate(tc.stintStartLap, tc.excludedLaps, tc.raining) }
         }
         return advise(lap.lapNumber, ctx, prof)

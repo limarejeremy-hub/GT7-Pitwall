@@ -2865,6 +2865,20 @@ class RaceController(
         return per.takeIf { it.isNotEmpty() }?.sum()?.roundToInt()
     }
 
+    /**
+     * Croisements n°2 à 4 (issue #36), relais en cours : freinage à pression égale, équilibre en virage, stress
+     * thermique. Écran d'Analyse seulement : rien n'est dit à la radio tant que ce n'est pas validé sur PS5.
+     */
+    fun handlingReport(): List<String> = runCatching {
+        val st = tyreStintContext()
+        val labels = cornerLabels()
+        listOf(
+            "Freinage : " + driverCoach.braking().text { labels[it]?.text ?: "V$it" },
+            "Équilibre : " + com.gt7pitwall.core.tyres.BalanceTrend.analyze(driverCoach.passes, st.startLap, st.excludedLaps).text,
+            "Thermique : " + com.gt7pitwall.core.tyres.ThermalStress.analyze(snapshot.laps, st.startLap, st.excludedLaps).text,
+        )
+    }.getOrElse { diagnostic("freinage, équilibre, thermique", it); emptyList() }
+
     /** Version courte pour la voix : le niveau et le nombre de virages ; le détail chiffré reste dans Analyse. */
     private fun tractionSentence(): String {
         val r = driverCoach.traction.last

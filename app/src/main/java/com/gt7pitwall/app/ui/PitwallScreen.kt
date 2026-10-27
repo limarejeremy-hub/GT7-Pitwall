@@ -1368,6 +1368,7 @@ private fun CornerReportCard(state: PitwallUiState) {
             Text("Même virage, même tranche d'accélérateur, rapport et vitesse ; vibreurs exclus (format C). Mesure de motricité, pas d'usure en %.",
                 style = MaterialTheme.typography.bodySmall, color = PitColors.Muted)
         }
+        state.handling.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall) }
     }
 }
 

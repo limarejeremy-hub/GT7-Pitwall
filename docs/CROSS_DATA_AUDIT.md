@@ -19,10 +19,10 @@ sont des valeurs de départ, à recalibrer sur de vraies sorties de virage.
 
 | # | Croisement | Lot | État | Où dans le code |
 |---|---|---|---|---|
-| 1 | Accélérateur × glissement × surfaces × TCS × accélération obtenue ⇒ motricité | 1 | **implémenté** (15 tests) | `TractionMonitor`, `DriverCoach`, `RaceController.tractionCheck` |
-| 2 | Frein × décélération × blocage × surface ⇒ efficacité de freinage | 1 | partiel | `CornerPass.lockup/brakeStartM/brakeRampMs`, `CornerCoach` (freinage tôt/tard) |
-| 3 | Braquage × lacet × trajectoire ⇒ sous-virage / survirage | 1 | partiel | `CornerPass.rotationRatio` (format C seulement) |
-| 4 | 4 températures × charge latérale × surfaces × glissements ⇒ stress thermique | 1 | partiel | `RaceController.tyreSummary`, `GripDiagnosis`, `TyreCoach` |
+| 1 | Accélérateur × glissement × surfaces × TCS × accélération obtenue ⇒ motricité | 1 | **implémenté** (25 tests, corrections de la revue #37 comprises) | `TractionMonitor`, `DriverCoach`, `RaceController.tractionCheck` |
+| 2 | Frein × décélération × blocage × surface ⇒ efficacité de freinage | 1 | **implémenté** (JVM), Analyse seulement | `BrakingMonitor`, `DriverCoach.braking` |
+| 3 | Braquage × lacet × trajectoire ⇒ sous-virage / survirage | 1 | **implémenté** (JVM), format C seulement, Analyse seulement | `BalanceTrend` |
+| 4 | 4 températures × blocages et patinages par essieu ⇒ stress thermique | 1 | **implémenté** (JVM), Analyse seulement ; sans le sens gauche/droite | `ThermalStress` |
 | 5 | Temps par virage × causes mesurées ⇒ où et combien la voiture perd | 1 | **implémenté** (JVM) | `CornerReport`, `TyreOrDriving`, `tractionLossMs` |
 | 6 | Arrêt avec ou sans pneus × carburant ⇒ séparer effet pneus et effet masse | 2 | partiel | `TyreChangeHunter` (soupçon thermique), `CompoundBook` (pente carburant), gain de pneus neufs dans `TyreModel.pool` |
 | 7 | Perte par tour × tours restants × coût d'arrêt ⇒ Box ou continuer | 2 | partiel | `StrategyOptions`, `TyreScenarios` ; la motricité répétée y entre (`degrading`) |
@@ -32,6 +32,7 @@ sont des valeurs de départ, à recalibrer sur de vraies sorties de virage.
 | 11 | Hauteurs de suspension × caisse × heave/sway/surge × vibreur ⇒ talonnage | 3 | à vérifier sur PS5 | champs lus (`suspensionHeight` 0xC4, `bodyHeight` 0x38, 0x130–0x138 en B/~/C), jamais utilisés |
 | 12 | Rang 0x84 × participants 0x86 ⇒ places fiables | 3 | **implémenté** pour les places ; **impossible sans source** pour les écarts en secondes | `PositionTracker` |
 | 13 | Consigne radio × passages avant/après × état des pneus ⇒ la consigne a-t-elle aidé ? | 3 | partiel | `DriverCoach` (vérification sur 3 passages, virages « bloqués »), arbitrage motricité (Sprint B) |
+| 14 | Accélérateur × **couple délivré (0x154)** × rapport × glissement × TCS × accélération × surface | 1 | **expérimental** : décodé, utilisé seulement pour **écarter** les pneus | `engineTorqueNorm`, `TractionMonitor`, `TorqueProbe` ; voir [UDP_FIELDS.md](UDP_FIELDS.md) |
 
 ### Détail par croisement
 
@@ -109,6 +110,37 @@ sont des valeurs de départ, à recalibrer sur de vraies sorties de virage.
 - La vérification après trois passages existe ; un virage sans amélioration n'est plus conseillé.
 - Le patinage attribué aux pneus n'est plus reproché au pilote.
 - La causalité n'est pas démontrable (le pilote change aussi pour d'autres raisons). Ce sera dit tel quel.
+
+### Revue de la PR #37 : corrections
+
+| Point | Correction | Test |
+|---|---|---|
+| P0-A : diagnostic périmé resté « confirmé » | Comparaison suspendue = niveau actif « insuffisant », ancien niveau en simple historique ; la stratégie ne compte qu'une perte répétée, active et à surfaces connues (`strategyEligible`) | `p0aASuspendedComparisonNeverStaysConfirmed` (pluie, pneus froids, données manquantes) |
+| P0-B : conseil en retard d'un tour | La motricité est évaluée par le coach, juste après l'ajout du tour et avant son conseil ; la radio ne fait que lire | `p0bTheCoachNeverBlamesTheThrottleOnTheLapTheTractionLossIsSeen` (circuit simulé, bout en bout) |
+| P0-C : trop affirmatif sans surfaces | Jamais « répétée » sans surface des roues ; annonce « à confirmer » ; jamais dans la stratégie | `p0cWithoutWheelSurfacesALossIsNeverConfirmed` |
+| P1-D : temps des virages attribué à la motricité | Plus de dixièmes à la radio ; « temps des virages concernés » au journal. Perte répartie : « pneus possibles » ; « probables » seulement si la motricité baisse ; « non démontrés » si elle est stable | `p1dASpreadLossIsOnlyProbablyTheTyresWhenTractionAgrees` |
+| P1-E : 0x154 | Décodé, expérimental (voir [UDP_FIELDS.md](UDP_FIELDS.md)) | `ExperimentalFieldsTest`, `TorqueProbeTest` |
+
+Défaut trouvé en écrivant ces tests : la sortie du dernier virage, qui passe la ligne, était ignorée par la motricité
+(les passages la prenaient en compte). Corrigé.
+
+### Croisements 2 à 4 (lot 1)
+
+- **Freinage (n°2).** Même méthode que la motricité, côté frein.
+  - Fenêtres comparées : avant la vitesse minimale, frein ≥ 15 %, accélérateur relâché, même tranche de pression
+    (15 %), de vitesse (10 km/h) et de charge latérale, 4 roues sur l'asphalte.
+  - Signal : décélération plus faible d'au moins 0,5 m/s², ou blocage avant en hausse d'au moins 4 points sans
+    meilleure décélération.
+  - Écartés : vibreur, autre vitesse (= freiné à un autre endroit, rôle du coach), pneus froids, pluie, freinage raté
+    isolé.
+  - Jamais « freins usés » : GT7 ne transmet pas leur température.
+- **Équilibre (n°3).** Rapport de rotation au milieu des virages, début contre fin de relais.
+  - Majorité des virages en baisse d'au moins 8 % : sous-virage en hausse ; en hausse : survirage.
+  - Format C seulement. Passages sur vibreur (plus de 20 % de la zone) et sorties de piste écartés.
+- **Thermique (n°4).** Pneu le plus chaud par rapport aux trois autres, son évolution, blocages avant et patinages
+  arrière.
+  - Toujours suivi de « Température élevée ≠ usure ». Aucune conclusion sur le sens du virage (signe non vérifié).
+- Tests : `HandlingCrossTest` (4). Affichage : carte Virages d'Analyse. **Aucune radio** avant validation PS5.
 
 ### Plan des lots suivants
 - **Lot 1** : n°2 (freinage à pression comparable), puis n°3 et n°4. Même méthode de fenêtres comparables que le n°1.
