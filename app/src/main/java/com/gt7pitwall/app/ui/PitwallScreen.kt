@@ -1326,10 +1326,6 @@ private fun DrivingCard(engine: PitwallEngine) {
     }
 }
 
-/**
- * Mesures préalables à la Black Box, sur la Fold, pendant une vraie course : débit et pertes de paquets, temps de
- * calcul, taille de trace compressée, batterie. Rien n'est enregistré.
- */
 /** Bilan par virage (Analyse) : passages comparables, perte, cause mesurée et confiance. Le détail reste ici, pas à la radio. */
 @Composable
 private fun CornerReportCard(state: PitwallUiState) {
@@ -1340,6 +1336,11 @@ private fun CornerReportCard(state: PitwallUiState) {
         } else {
             state.cornerReport.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall) }
             Text(state.cornerNumbering, style = MaterialTheme.typography.bodySmall, color = PitColors.Muted)
+        }
+        if (state.tyreOrDriving.isNotEmpty()) {
+            Text("Pneus ou pilotage ? ${state.tyreOrDriving}", style = MaterialTheme.typography.bodySmall)
+            Text("Comparaison début/fin du relais sur les mêmes virages. GT7 ne transmet pas l'usure : aucun pourcentage.",
+                style = MaterialTheme.typography.bodySmall, color = PitColors.Muted)
         }
     }
 }
@@ -1354,6 +1355,10 @@ private fun CarImageDiagnosticCard() {
     }
 }
 
+/**
+ * Mesures préalables à la Black Box, sur la Fold, pendant une vraie course : débit et pertes de paquets, temps de
+ * calcul, taille de trace compressée, batterie. Rien n'est enregistré.
+ */
 @Composable
 private fun BlackBoxMeasureCard(engine: PitwallEngine) {
     val report by engine.blackBoxReport.collectAsStateWithLifecycle()

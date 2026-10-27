@@ -2376,7 +2376,7 @@ class RaceController(
             com.gt7pitwall.core.tyres.GripLevel.STABLE -> "Adhérence : comportement stable."
             else -> "Adhérence : ${g.level.label}" + (g.evidence.firstOrNull()?.let { ", $it" } ?: "") + "."
         }
-        return "${tyreStintText()}. Avant ${front.roundToInt()}, arrière ${rear.roundToInt()} degrés : $axle$side.$trend $grip"
+        return "${tyreStintText()}. Avant ${front.roundToInt()}, arrière ${rear.roundToInt()} degrés : $axle$side.$trend $grip${tyreOrDrivingSentence()}"
     }
 
     private fun answerTyreStatus(): String {
@@ -2392,7 +2392,7 @@ class RaceController(
             val rear = (t.rl + t.rr) / 2
             " Avant ${front.roundToInt()}, arrière ${rear.roundToInt()} degrés."
         } ?: ""
-        return "${tyreStintText()}.$temps $body$declared"
+        return "${tyreStintText()}.$temps $body${tyreOrDrivingSentence()}$declared"
     }
 
     private fun answerTyreLife(): String {
@@ -2760,6 +2760,29 @@ class RaceController(
     fun cornerReport(): List<com.gt7pitwall.core.analysis.CornerReport.Line> = runCatching {
         com.gt7pitwall.core.analysis.CornerReport.of(driverCoach.passes, cornerLabels())
     }.getOrElse { diagnostic("bilan par virage", it); emptyList() }
+
+    /**
+     * Baisse de rythme du relais en cours : pneus ou pilotage, lue virage par virage (issue #30-D). Les tours d'arrêt,
+     * le tour suivant et les tours d'incident déclarés sont écartés ; aucun pourcentage d'usure.
+     */
+    fun tyreOrDriving(): com.gt7pitwall.core.tyres.TyreOrDriving.Report = runCatching {
+        val ctx = tyreStintContext()
+        val labels = cornerLabels()
+        com.gt7pitwall.core.tyres.TyreOrDriving.analyze(
+            driverCoach.passes.filter { it.lap !in ctx.excludedLaps }, ctx.startLap,
+        ) { labels[it]?.text ?: "V$it" }
+    }.getOrElse { diagnostic("pneus ou pilotage", it); com.gt7pitwall.core.tyres.TyreOrDriving.Report(com.gt7pitwall.core.tyres.TyreOrDriving.Verdict.UNKNOWN) }
+
+    /** Phrase radio du diagnostic pneus/pilotage, seulement quand il conclut quelque chose. */
+    private fun tyreOrDrivingSentence(): String {
+        val r = tyreOrDriving()
+        return when (r.verdict) {
+            com.gt7pitwall.core.tyres.TyreOrDriving.Verdict.TYRES,
+            com.gt7pitwall.core.tyres.TyreOrDriving.Verdict.DRIVING,
+            com.gt7pitwall.core.tyres.TyreOrDriving.Verdict.MIXED -> " Virage par virage : ${r.text.replaceFirstChar { it.lowercase() }}"
+            else -> ""
+        }
+    }
 
     /**
      * « Virage 7 » (numéro de détection) devient « virage 5 » quand la numérotation du circuit est connue, pour que la

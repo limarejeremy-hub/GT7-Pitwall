@@ -105,6 +105,8 @@ data class PitwallUiState(
     val cornerReport: List<String> = emptyList(),
     /** Origine de la numérotation des virages affichée. */
     val cornerNumbering: String = "",
+    /** Baisse de rythme du relais : pneus ou pilotage, lue virage par virage (jamais d'usure en %). */
+    val tyreOrDriving: String = "",
     /** Arrivée franchie (la télémétrie continue mais la course est finie : « Course terminée — 5/5 »). */
     val raceFinished: Boolean = false,
     /** Épreuve reconnue par la télémétrie pour la session en cours (null : rien à dire). */
@@ -641,7 +643,9 @@ class PitwallEngine(
             )
         } else _state.value.garageCar
         // Virages : recalculés au plus toutes les 2 s (passages ajoutés à la fin de chaque tour).
-        val corners = if (force || now - lastCornerMs >= 2_000L) {
+        val cornersDue = force || now - lastCornerMs >= 2_000L
+        val tyreOrDriving = if (cornersDue) race.tyreOrDriving().text else _state.value.tyreOrDriving
+        val corners = if (cornersDue) {
             lastCornerMs = now
             val labels = race.cornerLabels()
             Triple(
@@ -695,6 +699,7 @@ class PitwallEngine(
             cornerMarks = corners.first,
             cornerReport = corners.second,
             cornerNumbering = corners.third,
+            tyreOrDriving = tyreOrDriving,
             tyreAgeLaps = race.ledger.tyreAge((race.snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)),
             askTyreChange = race.ledger.awaitingTyreChangeAnswer,
             profile = race.profile,

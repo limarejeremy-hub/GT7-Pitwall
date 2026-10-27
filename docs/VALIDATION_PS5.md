@@ -3,6 +3,9 @@
 Objectif : prouver sur la PS5 et la Galaxy Fold, avec des **journaux réels**, ce que les tests ne prouvent que sur
 simulation. Rien n'est validé tant que le journal exporté ne montre pas la ligne attendue.
 
+Arrêts vocaux, positions, fin de course, virages numérotés et diagnostic pneus/pilotage (V421) : protocole court
+dans `docs/PITWALL_V421.md`.
+
 ## Préparation (une fois)
 
 1. Installer l'APK de la PR #28 (elle contient aussi les corrections de la PR #27).
