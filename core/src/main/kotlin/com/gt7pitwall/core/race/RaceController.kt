@@ -124,7 +124,7 @@ class RaceController(
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
     val tracker = SessionTracker()
-    val engineer = RaceEngineer()
+    val engineer = RaceEngineer().also { e -> e.regulationDoubt = { regulationDoubt() } }
     val ledger = PitLedger()
     val driverCoach = com.gt7pitwall.core.driver.DriverCoach(
         load = { storage?.loadDriverBook() },
@@ -538,6 +538,7 @@ class RaceController(
             else if (stop.changeTyres) append(" Pneus à changer.")
             if (stop.noFuelNeeded) append(" Sans ravitaillement.")
             else if (stop.forFuel) append(" Ravitaillement prévu.")
+            if (!voluntary && (stop.mandatory || stop.tyreToFit != null)) regulationDoubt()?.let { append(" Obligation à confirmer : $it.") }
         }
         journal.record(
             JournalType.STRATEGY, JournalSource.ENGINE,
@@ -1028,7 +1029,9 @@ class RaceController(
         plan = null
         // L'épreuve choisie est annoncée avec son édition de la semaine (ou l'absence de programme).
         val out = (if (announce && id.series != Series.OTHER) listOf(editionAnnouncement()) else emptyList()) + replan()
-        saveSession()
+        // Une course terminée garde le type sous lequel elle a été courue : choisir « Sport officiel » après l'arrivée
+        // ne la requalifie jamais (carrière locale). Pendant la course, le choix du pilote s'applique à la session.
+        if (!sessionFinished) saveSession()
         return out
     }
 
@@ -2108,6 +2111,32 @@ class RaceController(
     private fun firstSentence(s: String): String = s.substringBefore(". ").trimEnd('.') + "."
 
     /**
+     * Pourquoi les obligations appliquées (arrêt obligatoire, gommes imposées) ne sont pas certaines, ou null si elles
+     * le sont : deux sources concordantes, saisies par le pilote, ou règlement confirmé par lui. Course personnalisée :
+     * règlement du pilote, jamais mis en doute.
+     */
+    fun regulationDoubt(): String? {
+        if (!profile.id.sport || profile.confirmed) return null
+        val reasons = mutableListOf<String>()
+        // Épreuve choisie par le pilote (officiel, entraînement) : son choix vaut identification. Seule une épreuve
+        // posée par la reconnaissance automatique peut être « seulement probable ».
+        (sessionIdentity as? SessionMatcher.Result.Match)
+            ?.takeIf { it.confidence == SessionMatcher.Confidence.PROBABLE && profile.id.mode == SessionMode.SPORT_IDENTIFIED }
+            ?.let { reasons += "course ${it.series.letter} seulement probable" }
+        val st = profile.ruleStatus
+        fun singleSource(f: RuleField): Boolean = st[f] == com.gt7pitwall.core.sport.FieldStatus.PROBABLE
+        val weak = buildList {
+            if (rules.mandatoryStops > 0 && singleSource(RuleField.MANDATORY_STOPS)) add(edition?.mandatoryStops?.sources)
+            if (rules.requiredTyres.isNotEmpty() && singleSource(RuleField.REQUIRED_TYRES)) add(edition?.requiredTyres?.sources)
+        }
+        if (weak.isNotEmpty()) {
+            val names = weak.flatMap { it.orEmpty() }.map { it.name }.distinct()
+            reasons += if (names.isEmpty()) "une seule source" else "seule la fiche ${names.joinToString(" et ")} la donne"
+        }
+        return reasons.takeIf { it.isNotEmpty() }?.joinToString(", ")
+    }
+
+    /**
      * Obligations encore inconnues (fiche incomplète ou sources contradictoires). Le règlement enregistré vaut alors
      * « 0 arrêt, aucune gomme imposée » par défaut : jamais présenté comme une absence d'obligation.
      */
@@ -2148,8 +2177,9 @@ class RaceController(
                         (next.fuel?.let { ", il faudra ${FuelUnits.amount(it.toFloat(), cap)}" } ?: ""),
                 )
             }
-            if (next.mandatory) add("l'arrêt obligatoire du règlement")
-            next.tyreToFit?.let { add("monter les ${it.spoken} imposés") }
+            val doubt = regulationDoubt()?.takeIf { next.mandatory || next.tyreToFit != null }?.let { " (à confirmer : $it)" } ?: ""
+            if (next.mandatory) add("l'arrêt obligatoire du règlement$doubt")
+            next.tyreToFit?.let { add("monter les ${it.spoken} imposés" + if (next.mandatory) "" else doubt) }
             if (next.changeTyres && next.tyreToFit == null) add("tes pneus atteignent la durée que tu m'as donnée")
         }
         return buildString {
@@ -2298,8 +2328,10 @@ class RaceController(
         val next = plan?.nextStop(lap) ?: return "Je ne te fais pas rentrer : aucun arrêt n'est prévu.${obligationCaveat()}"
         return when {
             next.forFuel -> "Ton carburant ne suffit pas jusqu'à l'arrivée : arrêt fin du tour ${next.endOfLap}, ${next.fuel?.let { FuelUnits.amount(it.toFloat(), snapshot.packet?.fuelCapacity) } ?: "quantité à calculer"}."
-            next.mandatory -> "Pour l'arrêt obligatoire du règlement, fin du tour ${next.endOfLap}, pas pour l'essence."
-            next.tyreToFit != null -> "Pour monter les ${next.tyreToFit.spoken} imposés par le règlement, pas pour l'essence."
+            next.mandatory -> "Pour l'arrêt obligatoire du règlement, fin du tour ${next.endOfLap}, pas pour l'essence." +
+                (regulationDoubt()?.let { " Obligation à confirmer : $it." } ?: "")
+            next.tyreToFit != null -> "Pour monter les ${next.tyreToFit.spoken} imposés par le règlement, pas pour l'essence." +
+                (regulationDoubt()?.let { " Obligation à confirmer : $it." } ?: "")
             next.changeTyres -> "Pas pour l'essence : pour les pneus. " + (strategy?.reason?.takeIf { "pneus" in it }?.let(::firstSentence)
                 ?: "Tu m'as donné leur durée de vie et ils l'atteignent.")
             else -> "Arrêt prévu fin du tour ${next.endOfLap}."
