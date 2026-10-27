@@ -91,7 +91,8 @@ class SessionIdentityTest {
         assertEquals(ProfileId(Series.DAILY_C, SessionKind.RACE), c.profile.id)
         assertEquals(1, c.rules.mandatoryStops)
         assertEquals(2, c.rules.fuelMultiplier)
-        assertTrue(s.texts.any { "Course Sport C reconnue (11 tours)" in it }, s.texts.toString())
+        assertTrue(s.texts.any { it.startsWith("Course Sport C probable (11 tours).") && "11 tours. " in it }, s.texts.toString())
+        assertTrue(c.sessionIdentityText!!.startsWith("Course Sport C probable"))
     }
 
     @Test

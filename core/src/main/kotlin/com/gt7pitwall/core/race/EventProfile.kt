@@ -11,6 +11,10 @@ enum class Series(val label: String) {
     DAILY_B("Course Sport B"),
     DAILY_C("Course Sport C"),
     OTHER("Autre épreuve"),
+    ;
+
+    /** Lettre de la course Sport (« A », « B », « C ») ; espace pour une autre épreuve. */
+    val letter: Char get() = if (this == OTHER) ' ' else name.last()
 }
 
 /** Qualification et course ne se mélangent jamais : rythme, essence et pneus n'y ont pas le même sens. */

@@ -39,6 +39,7 @@ import com.gt7pitwall.core.sport.Edition
 import com.gt7pitwall.core.sport.RuleField
 import com.gt7pitwall.core.sport.ScheduleState
 import com.gt7pitwall.core.sport.SessionMatcher
+import com.gt7pitwall.core.sport.SportAnnouncement
 import com.gt7pitwall.core.sport.SportAutofill
 import com.gt7pitwall.core.strategy.DataSource
 import com.gt7pitwall.core.strategy.FuelReport
@@ -708,6 +709,8 @@ class RaceController(
      */
     fun utterance(text: String, original: String = text, source: CommandSource = CommandSource.VOICE): List<EngineerMessage> {
         val echo = EngineerMessage("Toi : $text", Priority.INFO, MessageCategory.DRIVER)
+        // « La C », « B » juste après « Course de 11 tours : B ou C ? » : c'est la réponse.
+        (seriesAnswer(original) ?: seriesAnswer(text))?.let { return listOf(echo) + chooseSeries(it) }
         // « Course » seul, juste après « tendres : course, sport ou confort ? » : c'est la réponse.
         tyreFamilyAnswer(original)?.let { return listOf(echo) + voiceCommand(it, it.text, source) }
         // « Moyens », « medium », « course tendres » juste après « Tu as monté quelle gomme ? » : c'est la réponse.
@@ -1009,7 +1012,7 @@ class RaceController(
     }
 
     /** Changement d'épreuve (pilote ou reconnaissance automatique) ; messages non filtrés. */
-    private fun switchProfile(id: ProfileId): List<EngineerMessage> {
+    private fun switchProfile(id: ProfileId, announce: Boolean = true): List<EngineerMessage> {
         profiles.select(id)
         // L'édition de la semaine passe avant toute ancienne fiche enregistrée.
         val ed = schedule?.editions?.get(id.series)
@@ -1021,7 +1024,7 @@ class RaceController(
         storage?.saveProfiles(profiles)
         plan = null
         // L'épreuve choisie est annoncée avec son édition de la semaine (ou l'absence de programme).
-        val out = (if (id.series != Series.OTHER) listOf(editionAnnouncement()) else emptyList()) + replan()
+        val out = (if (announce && id.series != Series.OTHER) listOf(editionAnnouncement()) else emptyList()) + replan()
         saveSession()
         return out
     }
@@ -1037,17 +1040,26 @@ class RaceController(
     /** Une ligne pour l'écran : ce que Pitwall sait de l'épreuve en cours, sans rien deviner. */
     val sessionIdentityText: String?
         get() = when (val r = sessionIdentity) {
-            is SessionMatcher.Result.Match -> "${r.series.label} reconnue (${r.evidence.joinToString(", ")})"
+            is SessionMatcher.Result.Match -> "${r.series.label} ${r.confidence.label} (${r.evidence.joinToString(", ")})"
             is SessionMatcher.Result.Ambiguous -> "Épreuve à confirmer : ${r.candidates.joinToString(" ou ") { it.label }}"
             is SessionMatcher.Result.NoMatch -> "Hors programme Sport : ${r.reason}"
             SessionMatcher.Result.Unknown -> null
         }
 
+    /** « Course B ou C ? » posée au pilote : candidates et heure de la question. */
+    private var pendingSeriesChoice: List<Series>? = null
+    private var pendingSeriesChoiceMs = 0L
+    private var recognizedAnnounced = false
+
     /**
-     * Reconnaissance de l'épreuve par la télémétrie : nombre de tours annoncé par GT7 dès le départ, puis circuit
-     * reconnu au premier tour. Une épreuve n'est choisie que si elle seule correspond ; une épreuve contredite n'est
-     * jamais gardée (règlements jamais mélangés). Une course personnalisée ne passe en Sport qu'avec deux preuves
-     * (tours et circuit). Le choix du pilote à l'écran reste prioritaire.
+     * Reconnaissance de l'épreuve par la télémétrie : nombre de tours annoncé par GT7 et catégorie de la voiture dès
+     * la grille, puis circuit reconnu au premier tour ([SessionMatcher]).
+     * - Une seule épreuve compatible : son règlement est appliqué ; « probable » tant que tours et circuit n'ont pas
+     *   tous deux concordé, « reconnue » ensuite. L'annonce ne dit que des éléments vérifiés ([SportAnnouncement]).
+     * - Épreuve active contredite : son règlement est retiré (jamais deux règlements mélangés).
+     * - Plusieurs épreuves possibles aux règlements différents : question simple au pilote (« B ou C ? »).
+     * - Course personnalisée : ne passe en Sport que si l'épreuve est reconnue (tours et circuit).
+     * Le choix du pilote (écran ou réponse) reste prioritaire pour la session.
      */
     private fun identifySession(out: MutableList<EngineerMessage>) {
         if (replay) return
@@ -1057,9 +1069,11 @@ class RaceController(
         if (active.kind != SessionKind.RACE || p.totalLaps <= 0) return
         val st = schedule ?: return
         val today = java.time.Instant.ofEpochMilli(clock()).atZone(com.gt7pitwall.core.sport.GtPlanetFeed.PARIS).toLocalDate()
-        val result = SessionMatcher.match(st.editions, p.totalLaps, sessionTrackEvidence, today)
-        // Course personnalisée : une seule preuve ne suffit pas à la ranger en Sport (même nombre de tours par hasard).
-        val decided = if (result is SessionMatcher.Result.Match && active.mode == SessionMode.CUSTOM && result.evidence.size < 2) {
+        val result = SessionMatcher.match(st.editions, p.totalLaps, sessionTrackEvidence, today, database.carGroup(p.carCode))
+        // Course personnalisée : même nombre de tours ou même catégorie par hasard ; il faut l'épreuve reconnue.
+        val decided = if (result is SessionMatcher.Result.Match && active.mode == SessionMode.CUSTOM &&
+            result.confidence != SessionMatcher.Confidence.RECOGNIZED
+        ) {
             SessionMatcher.Result.Ambiguous(listOf(result.series))
         } else {
             result
@@ -1069,24 +1083,36 @@ class RaceController(
         when (result) {
             is SessionMatcher.Result.Match -> {
                 if (decided !is SessionMatcher.Result.Match) return
-                sessionIdentitySettled = result.evidence.size >= 2 || sessionTrackEvidence != null
+                val recognized = result.confidence == SessionMatcher.Confidence.RECOGNIZED
+                sessionIdentitySettled = recognized
+                pendingSeriesChoice = null
                 val mode = if (active.mode == SessionMode.SPORT_PRACTICE) SessionMode.SPORT_PRACTICE else SessionMode.SPORT_OFFICIAL
                 val target = ProfileId(result.series, SessionKind.RACE, mode)
                 journal.record(
-                    JournalType.DECISION, JournalSource.ENGINE, "Épreuve reconnue : ${target.label}",
+                    JournalType.DECISION, JournalSource.ENGINE, "Épreuve ${result.confidence.label} : ${target.label}",
                     decision = if (target == active) "épreuve active confirmée" else "règlement de la semaine appliqué",
-                    details = mapOf("preuves" to result.evidence.joinToString(", "), "epreuve_precedente" to active.label),
+                    details = mapOf(
+                        "preuves" to result.evidence.joinToString(", "),
+                        "certitude" to result.confidence.name,
+                        "epreuve_precedente" to active.label,
+                        "limite" to "aucune preuve UDP qu'il s'agit de la course officielle plutôt que d'un salon identique",
+                    ),
                 )
-                if (target != active) {
-                    out += EngineerMessage(
-                        "${result.series.label} reconnue (${result.evidence.joinToString(", ")}) : j'applique son règlement de la semaine.",
-                        Priority.NORMAL, MessageCategory.RADIO,
-                    )
-                    out += switchProfile(target)
+                when {
+                    target != active -> {
+                        out += switchProfile(target, announce = false)
+                        out += sportMessage(SportAnnouncement.text(result, p.totalLaps), result)
+                        recognizedAnnounced = recognized
+                    }
+                    recognized && !recognizedAnnounced -> {
+                        recognizedAnnounced = true
+                        out += sportMessage("${result.series.label} confirmée : tours et circuit concordent.", result)
+                    }
                 }
             }
             is SessionMatcher.Result.NoMatch -> {
                 sessionIdentitySettled = true
+                pendingSeriesChoice = null
                 if (!active.sport) return
                 journal.record(
                     JournalType.DECISION, JournalSource.ENGINE, "Course hors programme Sport",
@@ -1099,24 +1125,80 @@ class RaceController(
                 )
                 out += switchProfile(ProfileId.of(SessionMode.CUSTOM, Series.OTHER))
             }
-            is SessionMatcher.Result.Ambiguous -> if (active.sport && active.series !in result.candidates) {
-                // L'épreuve active est contredite : son règlement est retiré en attendant la preuve du circuit.
-                journal.record(
-                    JournalType.DECISION, JournalSource.ENGINE, "Épreuve à confirmer : ${result.candidates.joinToString(" ou ") { it.label }}",
-                    decision = "règlement ${active.label} retiré (contredit par GT7)",
-                    details = mapOf("tours_gt7" to p.totalLaps.toString()),
-                )
-                if (!ambiguityAnnounced) {
+            is SessionMatcher.Result.Ambiguous -> {
+                val contradicted = active.sport && active.series !in result.candidates
+                if (contradicted) {
+                    // L'épreuve active est contredite : son règlement est retiré en attendant une preuve ou le pilote.
+                    journal.record(
+                        JournalType.DECISION, JournalSource.ENGINE, "Épreuve à confirmer : ${result.candidates.joinToString(" ou ") { it.label }}",
+                        decision = "règlement ${active.label} retiré (contredit par GT7)",
+                        details = mapOf("tours_gt7" to p.totalLaps.toString()),
+                    )
+                    out += switchProfile(ProfileId.of(SessionMode.CUSTOM, Series.OTHER))
+                }
+                // Ambiguïté importante : les règlements possibles diffèrent (ou l'épreuve active ne tient plus).
+                val rulesDiffer = result.candidates.mapNotNull { st.editions[it] }
+                    .map { SportAutofill.rules(it, SessionKind.RACE).first }.distinct().size > 1
+                if (!ambiguityAnnounced && result.candidates.size > 1 && (contradicted || rulesDiffer)) {
                     ambiguityAnnounced = true
+                    pendingSeriesChoice = result.candidates
+                    pendingSeriesChoiceMs = clock()
+                    val letters = result.candidates.map { it.letter }
                     out += EngineerMessage(
-                        "Course de ${p.totalLaps} tours : ${result.candidates.joinToString(" ou ") { it.label }}. Je confirme au premier tour.",
-                        Priority.INFO, MessageCategory.RADIO,
+                        "Course de ${p.totalLaps} tours : ${letters.dropLast(1).joinToString(", ")} ou ${letters.last()} ? Dis-moi la lettre.",
+                        Priority.NORMAL, MessageCategory.RADIO, expectsReply = true,
                     )
                 }
-                out += switchProfile(ProfileId.of(SessionMode.CUSTOM, Series.OTHER))
             }
             SessionMatcher.Result.Unknown -> Unit
         }
+    }
+
+    private fun sportMessage(text: String, m: SessionMatcher.Result.Match) = EngineerMessage(
+        text, Priority.NORMAL, MessageCategory.RADIO, dedupKey = "sport-id:$sessionId:${m.series.name}:${m.confidence.name}",
+    )
+
+    /** Réponse à « B ou C ? » : la lettre seule, ou « la C », « course B »… (null sinon, ou question expirée). */
+    private fun seriesAnswer(text: String): Series? {
+        val choices = pendingSeriesChoice ?: return null
+        if (clock() - pendingSeriesChoiceMs > SERIES_QUESTION_WINDOW_MS) {
+            pendingSeriesChoice = null
+            return null
+        }
+        val t = DriverCommandParser.normalize(text).replace(Regex("[.,!?]"), " ").replace(Regex("\\s+"), " ").trim()
+        val m = Regex("^(?:c'?est |c est )?(?:la |le )?(?:course )?(?:sport )?(?:daily )?([a-z'é]+)$").matchEntire(t) ?: return null
+        val letter = when (m.groupValues[1]) {
+            "a", "ah", "premiere" -> 'A'
+            "b", "be", "bé", "bee", "deuxieme", "seconde" -> 'B'
+            "c", "ce", "cé", "ces", "ses", "troisieme" -> 'C'
+            else -> return null
+        }
+        return choices.firstOrNull { it.letter == letter }
+    }
+
+    /** Le pilote désigne l'épreuve : son règlement est appliqué pour la session, sans autre question. */
+    private fun chooseSeries(series: Series): List<EngineerMessage> {
+        pendingSeriesChoice = null
+        sessionIdentitySettled = true
+        val p = snapshot.packet
+        val ed = schedule?.editions?.get(series)
+        val target = ProfileId(series, SessionKind.RACE, if (profile.id.mode == SessionMode.SPORT_PRACTICE) SessionMode.SPORT_PRACTICE else SessionMode.SPORT_OFFICIAL)
+        journal.record(
+            JournalType.DECISION, JournalSource.TRANSCRIPT, "Épreuve désignée par le pilote : ${target.label}",
+            decision = "règlement de la semaine appliqué",
+        )
+        val out = mutableListOf<EngineerMessage>()
+        if (target != profile.id) out += switchProfile(target, announce = false)
+        if (ed != null) {
+            val m = SessionMatcher.Result.Match(series, ed, listOf("confirmée par toi"), SessionMatcher.Confidence.RECOGNIZED)
+            sessionIdentity = m
+            recognizedAnnounced = true
+            out += EngineerMessage(
+                SportAnnouncement.text(m, p?.totalLaps).replaceFirst("${series.label} reconnue.", "Noté, ${series.label}."),
+                Priority.HIGH, MessageCategory.ANSWER,
+            )
+        }
+        return deliver(out)
     }
 
     /** Version de GT7, contexte de réglages / BoP. */
@@ -1173,6 +1255,8 @@ class RaceController(
         sessionIdentitySettled = false
         sessionTrackEvidence = null
         ambiguityAnnounced = false
+        pendingSeriesChoice = null
+        recognizedAnnounced = false
         lastDrivingReport = null
         briefed = false
         pitApproachReminder.reset()
@@ -3076,6 +3160,9 @@ class RaceController(
         /** Délai pour répondre « course », « sport » ou « confort » à la question sur la gomme. */
         const val TYRE_FAMILY_WINDOW_MS = 30_000L
 
+        /** « B ou C ? » : la réponse est attendue une minute (grille, premier tour). */
+        const val SERIES_QUESTION_WINDOW_MS = 60_000L
+
         /** Paquets identiques (voiture « en mouvement » qui ne bouge pas) avant de considérer la télémétrie figée : 0,5 s. */
         const val FROZEN_PACKETS = 30
 
@@ -3231,7 +3318,8 @@ class RaceController(
      * La phrase répond-elle à une question que l'ingénieur vient de poser (gomme montée, famille de gomme) ? Elle va
      * alors directement au moteur, jamais écartée comme bout de phrase par la conversation (course du 26/10).
      */
-    fun answersPendingQuestion(text: String): Boolean = compoundAnswer(text) != null || tyreFamilyAnswer(text) != null
+    fun answersPendingQuestion(text: String): Boolean =
+        compoundAnswer(text) != null || tyreFamilyAnswer(text) != null || seriesAnswer(text) != null
 
     private fun tyreFamilyAnswer(text: String): DriverCommand.Tyres? {
         val (c, hardness) = pendingTyreFamily ?: return null
