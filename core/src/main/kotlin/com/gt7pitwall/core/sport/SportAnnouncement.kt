@@ -6,8 +6,9 @@ import com.gt7pitwall.core.strategy.TyreCompound
  * Ce que l'ingénieur dit d'une course Sport reconnue ou probable. Chaque élément n'est dit que s'il est vérifié :
  * - le nombre de tours, seulement celui annoncé par GT7 (mesure de la PS5) ;
  * - les obligations (gommes imposées, arrêts, multiplicateurs), seulement si une fiche publique les donne ; avec une
- *   seule source, la source est nommée ; contradictoires ou absentes, elles sont dites « non confirmées », jamais
- *   remplacées par une valeur par défaut.
+ *   seule source, la source est nommée ; contradictoires ou absentes, elles sont dites « non confirmé », jamais
+ *   remplacées par une valeur par défaut (« aucun arrêt », « fois 1 ») ;
+ * - une épreuve reconnue n'est jamais dite « officielle » : la PS5 ne distingue pas un salon privé identique.
  *
  * Exemple (deux sources concordantes) : « Course Sport C reconnue. 14 tours. Gommes course durs et course mediums
  * imposées. Je prépare la stratégie. »
@@ -59,16 +60,22 @@ object SportAnnouncement {
         val st = ed.mandatoryStops
         return when {
             st.known && st.value!! > 0 -> "${st.value} arrêt${if (st.value > 1) "s" else ""} obligatoire${if (st.value > 1) "s" else ""}${origin(st)}."
-            st.status == FieldStatus.CONFLICT -> "Arrêts obligatoires : les sources se contredisent."
-            else -> null
+            st.known -> null // la fiche dit explicitement aucun arrêt obligatoire
+            st.status == FieldStatus.CONFLICT -> "Arrêts obligatoires : les sources se contredisent, non confirmé."
+            // Inconnu : jamais « aucun arrêt » par défaut.
+            else -> "Arrêts obligatoires : non confirmé."
         }
     }
 
+    /** Multiplicateurs : valeur et source s'ils sont publiés, « non confirmé » s'ils manquent ou se contredisent. */
     private fun multipliers(ed: Edition): String? {
-        val parts = listOfNotNull(
-            ed.fuelMultiplier.takeIf { it.known && it.value!! > 1 }?.let { "carburant fois ${it.value}" },
-            ed.tyreMultiplier.takeIf { it.known && it.value!! > 1 }?.let { "usure fois ${it.value}" },
-        )
+        fun one(name: String, f: Sourced<Int>): String? = when {
+            f.known && f.value!! > 1 -> "$name fois ${f.value}${origin(f)}"
+            f.known -> null
+            f.status == FieldStatus.CONFLICT -> "$name : sources contradictoires"
+            else -> "$name : non confirmé"
+        }
+        val parts = listOfNotNull(one("carburant", ed.fuelMultiplier), one("usure", ed.tyreMultiplier))
         return parts.takeIf { it.isNotEmpty() }?.joinToString(", ")?.replaceFirstChar { it.uppercase() }?.plus(".")
     }
 }

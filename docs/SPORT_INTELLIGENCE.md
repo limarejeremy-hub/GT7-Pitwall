@@ -17,21 +17,27 @@ code copié.
 | ransh2014/gt7telemtrace (TRACE) | MIT | Tableau de bord PC + analyse 20 graphiques, tour théorique en micro-secteurs de 25 m, score de régularité (tours à +7 % exclus), alertes vocales PC | Micro-secteurs, analyse virage par virage contre le meilleur tour | Idées (Python) | Diagnostic freinage / trajectoire / réaccélération par virage |
 | MoebiusX/gt7-telemetry-analyzer | MIT | Node.js sur PC Windows : HUD 60 Hz, micro-secteurs (10 à 100 tranches), coach audio, enregistrements JSONL bruts en ajout seul | Enregistrement brut complet en ajout seul | Idées (JavaScript, PC) | Format Black Box en ajout seul, tolérant aux coupures |
 
-Applications commerciales ou fermées (pas de code, fonctions déclarées seulement) :
+Applications commerciales ou fermées. **Correction du 27/10** : mon premier audit déclarait à tort Durfu Pit Wall,
+Hector et GT Coach introuvables, et assimilait Traces à TRACE. Les quatre existent. Leurs sites ne répondent pas
+depuis mon environnement (DNS) : les fonctions ci-dessous viennent des fiches officielles des magasins, des
+dépôts publics et des pages indexées. Ce sont des fonctions déclarées, pas testées.
 
-| Nom demandé | Ce que j'ai pu vérifier |
-|---|---|
-| GT Coach | Introuvable sous ce nom. Le plus proche : **Coach Dave Delta** (PC Windows obligatoire, abonnement annoncé à 4,99 €/mois en 2025) : traces, comparaison, coaching IA |
-| GT GridStats | Déjà dans Pitwall : programme (clé facultative) et profil public en lecture seule (branche de référence) |
-| Victory Race Engineer | Application iOS (Cosmic Kettle Software, v3.2.0 du 29/09/2025) : traces des pédales, carburant, températures, voix d'ingénieur. Sa page publique `victorydash.io/daily-races` est déjà une source Sport de Pitwall |
-| Durfu Pit Wall | Introuvable (aucune page publique trouvée) |
-| Traces | Correspond probablement à TRACE (gt7telemtrace) ci-dessus |
-| Hector | Introuvable. Trouvé à la place : un ingénieur IA open source sur Discord (baruta1/gt7-engineer, GTPlanet), et « GT Race Engineer » (Android) |
+| Application | Plate-forme | Reconnaissance de circuit | Données Sport | Coaching / ingénieur | Code réutilisable |
+|---|---|---|---|---|---|
+| **Durfu Pit Wall** (durfu.ro/pitwall) | **Android** (Google Play `com.durfu.pitwall`), Windows, navigateur. Relais PC/Raspberry Pi facultatif (`durfu/pit-wall-relay`) pour partager une connexion | Fiche Microsoft Store : « reconnaît le circuit et la configuration à partir de la position de la voiture » ; carte en direct dans l'offre payante | Non annoncées | Offre payante « Race engineer » : carte, zones de freinage, stratégie carburant ; offre gratuite : tableau de bord | Non : le relais n'a pas de fichier de licence (tous droits réservés par défaut) |
+| **Hector AI** (hector-ai.app) | **Android** (Google Play `svr.league.hector.ai`, mise à jour du 24/10/2026) ; une version de bureau a demandé .NET selon un utilisateur GTPlanet | Non documentée publiquement | Non documentées | « Ingénieur de course basé sur l'IA et HUD pour Gran Turismo 7 » | Non (fermé) |
+| **GT Coach** (gtcoach.app, GT COACH LIMITED) | **PC Windows ou Mac obligatoire** sur le même réseau | Pas de reconnaissance automatique décrite : le pilote choisit la session dans l'application | Oui : les **trois courses quotidiennes et les Time Trials de la semaine**, avec un tour de référence par épreuve qui suit la rotation du jeu | Coaching **vocal en temps réel** contre un tour de référence ; audio par Discord vers le casque PS5 (utile en VR) ; formule annuelle payante | Non (fermé) |
+| **Traces** (traces.dg-edge.com) | Service DG EDGE, **Premium** (4,99 €/mois ou 49,99 €/an) ; plate-forme Android non précisée | Comparaison **à distance identique** (même mètre de piste, pas même seconde) | DG EDGE publie les courses de la semaine (source déjà lue par Pitwall quand elle répond) | **Segments courts par virage** plutôt que secteurs, traces freinage/accélérateur, cohérence sur les 5 meilleurs tours ; pas de voix annoncée | Non (fermé) |
+| Victory Race Engineer | iOS (Cosmic Kettle Software) | Non documentée | Page publique `victorydash.io/daily-races` (source Sport de Pitwall) | Traces des pédales, carburant, températures, voix d'ingénieur | Non (fermé) |
+| Coach Dave Delta | PC Windows obligatoire, abonnement | — | — | Traces, comparaison, coaching IA | Non |
 
-Ce qui ressort : **tous** les concurrents sérieux exigent un PC ou un serveur, ou ne proposent que des tableaux de
-bord. Aucun ne reconnaît automatiquement la course Sport ni n'en applique le règlement. Leur vraie avance porte sur
-deux points : **les traces haute fréquence archivées** (comparaison à distance identique, micro-secteurs) et
-**l'identification exacte du circuit par la géométrie**.
+Ce qui en ressort pour l'ingénieur :
+- **Reconnaître le circuit par la position** (Durfu le fait) est la bonne voie. Pitwall peut le faire sans code
+  fermé grâce aux signatures CC0 de jbhoorasingh.
+- **Comparer à distance identique et par segment de virage** (Traces, TRACE) est la base du diagnostic par virage.
+  Pitwall en aura besoin pour la Black Box.
+- **GT Coach** est le seul à relier coaching et courses Sport de la semaine, mais il exige un PC et ne reconnaît pas
+  la session. Pitwall reste le seul à reconnaître l'épreuve et à appliquer son règlement, sur téléphone seul.
 
 ## 2. Ce que Pitwall a déjà (référence #408)
 
@@ -77,6 +83,23 @@ deux points : **les traces haute fréquence archivées** (comparaison à distanc
 - Une course personnalisée ne passe en Sport que si l'épreuve est **reconnue** (tours et circuit), plus sur une seule
   coïncidence.
 
+## 4 bis. Corrections après contrôle (27/10)
+
+- **Identifier A/B/C ≠ course officielle.** La reconnaissance automatique n'attribue plus jamais le type « Sport
+  officiel ». Elle pose un type « Sport reconnu » : le règlement de la semaine sert à la stratégie, mais la session
+  n'est **jamais comptée** dans les courses Sport vérifiées de la carrière locale.
+  - « Sport officiel » n'est gardé que si le pilote l'avait choisi pour la même épreuve.
+  - Un entraînement reste un entraînement.
+  - Le pilote peut toucher « Sport officiel » pour compter la course dans sa carrière.
+- **Règlement incomplet.**
+  - Une fiche sans arrêts obligatoires ni gommes imposées n'est jamais présentée comme « aucune obligation ». Le
+    plan sans arrêt et les réponses (« pourquoi pas d'arrêt », « prolonger », « box », « avancer ») ajoutent
+    « Attention : l'arrêt obligatoire et les gommes imposées ne sont pas confirmés par le règlement. »
+  - L'usure fait maintenant partie des champs importants.
+  - Une épreuve seulement probable est ajoutée aux réserves de la stratégie.
+- **Multiplicateurs dans l'annonce** : la valeur et sa source quand une seule fiche la donne ; « sources
+  contradictoires » ou « non confirmé » sinon ; jamais « fois 1 » par défaut.
+
 ## 5. Tests
 
 - `SportIntelligenceTest` (5) :
@@ -85,7 +108,13 @@ deux points : **les traces haute fréquence archivées** (comparaison à distanc
   - « reconnue » seulement quand tours et circuit concordent ;
   - annonce exacte avec deux sources, avec une source, puis avec des obligations inconnues ;
   - question « A ou C ? », réponse « la C », règlement appliqué, question close.
-- `SessionIdentityTest` (7) : mis à jour (une seule preuve donne « probable »).
+- `SessionIdentityTest` (7) : mis à jour (une seule preuve donne « probable » ; type « Sport reconnu »).
+- `SportOfficialityTest` (5) :
+  - salon privé reproduisant la B : règlement appliqué, jamais compté comme course officielle ;
+  - épreuve probable jamais promue officielle ;
+  - choix « officiel » du pilote gardé quand les preuves concordent ;
+  - règlement incomplet jamais transformé en « aucune obligation » ;
+  - sources contradictoires dites comme telles.
 - Suite complète du module `core` et compilation Android : voir le compte rendu de la PR et la CI.
 
 ## 6. Black Box — étude (phase 3, pas encore implémentée)

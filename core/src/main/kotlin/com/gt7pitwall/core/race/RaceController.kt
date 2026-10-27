@@ -960,7 +960,10 @@ class RaceController(
         var activeChanged = false
         for ((series, ed) in state.editions) {
             // L'entraînement reçoit aussi l'édition de la semaine, comme modèle : jamais confirmé d'office.
-            for (id in listOf(ProfileId(series, SessionKind.QUALIFYING), ProfileId(series, SessionKind.RACE), ProfileId(series, SessionKind.RACE, SessionMode.SPORT_PRACTICE))) {
+            for (id in listOf(
+                ProfileId(series, SessionKind.QUALIFYING), ProfileId(series, SessionKind.RACE),
+                ProfileId(series, SessionKind.RACE, SessionMode.SPORT_PRACTICE), ProfileId(series, SessionKind.RACE, SessionMode.SPORT_IDENTIFIED),
+            )) {
                 if (id == profiles.active && raceInProgress) continue
                 if (profiles.applyEdition(id, ed) { SportAutofill.rules(ed, it.kind) } && id == profiles.active) activeChanged = true
             }
@@ -1086,8 +1089,7 @@ class RaceController(
                 val recognized = result.confidence == SessionMatcher.Confidence.RECOGNIZED
                 sessionIdentitySettled = recognized
                 pendingSeriesChoice = null
-                val mode = if (active.mode == SessionMode.SPORT_PRACTICE) SessionMode.SPORT_PRACTICE else SessionMode.SPORT_OFFICIAL
-                val target = ProfileId(result.series, SessionKind.RACE, mode)
+                val target = ProfileId(result.series, SessionKind.RACE, autoMode(active, result.series))
                 journal.record(
                     JournalType.DECISION, JournalSource.ENGINE, "Épreuve ${result.confidence.label} : ${target.label}",
                     decision = if (target == active) "épreuve active confirmée" else "règlement de la semaine appliqué",
@@ -1154,6 +1156,17 @@ class RaceController(
         }
     }
 
+    /**
+     * Type de session après identification de l'épreuve [series]. Reconnaître A, B ou C ne dit pas si la course est
+     * officielle : « Sport officiel » n'est gardé que si le pilote l'avait choisi pour cette même épreuve ; un
+     * entraînement reste un entraînement ; sinon « Sport reconnu », jamais compté comme course officielle.
+     */
+    private fun autoMode(active: ProfileId, series: Series): SessionMode = when {
+        active.mode == SessionMode.SPORT_PRACTICE -> SessionMode.SPORT_PRACTICE
+        active.mode == SessionMode.SPORT_OFFICIAL && active.series == series -> SessionMode.SPORT_OFFICIAL
+        else -> SessionMode.SPORT_IDENTIFIED
+    }
+
     private fun sportMessage(text: String, m: SessionMatcher.Result.Match) = EngineerMessage(
         text, Priority.NORMAL, MessageCategory.RADIO, dedupKey = "sport-id:$sessionId:${m.series.name}:${m.confidence.name}",
     )
@@ -1182,7 +1195,7 @@ class RaceController(
         sessionIdentitySettled = true
         val p = snapshot.packet
         val ed = schedule?.editions?.get(series)
-        val target = ProfileId(series, SessionKind.RACE, if (profile.id.mode == SessionMode.SPORT_PRACTICE) SessionMode.SPORT_PRACTICE else SessionMode.SPORT_OFFICIAL)
+        val target = ProfileId(series, SessionKind.RACE, autoMode(profile.id, series))
         journal.record(
             JournalType.DECISION, JournalSource.TRANSCRIPT, "Épreuve désignée par le pilote : ${target.label}",
             decision = "règlement de la semaine appliqué",
@@ -1799,6 +1812,7 @@ class RaceController(
             )
             while (planLog.size > MAX_PLANS) planLog.removeAt(0)
         }
+        engineer.obligationCaveat = obligationCaveat().trim().takeIf { it.isNotEmpty() }
         return engineer.onPlan(plan, p.currentLap)
     }
 
@@ -1901,7 +1915,7 @@ class RaceController(
             if (model.relatedUsed > 0) add("dont ${model.relatedUsed} entraînement(s) ou session(s) au type non précisé : BoP et réglages non vérifiés, confiance limitée")
         }
         val degrading = engineer.grip.degrading || (stint != null && stint.first > 0)
-        return StrategyOptions.compare(input, pace, basis, ruleGaps.map { it.label }, TyreInputs(degrading = degrading))
+        return StrategyOptions.compare(input, pace, basis, unverifiedRuleLabels(), TyreInputs(degrading = degrading))
     }
 
     /**
@@ -2093,6 +2107,27 @@ class RaceController(
 
     private fun firstSentence(s: String): String = s.substringBefore(". ").trimEnd('.') + "."
 
+    /**
+     * Obligations encore inconnues (fiche incomplète ou sources contradictoires). Le règlement enregistré vaut alors
+     * « 0 arrêt, aucune gomme imposée » par défaut : jamais présenté comme une absence d'obligation.
+     */
+    private fun obligationCaveat(): String {
+        val g = ruleGaps
+        val parts = listOfNotNull(
+            "l'arrêt obligatoire".takeIf { RuleField.MANDATORY_STOPS in g },
+            "les gommes imposées".takeIf { RuleField.REQUIRED_TYRES in g },
+        )
+        if (parts.isEmpty()) return ""
+        return " Attention : ${parts.joinToString(" et ")} ${if (parts.size > 1) "ne sont" else "n'est"} pas confirmé${if (parts.size > 1) "s" else ""} par le règlement."
+    }
+
+    /** Ce que la stratégie ne peut pas tenir pour vérifié : champs du règlement inconnus, épreuve seulement probable. */
+    private fun unverifiedRuleLabels(): List<String> = ruleGaps.map { it.label } +
+        listOfNotNull(
+            (sessionIdentity as? SessionMatcher.Result.Match)?.takeIf { it.confidence == SessionMatcher.Confidence.PROBABLE }
+                ?.let { "épreuve ${it.series.label} seulement probable" },
+        )
+
     private fun rulesWarning(): String = strategy?.unverifiedRules?.takeIf { it.isNotEmpty() }
         ?.let { " Attention, règlement non vérifié : ${it.joinToString(", ")}." } ?: ""
 
@@ -2104,7 +2139,7 @@ class RaceController(
     private fun answerWhyStop(asked: Int?): String {
         val p = plan ?: return noPlan
         val lap = (snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)
-        val next = p.nextStop(lap) ?: return "Aucun arrêt n'est prévu : le carburant suffit jusqu'à l'arrivée."
+        val next = p.nextStop(lap) ?: return "Aucun arrêt n'est prévu : le carburant suffit jusqu'à l'arrivée.${obligationCaveat()}"
         val cap = snapshot.packet?.fuelCapacity
         val why = buildList {
             if (next.forFuel) {
@@ -2128,7 +2163,7 @@ class RaceController(
     private fun answerExtend(laps: Int = 1): String {
         val brief = strategyBrief ?: return noPlan
         val lap = (snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)
-        val next = plan?.nextStop(lap) ?: return "Rien à prolonger : aucun arrêt n'est prévu."
+        val next = plan?.nextStop(lap) ?: return "Rien à prolonger : aucun arrêt n'est prévu.${obligationCaveat()}"
         val tyres = if (engineer.grip.degrading) " Attention, tes pneus montrent des signes de dégradation : ce sont des tours plus lents." else ""
         if (laps <= 1) return "Prolonger d'un tour : ${brief.extendOneLap}$tyres"
         // Plus d'un tour : l'autonomie mesurée décide, avec la marge de sécurité du plan.
@@ -2260,7 +2295,7 @@ class RaceController(
 
     private fun answerWhyPitWithFuel(): String {
         val lap = (snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)
-        val next = plan?.nextStop(lap) ?: return "Je ne te fais pas rentrer : aucun arrêt n'est prévu."
+        val next = plan?.nextStop(lap) ?: return "Je ne te fais pas rentrer : aucun arrêt n'est prévu.${obligationCaveat()}"
         return when {
             next.forFuel -> "Ton carburant ne suffit pas jusqu'à l'arrivée : arrêt fin du tour ${next.endOfLap}, ${next.fuel?.let { FuelUnits.amount(it.toFloat(), snapshot.packet?.fuelCapacity) } ?: "quantité à calculer"}."
             next.mandatory -> "Pour l'arrêt obligatoire du règlement, fin du tour ${next.endOfLap}, pas pour l'essence."
@@ -2312,7 +2347,7 @@ class RaceController(
 
     private fun answerEarly(): String {
         val report = strategy ?: return noPlan
-        val o = report.option(OptionKind.EARLY) ?: return "Aucun arrêt n'est prévu : rien à avancer."
+        val o = report.option(OptionKind.EARLY) ?: return "Aucun arrêt n'est prévu : rien à avancer.${obligationCaveat()}"
         if (!o.feasible) return "Avancer l'arrêt : non, ${o.issues.firstOrNull() ?: "plan irréalisable"}."
         val delta = o.deltaMs
         val u = report.uncertaintyMs
@@ -3398,7 +3433,7 @@ class RaceController(
             }
             when {
                 nextStop != null -> append("Prochain arrêt prévu fin du tour ${nextStop.endOfLap}" + (after?.let { ", il restera $it tours." } ?: "."))
-                total != null && lap <= total -> append("Aucun arrêt prévu d'ici l'arrivée.")
+                total != null && lap <= total -> append("Aucun arrêt prévu d'ici l'arrivée.${obligationCaveat()}")
             }
             current?.let { append(" Tu es en ${it.spoken}.") }
             if (allowed.isEmpty()) {

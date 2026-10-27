@@ -574,6 +574,9 @@ class RaceEngineer {
     /** Pourquoi le plan vient de changer (dit avec l'annonce du nouveau plan, puis oublié). */
     var planReason: String? = null
 
+    /** Obligations du règlement non confirmées, dites avec un plan sans arrêt (jamais « aucune obligation »). */
+    var obligationCaveat: String? = null
+
     fun onPlan(newPlan: RacePlan?, currentLap: Int = snapshotLap): List<EngineerMessage> {
         plan = newPlan
         if (raceOver || newPlan == null) return emptyList()
@@ -673,6 +676,7 @@ class RaceEngineer {
         if (p.stops.isEmpty()) {
             append("Stratégie : pas d'arrêt, le carburant suffit")
             append(sourceSentence(p)).append('.')
+            obligationCaveat?.let { append(' ').append(it) }
         } else {
             append("Stratégie : ${p.stops.size} arrêt${if (p.stops.size > 1) "s" else ""}${sourceSentence(p)}. ")
             append(

@@ -84,7 +84,7 @@ class SportIntelligenceTest {
     fun theAnnouncementOnlySaysWhatIsVerified() {
         // Deux sources concordantes : dit sans réserve (exemple de la mission).
         assertEquals(
-            "Course Sport C reconnue. 14 tours. Gommes course durs et course mediums imposées. 1 arrêt obligatoire. Carburant fois 2. Je prépare la stratégie.",
+            "Course Sport C reconnue. 14 tours. Gommes course durs et course mediums imposées. 1 arrêt obligatoire. Carburant fois 2, usure : non confirmé. Je prépare la stratégie.",
             SportAnnouncement.text(edition(setOf(TyreCompound.RH, TyreCompound.RM), secondSource = true), 14),
         )
         // Une seule source : elle est nommée.
@@ -113,7 +113,7 @@ class SportIntelligenceTest {
         assertTrue(s.texts.any { it == "Course de 11 tours : A ou C ? Dis-moi la lettre." }, s.texts.toString())
         assertTrue(c.answersPendingQuestion("la C"))
         val said = c.utterance("la C")
-        assertEquals(ProfileId(Series.DAILY_C, SessionKind.RACE), c.profile.id)
+        assertEquals(ProfileId(Series.DAILY_C, SessionKind.RACE, com.gt7pitwall.core.race.SessionMode.SPORT_IDENTIFIED), c.profile.id)
         assertEquals(1, c.rules.mandatoryStops)
         assertTrue(said.any { it.text.startsWith("Noté, Course Sport C. 11 tours.") }, said.toString())
         // Plus de question en attente : « la C » n'est plus une réponse.

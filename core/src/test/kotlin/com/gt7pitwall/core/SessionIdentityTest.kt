@@ -88,7 +88,8 @@ class SessionIdentityTest {
         c.selectProfile(ProfileId(Series.DAILY_A, SessionKind.RACE))
         val s = RaceSim(c, totalLaps = 11, perLap = 3f)
         s.start()
-        assertEquals(ProfileId(Series.DAILY_C, SessionKind.RACE), c.profile.id)
+        // Reconnue par la télémétrie, pas déclarée officielle par le pilote : jamais « Sport officiel ».
+        assertEquals(ProfileId(Series.DAILY_C, SessionKind.RACE, SessionMode.SPORT_IDENTIFIED), c.profile.id)
         assertEquals(1, c.rules.mandatoryStops)
         assertEquals(2, c.rules.fuelMultiplier)
         assertTrue(s.texts.any { it.startsWith("Course Sport C probable (11 tours).") && "11 tours. " in it }, s.texts.toString())
