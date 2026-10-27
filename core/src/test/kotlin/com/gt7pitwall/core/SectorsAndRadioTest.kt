@@ -137,12 +137,15 @@ class SectorsAndRadioTest {
     fun positionFromGridThenDriverReports() {
         val t = SessionTracker()
         val e = RaceEngineer().apply { shortLapReports = false } // messages de tour détaillés
-        val plain = TestPackets.plain(lap = 0, totalLaps = 5)
-        java.nio.ByteBuffer.wrap(plain).order(java.nio.ByteOrder.LITTLE_ENDIAN).apply {
-            putShort(0x84, 4)
-            putShort(0x86, 12)
+        // La grille n'est retenue qu'une fois stable une seconde (60 paquets) : jamais une valeur fugace.
+        repeat(60) { i ->
+            val plain = TestPackets.plain(lap = 0, totalLaps = 5, packetId = i + 1)
+            java.nio.ByteBuffer.wrap(plain).order(java.nio.ByteOrder.LITTLE_ENDIAN).apply {
+                putShort(0x84, 4)
+                putShort(0x86, 12)
+            }
+            e.onUpdate(t.update(TelemetryParser.parseDecrypted(plain)!!), t.snapshot, null)
         }
-        e.onUpdate(t.update(TelemetryParser.parseDecrypted(plain)!!), t.snapshot, null)
         // Sans position mesurée stable, c'est la déclaration du pilote qui compte.
         assertEquals("Bien reçu, P4.", e.handle(DriverCommand.ReportPosition(4), t.snapshot, null).text)
         assertEquals(4, e.driverPosition)
