@@ -519,6 +519,17 @@ class PitwallEngine(
         voice.speak(EngineerMessage("Radio check. Ici ton ingénieur, je te reçois cinq sur cinq.", Priority.HIGH, MessageCategory.RADIO))
     }
 
+    /** Mesures préalables à la Black Box (Atelier) : rien n'est enregistré, seulement mesuré. */
+    val blackBox = com.gt7pitwall.core.telemetry.BlackBoxProbe()
+    private val _blackBoxReport = MutableStateFlow(listOf("Mesure arrêtée."))
+    val blackBoxReport: StateFlow<List<String>> = _blackBoxReport.asStateFlow()
+    private var lastBlackBoxReportMs = 0L
+
+    fun setBlackBoxMeasure(enabled: Boolean) {
+        if (enabled) blackBox.start() else blackBox.stop()
+        _blackBoxReport.value = if (enabled) listOf("Mesure en cours : lance une course.") else blackBox.report()
+    }
+
     private suspend fun onPacket(p: TelemetryPacket) {
         val now = System.currentTimeMillis()
         if (p.carCode > 0) lastCarPacketAtMs = now
@@ -535,7 +546,15 @@ class PitwallEngine(
         }
         mutex.withLock {
             race.engineer.askPositionEachLap = askPositionEachLap()
+            val t0 = System.nanoTime()
             val messages = race.onPacket(p)
+            if (blackBox.running) {
+                blackBox.onPacket(p, System.nanoTime() - t0)
+                if (now - lastBlackBoxReportMs >= 5_000L) {
+                    lastBlackBoxReportMs = now
+                    _blackBoxReport.value = blackBox.report()
+                }
+            }
             publish(force = messages.isNotEmpty())
             messages.forEach(::deliver)
         }

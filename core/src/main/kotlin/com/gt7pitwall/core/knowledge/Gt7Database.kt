@@ -64,6 +64,10 @@ class Gt7Database(cars: Map<Int, Car>, courses: List<Course>) {
     @Volatile
     var carGroups: Map<Int, String> = emptyMap()
 
+    /** Signatures géométriques des circuits (fichier `track_signatures.json`) ; vide : reconnaissance par la longueur seule. */
+    @Volatile
+    var trackSignatures: List<TrackSignature> = emptyList()
+
     /** Catégorie GT7 de la voiture [code] (« 3 » pour Gr.3, « N » pour les voitures de route), si la base la donne. */
     fun carGroup(code: Int): String? = carGroups[code]
 
