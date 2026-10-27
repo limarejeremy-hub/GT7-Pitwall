@@ -1451,14 +1451,6 @@ class RaceController(
         // Use the last saved session instead of falsely reporting zero measured laps.
         val measuredLapsAtClose = snapshot.laps.size.takeIf { it > 0 }
             ?: sessions[sessionId]?.laps?.size ?: 0
-        journal.end(
-            when (final) {
-                SessionOutcome.FINISHED -> "Fin de session : course terminée"
-                SessionOutcome.INTERRUPTED -> "Fin de session : interrompue (télémétrie arrêtée ou nouvelle session)"
-                SessionOutcome.IN_PROGRESS -> "Fin de session"
-            },
-            details = mapOf("issue" to final.name.lowercase(), "tours_mesures" to measuredLapsAtClose.toString()),
-        )
         val r = currentRecord(final) ?: sessions[sessionId]?.copy(
             outcome = final,
             updatedAtMs = clock(),
@@ -1469,15 +1461,31 @@ class RaceController(
             gridPosition = gridPosition,
             report = lastDrivingReport?.lines.orEmpty(),
             finishPosition = finishPosition,
-        ) ?: return
-        sessions[r.id] = r
-        storage?.saveSession(r)
-        val advice = dna?.advice?.filter { it.sessionId == r.id }.orEmpty()
-        val review = com.gt7pitwall.core.strategy.RaceReview.of(
-            r, advice.size, advice.count { a -> a.lossAfterMs?.let { it < a.lossBeforeMs - com.gt7pitwall.core.driver.DriverProfile.IMPROVED_MS } == true },
         )
-        lastReview = review
-        review.lines().forEach { journal.record(JournalType.DECISION, JournalSource.ENGINE, "Bilan : $it", details = mapOf("session" to r.id)) }
+        if (r != null) {
+            sessions[r.id] = r
+            storage?.saveSession(r)
+            val advice = dna?.advice?.filter { it.sessionId == r.id }.orEmpty()
+            val review = com.gt7pitwall.core.strategy.RaceReview.of(
+                r, advice.size, advice.count { a -> a.lossAfterMs?.let { it < a.lossBeforeMs - com.gt7pitwall.core.driver.DriverProfile.IMPROVED_MS } == true },
+            )
+            lastReview = review
+            // Le bilan appartient à la course qui se termine : écrit AVANT la clôture du journal. Écrit après, il
+            // attendait en mémoire et rejoignait la course suivante.
+            review.lines().forEach {
+                val details = mapOf("session" to r.id)
+                if (journal.sessionId == r.id) journal.record(JournalType.DECISION, JournalSource.ENGINE, "Bilan : $it", details = details)
+                else journal.recordFor(r.id, JournalType.DECISION, JournalSource.ENGINE, "Bilan : $it", details = details)
+            }
+        }
+        journal.end(
+            when (final) {
+                SessionOutcome.FINISHED -> "Fin de session : course terminée"
+                SessionOutcome.INTERRUPTED -> "Fin de session : interrompue (télémétrie arrêtée ou nouvelle session)"
+                SessionOutcome.IN_PROGRESS -> "Fin de session"
+            },
+            details = mapOf("issue" to final.name.lowercase(), "tours_mesures" to measuredLapsAtClose.toString()),
+        )
     }
 
     /** Justesse des prévisions sur les courses comparables archivées (hors session en cours). */

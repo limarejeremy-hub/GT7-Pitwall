@@ -115,9 +115,52 @@ class SessionJournal(
 
     @Synchronized
     fun end(text: String, details: Map<String, String> = emptyMap()) {
-        if (sessionId == null) return
+        val id = sessionId ?: return
         record(JournalType.SESSION, JournalSource.SYSTEM, text, details = details)
+        lastClosedId = id
+        lastClosedSeq = seq
         sessionId = null
+    }
+
+    /** Dernière session close et son dernier numéro d'événement (pour y rattacher un événement tardif). */
+    var lastClosedId: String? = null
+        private set
+    private var lastClosedSeq = 0
+
+    /**
+     * Événement qui appartient à la session [id], même si elle est déjà close (bilan d'une mesure arrêtée depuis le
+     * menu, par exemple). Jamais mis en attente : il ne peut pas glisser vers la course suivante. Session en cours :
+     * équivalent à [record]. Session close : ajouté à son journal enregistré, à la suite de ses événements, marqué
+     * `apres_cloture`.
+     */
+    @Synchronized
+    fun recordFor(
+        id: String,
+        type: JournalType,
+        source: JournalSource,
+        text: String,
+        decision: String? = null,
+        details: Map<String, String> = emptyMap(),
+    ): JournalEvent {
+        if (id == sessionId) return record(type, source, text, decision, details)
+        val next = when (id) {
+            lastClosedId -> ++lastClosedSeq
+            else -> (runCatching { storage?.loadJournal(id)?.size }.getOrNull() ?: 0) + 1
+        }
+        val e = JournalEvent(
+            seq = next,
+            timeMs = clock(),
+            sessionId = id,
+            lap = null,
+            type = type,
+            source = source,
+            text = redact(text).take(MAX_TEXT),
+            telemetry = null,
+            decision = decision?.let { redact(it).take(MAX_TEXT) },
+            details = details.mapValues { redact(it.value).take(MAX_TEXT) } + ("apres_cloture" to "oui"),
+        )
+        runCatching { storage?.appendJournal(id, JournalJson.encode(e)) }
+        return e
     }
 
     /** Ajoute un événement ; le tour et la télémétrie viennent de l'instantané courant, sauf [lap] imposé. */
