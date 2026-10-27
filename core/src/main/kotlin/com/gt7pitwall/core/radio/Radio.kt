@@ -82,6 +82,12 @@ sealed interface VoiceInputEvent {
      * devient périmée, et l'écoute reprend pour la suite de sa phrase.
      */
     data class BargeIn(val heard: String, val mode: DuplexMode) : VoiceInputEvent
+
+    /**
+     * État de l'écoute à consigner dans le journal (reprise après blocage, micro muet) : jamais dit, jamais de son
+     * enregistré, seulement la raison.
+     */
+    data class Diagnostic(val text: String) : VoiceInputEvent
 }
 
 /**

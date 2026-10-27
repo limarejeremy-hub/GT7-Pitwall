@@ -415,6 +415,7 @@ fun PitwallScreen(
                                 voiceRadioCard()
                                 BlackBoxMeasureCard(engine)
                                 CarImageDiagnosticCard()
+                                DatabaseCoverageCard(engine)
                             }
                         }
                     } else {
@@ -436,6 +437,7 @@ fun PitwallScreen(
                             LapHistoryCard(state.snapshot.laps)
                             BlackBoxMeasureCard(engine)
                             CarImageDiagnosticCard()
+                            DatabaseCoverageCard(engine)
                         }
                     }
                 }
@@ -1038,9 +1040,27 @@ private fun RadioDiagnosticsCard(
     val google = voiceInput.googleSpeech
     val diag by (google?.diag ?: remember { kotlinx.coroutines.flow.MutableStateFlow(com.gt7pitwall.app.voice.GoogleDiag()) })
         .collectAsStateWithLifecycle()
+    val watch by voiceInput.diagnostic.collectAsStateWithLifecycle()
     PitCard("Diagnostic radio") {
         DiagLine("Écoute", listen.name.lowercase().replace('_', ' '))
         DiagLine("Micro écouté", mic ?: "aucun")
+        watch?.let { w ->
+            fun s(ms: Long?) = ms?.let { if (it < 1_000) "à l'instant" else "il y a ${it / 1000} s" } ?: "jamais"
+            val stalled = w.state != ListenState.OFF && !w.micLentToGoogle && (w.lastBlockAgoMs ?: Long.MAX_VALUE) > 3_000
+            DiagLine(
+                "Blocs audio reçus",
+                "${"%.1f".format(w.blocksPerSecond)}/s (attendu ≈ 4), dernier ${s(w.lastBlockAgoMs)}, niveau ${w.levelPct} %",
+                if (stalled) PitColors.Red else PitColors.Muted,
+            )
+            if (w.mic?.contains("Fold") == true) {
+                DiagLine("Son non nul (Fold)", s(w.lastSoundAgoMs), if ((w.lastSoundAgoMs ?: Long.MAX_VALUE) > 20_000) PitColors.Red else PitColors.Muted)
+            }
+            if (w.mic?.contains("Discord") == true) DiagLine("Voix du pilote reçue du salon", s(w.remoteVoiceAgoMs))
+            w.pausedForMs?.let { DiagLine("Micro en pause (ingénieur parle)", "depuis ${it / 1000} s", if (it > 30_000) PitColors.Red else PitColors.Muted) }
+            if (w.micLentToGoogle) DiagLine("Micro", "prêté à Google pour une phrase", PitColors.Yellow)
+            DiagLine("Dernier « radio » reconnu", s(w.lastWakeAgoMs))
+            DiagLine("Reprises automatiques", "${w.restarts}" + (w.lastAction?.let { " — $it" } ?: ""), if (w.restarts > 0) PitColors.Yellow else PitColors.Muted)
+        }
         DiagLine("Google", if (!googleOn) "désactivé (Vosk seul)" else if (google?.available == false) "indisponible sur ce téléphone" else diag.phase)
         if (googleOn && diag.engine != null) {
             DiagLine("Dernier essai Google", listOfNotNull(
@@ -1345,13 +1365,30 @@ private fun CornerReportCard(state: PitwallUiState) {
     }
 }
 
+/** Couverture de la base GT7 (Atelier) : voitures, circuits, géométrie, dernière mise à jour connue et sources. */
+@Composable
+private fun DatabaseCoverageCard(engine: PitwallEngine) {
+    val lines = remember(engine.database.cars.size, engine.database.courses.size) {
+        runCatching { com.gt7pitwall.core.knowledge.DatabaseCoverage.lines(engine.database) }.getOrElse { listOf("Couverture indisponible.") }
+    }
+    PitCard("Base GT7 : couverture") {
+        lines.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall, color = PitColors.Muted) }
+    }
+}
+
 /** Diagnostic de la photo officielle de la voiture (Atelier) : pourquoi la silhouette est affichée, le cas échéant. */
 @Composable
 private fun CarImageDiagnosticCard() {
     val status by CarImageLoader.status.collectAsStateWithLifecycle()
+    val request by CarImageLoader.request.collectAsStateWithLifecycle()
+    val context = LocalContext.current
     PitCard("Photo de la voiture") {
         Text(status.text, style = MaterialTheme.typography.bodySmall,
             color = if (status is com.gt7pitwall.core.knowledge.CarImagePolicy.Outcome.Shown) PitColors.Green else PitColors.Muted)
+        request?.let { Text("Dernière requête : $it", style = MaterialTheme.typography.bodySmall, color = PitColors.Muted) }
+        Text("Vignette du catalogue officiel GT7 (images Sony / Polyphony, une seule voiture, en cache sur le téléphone).",
+            style = MaterialTheme.typography.bodySmall, color = PitColors.Muted)
+        OutlinedButton(onClick = { CarImageLoader.retryNow(context) }) { Text("Réessayer la photo maintenant") }
     }
 }
 

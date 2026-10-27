@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -41,7 +43,8 @@ import com.gt7pitwall.core.knowledge.CarImagePolicy
 fun PitwallCarArtwork(carCode: Int?, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val preview = (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
-    val photo = produceState<Bitmap?>(initialValue = null, key1 = carCode, key2 = preview) {
+    val retry by CarImageLoader.retries.collectAsState()
+    val photo = produceState<Bitmap?>(initialValue = null, carCode, preview, retry) {
         value = when {
             carCode == null -> null
             !preview -> null.also { CarImageLoader.disabled("version de diffusion : photos officielles désactivées (droits Sony / Polyphony)") }
@@ -88,14 +91,44 @@ object CarImageLoader {
     /** Échecs récents par voiture : pas de nouvelle requête avant [CarImagePolicy.RETRY_AFTER_FAILURE_MS]. */
     private val failures = java.util.concurrent.ConcurrentHashMap<Int, Pair<Long, String>>()
 
+    private val _retries = kotlinx.coroutines.flow.MutableStateFlow(0)
+    /** Compteur des « Réessayer maintenant » : chaque appui relance un seul chargement. */
+    val retries: kotlinx.coroutines.flow.StateFlow<Int> = _retries
+
+    /** Détail de la dernière requête (adresse, code, type, taille) pour l'Atelier. Jamais d'identifiant privé. */
+    private val _request = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+    val request: kotlinx.coroutines.flow.StateFlow<String?> = _request
+
+    @Volatile
+    private var lastCar: Int? = null
+
+    /** « Réessayer maintenant » : oublie l'échec et l'image en cache de la voiture affichée, puis une seule requête. */
+    fun retryNow(context: Context) {
+        failures.clear()
+        val id = lastCar ?: return
+        val app = context.applicationContext
+        file(app, id).delete()
+        // Une requête, hors du fil de l'interface ; les vignettes affichées relisent ensuite le cache.
+        kotlin.concurrent.thread(name = "car-image") {
+            load(app, id)
+            _retries.value++
+        }
+    }
+
+    private fun file(context: Context, id: Int) =
+        File(File(context.cacheDir, "car-images").apply { mkdirs() }, "v${CarImagePolicy.CACHE_VERSION}-car$id.img")
+
     fun disabled(reason: String) {
         _status.value = CarImagePolicy.Outcome.Disabled(reason)
     }
 
     fun load(context: Context, id: Int): Bitmap? {
         val address = CarImagePolicy.url(id) ?: return null.also { _status.value = CarImagePolicy.Outcome.Disabled("identifiant de voiture $id hors limites") }
-        val dir = File(context.cacheDir, "car-images").apply { mkdirs() }
-        val disk = File(dir, "car$id.img")
+        lastCar = id
+        val disk = file(context, id)
+        val dir = disk.parentFile!!
+        // Ancien chemin supposé (APK #426) : ses fichiers ne sont jamais relus.
+        dir.listFiles { f -> f.name.startsWith("car") }?.forEach { it.delete() }
         val now = System.currentTimeMillis()
         if (disk.isFile && disk.length() in 1..CarImagePolicy.MAX_BYTES.toLong() && now - disk.lastModified() < CarImagePolicy.CACHE_MAX_AGE_MS) {
             BitmapFactory.decodeFile(disk.path)?.let {
@@ -124,7 +157,7 @@ object CarImageLoader {
             return null
         }
         runCatching {
-            val tmp = File(dir, "car$id.tmp")
+            val tmp = File(dir, "v${CarImagePolicy.CACHE_VERSION}-car$id.tmp")
             tmp.writeBytes(bytes)
             tmp.renameTo(disk)
             // Cache borné : les images les plus anciennes partent d'abord.
@@ -149,6 +182,8 @@ object CarImageLoader {
             }
             try {
                 val code = connection.responseCode
+                _request.value = "$url → HTTP $code" + (connection.contentType?.let { ", $it" } ?: "") +
+                    (connection.contentLengthLong.takeIf { it >= 0 }?.let { ", ${it / 1024} Ko annoncés" } ?: "")
                 if (code in 300..399) {
                     val location = connection.getHeaderField("Location")
                     if (!CarImagePolicy.redirectAllowed(location) || ++hops > CarImagePolicy.MAX_REDIRECTS) {
@@ -191,6 +226,7 @@ object CarImageLoader {
         }
         result
     } catch (e: Exception) {
+        _request.value = "$first → aucune réponse"
         CarImagePolicy.Outcome.Network(id, (e.javaClass.simpleName + (e.message?.let { " : ${it.take(80)}" } ?: ""))) to null
     }
 }

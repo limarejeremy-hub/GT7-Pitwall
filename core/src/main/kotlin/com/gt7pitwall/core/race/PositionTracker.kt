@@ -139,7 +139,8 @@ class PositionTracker(
             position = pos
         }
         tracked = true
-        if (p.currentLap == 0) {
+        // « P1 sur 1 » avant le départ : grille pas encore chargée, jamais retenu comme place de départ.
+        if (p.currentLap == 0 && n >= 2) {
             startPosition = pos
             startCars = n
         }

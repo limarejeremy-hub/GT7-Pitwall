@@ -118,7 +118,8 @@ class DatabaseRepository(context: Context, private val database: Gt7Database, pr
 
     private fun status(): String {
         val last = prefs.getLong(KEY_FETCH, 0L).takeIf { it > 0 }
-        val base = "${database.cars.size} voitures, ${database.courses.count { !it.learned }} circuits" +
+        val base = "${database.cars.size} voitures, ${database.courses.count { !it.learned && it.source == null }} circuits" +
+            database.courses.count { it.source != null }.takeIf { it > 0 }?.let { " + $it des notes officielles" }.orEmpty() +
             database.learned.size.takeIf { it > 0 }?.let { ", $it appris" }.orEmpty()
         val error = prefs.getString(KEY_ERROR, null)
         return base + when {
@@ -133,6 +134,7 @@ class DatabaseRepository(context: Context, private val database: Gt7Database, pr
         const val CARS = "cars.csv"
         const val MAKERS = "maker.csv"
         const val COURSES = "course.csv"
+        const val UPDATES = "official_updates.json"
         val FILES = listOf(CARS, MAKERS, COURSES)
         const val GROUPS = "cargrp.csv"
         const val SIGNATURES = "track_signatures.json"
@@ -165,6 +167,8 @@ class DatabaseRepository(context: Context, private val database: Gt7Database, pr
             // Signatures géométriques des circuits (livrées avec l'APK ; données CC0, voir assets/licenses).
             base.trackSignatures = runCatching { TrackSignature.parseAll(asset(SIGNATURES)) }.getOrDefault(emptyList())
             base.numberedCorners = runCatching { com.gt7pitwall.core.analysis.NumberedCorners.parseAll(asset(CORNERS)) }.getOrDefault(emptyMap())
+            // Notes officielles de mise à jour (SUGO en 1.72) : circuits pas encore dans la base communautaire.
+            base.updates = runCatching { com.gt7pitwall.core.knowledge.OfficialUpdates.parse(asset(UPDATES)) }.getOrNull()
             return base
         }
     }

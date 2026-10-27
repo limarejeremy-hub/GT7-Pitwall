@@ -12,7 +12,10 @@ class CarImagePolicyTest {
     @Test
     fun theUrlUsesTheUdpCarCode() {
         // Course du 27/10 : carCode 3474 = Subaru BRZ GT300 '21 dans la base gt7info.
-        assertEquals("https://www.gran-turismo.com/common/dist/gt7/carlist/car_images/car3474.webp", CarImagePolicy.url(3474))
+        assertEquals("https://www.gran-turismo.com/common/dist/gt7/carlist/car_thumbnails/car3474.png", CarImagePolicy.url(3474))
+        // Deux voitures de la mise à jour 1.72, déjà dans cars.csv : Ferrari F355 (3654) et Citroën 2 CV (3653).
+        assertEquals("https://www.gran-turismo.com/common/dist/gt7/carlist/car_thumbnails/car3654.png", CarImagePolicy.url(3654))
+        assertEquals("https://www.gran-turismo.com/common/dist/gt7/carlist/car_thumbnails/car3653.png", CarImagePolicy.url(3653))
         assertNull(CarImagePolicy.url(0))
         assertNull(CarImagePolicy.url(99_999))
     }
@@ -40,7 +43,7 @@ class CarImagePolicyTest {
     @Test
     fun everyFailureIsExplainedForTheWorkshop() {
         assertEquals("HTTP 403 pour la voiture 3474 : accès refusé par le site officiel — silhouette affichée", Outcome.Http(3474, 403).text)
-        assertEquals("HTTP 404 pour la voiture 3474 : pas d'image publiée pour cet identifiant — silhouette affichée", Outcome.Http(3474, 404).text)
+        assertEquals("HTTP 404 pour la voiture 3474 : aucune image à cette adresse (chemin ou voiture absente du catalogue en ligne) — silhouette affichée", Outcome.Http(3474, 404).text)
         assertTrue("text/html" in Outcome.NotAnImage(3474, "text/html").text)
         assertEquals("photo officielle affichée (voiture 3474, 120 Ko)", Outcome.Shown(3474, 122_880, fromCache = false).text)
     }

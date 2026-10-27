@@ -118,7 +118,9 @@ class SessionTracker(
     private var refuelledThisLap = false
     private var lapStartedInPit = false
     private var pending: PendingLap? = null
-    private var gridAnnounced = false
+    private var gridAnnounced: Pair<Int, Int>? = null
+    private var gridCandidate: Pair<Int, Int>? = null
+    private var gridStablePackets = 0
     private var trace = SectorTrace()
     private var outline: TrackOutline? = null
     private var outlineLapMs: Int? = null
@@ -236,9 +238,18 @@ class SessionTracker(
         }
 
         // Seulement avant le départ : si 0x84 évolue en course (non vérifié), rien n'est annoncé (voir PositionProbe).
-        if (!gridAnnounced && p.currentLap == 0 && p.preRacePosition > 0 && p.preRaceCarCount > 0) {
-            gridAnnounced = true
-            events += SessionEvent.GridPosition(p.preRacePosition, p.preRaceCarCount)
+        // Valeur stable une seconde, et jamais « P1 sur 1 » : la grille n'est pas encore chargée (SUGO 27/10 : P1/1 à
+        // 21:00:50, puis P8/15 ; P1 avait été archivé comme place de départ). Une grille corrigée remplace la précédente.
+        if (p.currentLap == 0 && p.preRacePosition > 0 && p.preRaceCarCount >= 2) {
+            val g = p.preRacePosition to p.preRaceCarCount
+            if (g != gridCandidate) {
+                gridCandidate = g
+                gridStablePackets = 0
+            }
+            if (++gridStablePackets == GRID_STABLE_PACKETS && g != gridAnnounced) {
+                gridAnnounced = g
+                events += SessionEvent.GridPosition(g.first, g.second)
+            }
         }
 
         pending?.let { pl ->
@@ -308,7 +319,9 @@ class SessionTracker(
         refuelledThisLap = false
         lapStartedInPit = false
         pending = null
-        gridAnnounced = false
+        gridAnnounced = null
+        gridCandidate = null
+        gridStablePackets = 0
         trace = SectorTrace()
         outline = null
         outlineLapMs = null
@@ -323,5 +336,8 @@ class SessionTracker(
 
         /** Au-delà de 2 s sans paquet au passage de la ligne, les niveaux de carburant de part et d'autre ne sont pas fiables. */
         const val MAX_GAP_PACKETS = 120
+
+        /** Place sur la grille stable une seconde (60 paquets) avant d'être retenue. */
+        const val GRID_STABLE_PACKETS = 60
     }
 }

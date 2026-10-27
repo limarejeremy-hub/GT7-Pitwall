@@ -347,4 +347,20 @@ class LivePositionTest {
         // Chaque annonce donne la place mesurée au moment où elle est dite.
         quiet.zip(times).forEach { (m, t) -> assertEquals("P${t.second}.", announce.find(m.text)!!.value, m.text) }
     }
+
+    /** SUGO 27/10 : « P1 sur 1 » fugace avant le chargement de la grille, puis P8 sur 15 ; P1 était archivé au départ. */
+    @Test
+    fun aTransientP1Of1IsNeverTakenAsTheGrid() {
+        val r = replay(
+            listOf(
+                Seg(0.0, 0, 3, 1, 1, onTrack),
+                Seg(3.0, 0, 3, 8, 15, onTrack),
+                Seg(60.0, 1, 3, 8, 15, onTrack),
+            ),
+            until = 70.0,
+        )
+        assertEquals(8, r.c.engineer.measured.startPosition)
+        val grid = r.c.journal.recent().map { it.text }.filter { it.startsWith("Grille") }
+        assertEquals(listOf("Grille : P8 sur 15"), grid)
+    }
 }

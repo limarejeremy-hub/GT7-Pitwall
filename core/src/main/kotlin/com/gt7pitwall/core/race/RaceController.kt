@@ -132,6 +132,12 @@ class RaceController(
     )
     private var lastPositionChangeClockMs: Long? = null
     private var gridPosition: Int? = null
+
+    /**
+     * Place de départ : la place mesurée stable avant le départ, sinon la grille lue dans le paquet. Le bilan et
+     * l'archive utilisent la même (SUGO 27/10 : l'un disait P8, l'autre P1 d'après une grille pas encore chargée).
+     */
+    private fun startGrid(): Int? = engineer.measured.startPosition ?: gridPosition
     private var finishPosition: Int? = null
     private var briefed = false
     var lastReview: com.gt7pitwall.core.strategy.RaceReview? = null
@@ -541,7 +547,8 @@ class RaceController(
         // Le carburant et la réserve réglementaire ont été dits au début du tour.
         val instruction = buildString {
             append("Box à la fin de ce tour.")
-            if (stop.tyreToFit != null) append(" Monte les ${stop.tyreToFit.spoken}.")
+            // Règlement non confirmé (Sport reconnue, fiche incomplète, règles locales) : la gomme n'est pas un ordre.
+            if (stop.tyreToFit != null) append(" Monte les ${stop.tyreToFit.spoken}" + (if (regulationDoubt() != null) ", si le règlement l'impose." else "."))
             else if (stop.changeTyres) append(" Change les pneus.")
         }
         journal.record(
@@ -550,6 +557,7 @@ class RaceController(
             lap = p.currentLap, details = mapOf(
                 "fraction_piste" to "%.2f".format(java.util.Locale.ROOT, progress ?: 0f),
                 "preuve" to "tour complet précédent et arrêt du plan",
+                "reglement" to (regulationDoubt()?.let { "à confirmer : $it" } ?: "confirmé ou sans obligation"),
             ),
         )
         return listOf(
@@ -1397,7 +1405,7 @@ class RaceController(
             tyres = ledger.changes.map { TyreEntry(it.lap, it.compound) },
             plans = planLog.toList(),
             notes = driverNotes.toList(),
-            gridPosition = gridPosition,
+            gridPosition = startGrid(),
             report = lastDrivingReport?.lines.orEmpty(),
             finishPosition = finishPosition,
         )
@@ -1525,7 +1533,7 @@ class RaceController(
             tyres = ledger.changes.map { TyreEntry(it.lap, it.compound) },
             plans = planLog.toList(),
             notes = driverNotes.toList(),
-            gridPosition = gridPosition,
+            gridPosition = startGrid(),
             report = lastDrivingReport?.lines.orEmpty(),
             finishPosition = finishPosition,
         )
@@ -1731,6 +1739,8 @@ class RaceController(
                         l.tyreCompound?.let { "pneus" to it.name },
                         l.tyreAge?.let { "age_pneus_tours" to it.toString() },
                         "gomme_certaine" to if (l.tyreCertain) "oui" else "non",
+                        // GT7 ne transmet pas la gomme : elle vient toujours d'une déclaration (pilote, réglage, règlement).
+                        "source_gomme" to if (l.tyreCompound != null) "déclarée (pilote, réglage ou règlement), non transmise par GT7" else "inconnue",
                         "age_pneus_certain" to if (l.tyreAgeCertain) "oui" else "non",
                         if (l.pitLane) "sortie_des_stands" to "oui (consommation exclue des moyennes)" else null,
                         l.kerbShare?.let { "vibreurs_pourcent" to Math.round(it * 100).toString() },
@@ -2694,7 +2704,7 @@ class RaceController(
                 laps = snapshot.laps.filter { total == null || it.lapNumber <= total },
                 stopLaps = ledger.stopList.map { it.lap },
                 tyreChanges = ledger.changes.map { it.lap to it.compound?.spoken },
-                grid = engineer.measured.startPosition ?: gridPosition,
+                grid = startGrid(),
                 finish = engineer.measured.finalPosition ?: finishPosition,
                 cornerFindings = cornerFindings(),
                 adviceGiven = d.adviceGiven,
@@ -4004,7 +4014,7 @@ class RaceController(
             val dist = e.lap.distanceM ?: continue
             if (dist < MIN_LEARN_LAP_M) continue
             // Épreuve Sport dont le circuit publié manque à la base (SUGO à sa sortie, le 15/10) : la longueur seule
-            // désignerait à tort un circuit voisin (Laguna Seca, 3,6 km, pour SUGO, 3,7 km). Le circuit est appris sous
+            // désignerait à tort un circuit voisin (Laguna Seca, 3 602 m, pour SUGO, 3 586 m). Le circuit est appris sous
             // son nom publié, avec la longueur mesurée.
             val published = edition?.takeIf { profile.id.series != Series.OTHER }?.trackName?.value
             if (published != null) {

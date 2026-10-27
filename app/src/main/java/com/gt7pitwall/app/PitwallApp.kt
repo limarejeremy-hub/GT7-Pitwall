@@ -88,6 +88,13 @@ class PitwallApp : Application() {
             it.googleSpeech = GoogleSpeech(this)
             it.useGoogleSpeech = settings.googleSpeech
             it.remoteMic = { if (settings.discordMicInput) discord.openMicSource() else null }
+            it.remoteMicAvailable = { settings.discordMicInput && discord.live }
+            it.remoteVoiceMs = { discord.lastPilotVoiceMs }
+            // Fin de lecture perdue (issue #32) : la voix bloquée est réinitialisée, l'écoute reprend.
+            it.onStuckSpeaking = {
+                if (voice.speaking.value) voice.stop()
+                if (discord.speaking.value) discord.stop()
+            }
             it.bench = bench
             // Interruption : seulement là où le matériel le permet (voir DuplexPolicy, testé dans le module core).
             it.duplexMode = { duplexMode() }
