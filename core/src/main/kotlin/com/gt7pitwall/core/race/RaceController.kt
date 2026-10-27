@@ -504,6 +504,7 @@ class RaceController(
             out += drivingReportAtFinish()
         }
         out += briefingIfDue(p)
+        out += localRulesQuestionIfDue(p)
         out += finalSectorPitCall(p)
         updateMood(events, positionChanges, p)
         if (events.any { it is SessionEvent.LapCompleted || it is SessionEvent.RaceFinished || it is SessionEvent.PitVisitEnded }) saveSession()
@@ -593,6 +594,13 @@ class RaceController(
                         confirmed != null && suspect -> stopRecorded(confirmed) + tyresChanged(lap)
                         confirmed != null -> stopRecorded(confirmed) + afterStopQuestions()
                         ledger.awaitingTyreChangeAnswer -> tyresChanged(lap)
+                        localRulesQuestionOpen() -> {
+                            localRulesPendingMs = null
+                            localRulesConfirmed = true
+                            journal.record(JournalType.DECISION, JournalSource.TRANSCRIPT, "Règlement local confirmé par le pilote pour cette course",
+                                decision = "obligations mémorisées appliquées", details = localRulesDetails())
+                            listOf("Compris, je garde ce règlement pour cette course.")
+                        }
                         else -> listOf("Je n'attendais pas de confirmation.")
                     },
                 )
@@ -622,6 +630,18 @@ class RaceController(
                             // « Tu as monté quelle gomme ? » → « non » : la gomme reste inconnue, le changement reste noté.
                             ledger.awaitingTyreDeclaration = false
                             listOf("D'accord, gomme non précisée : je ne la devine pas.")
+                        }
+                        localRulesQuestionOpen() -> {
+                            localRulesPendingMs = null
+                            localRulesConfirmed = true
+                            val fields = mutableSetOf(RuleField.MANDATORY_STOPS)
+                            if (rules.requiredTyres.isNotEmpty()) fields += RuleField.REQUIRED_TYRES
+                            rules = profiles.declare(rules.copy(mandatoryStops = 0, requiredTyres = emptySet()), fields).rules
+                            storage?.saveRules(rules)
+                            storage?.saveProfiles(profiles)
+                            journal.record(JournalType.DECISION, JournalSource.TRANSCRIPT, "Règlement local écarté par le pilote pour cette course",
+                                decision = "aucune obligation d'arrêt ni de gomme", details = mapOf("provenance" to "déclaré par le pilote"))
+                            listOf("D'accord : pas d'arrêt obligatoire ni de gomme imposée pour cette course.")
                         }
                         else -> listOf("Je n'attendais pas de réponse.")
                     },
@@ -1301,6 +1321,9 @@ class RaceController(
         ambiguityAnnounced = false
         pendingSeriesChoice = null
         recognizedAnnounced = false
+        localRulesAsked = false
+        localRulesConfirmed = false
+        localRulesPendingMs = null
         lastDrivingReport = null
         briefed = false
         pitApproachReminder.reset()
@@ -1337,8 +1360,22 @@ class RaceController(
                 "multiplicateur_carburant" to rules.fuelMultiplier.toString(),
                 "multiplicateur_pneus" to rules.tyreMultiplier.toString(),
                 "arrets_obligatoires" to rules.mandatoryStops.toString(),
+                // Provenance du règlement (issue #30-B) : la PS5 ne transmet que les tours ; le reste vient d'une fiche
+                // publique, du pilote ou d'un règlement mémorisé, jamais « détecté par la PS5 ».
+                "source_reglement" to ruleSourceLabel(),
             ).toMap(),
         )
+    }
+
+    /** D'où vient le règlement appliqué (journal, écran) : jamais « la PS5 » pour autre chose que les tours. */
+    fun ruleSourceLabel(): String = when {
+        profile.id.mode == SessionMode.CUSTOM -> if (localRulesConfirmed) "règlement local confirmé par le pilote pour cette course"
+            else "règlement local mémorisé, non vérifié par la PS5"
+        profile.confirmed -> "règlement confirmé par le pilote"
+        profile.id.sport -> "fiche publique de la semaine (" + profile.ruleStatus.entries
+            .filter { it.key in setOf(RuleField.LAPS, RuleField.MANDATORY_STOPS, RuleField.REQUIRED_TYRES, RuleField.FUEL_MULTIPLIER, RuleField.TYRE_MULTIPLIER) }
+            .joinToString(", ") { "${it.key.label} ${it.value.label}" } + ")"
+        else -> "saisi ou mémorisé, non vérifié par la PS5"
     }
 
     /** Session en cours, telle qu'elle serait archivée maintenant ; null tant qu'aucun tour n'est bouclé. */
@@ -1615,6 +1652,44 @@ class RaceController(
             driverCoach.known(driverKey)?.traits()?.text?.let { add("Mémoire du pilote : $it") }
         }
         add("Objectif : gagner des places par le rythme et les bonnes décisions. Écarts, noms et pneus des adversaires : non accessibles en UDP GT7.")
+    }
+
+    /**
+     * Course personnalisée : la PS5 ne transmet ni les arrêts obligatoires ni les gommes imposées. Un règlement mémorisé
+     * d'une course précédente (27/10 : « 1 arrêt obligatoire ») n'est jamais présenté comme confirmé : au départ,
+     * une seule question courte, et seulement si ce règlement contient une obligation qui change la stratégie.
+     * Sans réponse, il reste appliqué mais signalé « à confirmer » dans les appels au stand.
+     */
+    private var localRulesAsked = false
+    private var localRulesConfirmed = false
+    private var localRulesPendingMs: Long? = null
+
+    private fun localObligations(): Boolean = rules.mandatoryStops > 0 || rules.requiredTyres.isNotEmpty()
+
+    private fun localRulesQuestionOpen(): Boolean =
+        localRulesPendingMs?.let { clock() - it <= LOCAL_RULES_QUESTION_MS } == true && profile.id.mode == SessionMode.CUSTOM
+
+    private fun localRulesDetails(): Map<String, String> = mapOf(
+        "arrets_obligatoires" to rules.mandatoryStops.toString(),
+        "gommes_imposees" to rules.requiredTyres.joinToString(",") { it.name }.ifEmpty { "aucune" },
+        "provenance" to "règlement local mémorisé",
+    )
+
+    private fun localRulesQuestionIfDue(p: TelemetryPacket): List<EngineerMessage> {
+        if (localRulesAsked || replay || sessionFinished || profile.id.mode != SessionMode.CUSTOM || profile.id.kind != SessionKind.RACE) return emptyList()
+        if (p.totalLaps <= 0 || p.currentLap > 1 || !localObligations()) return emptyList()
+        localRulesAsked = true
+        localRulesPendingMs = clock()
+        val what = listOfNotNull(
+            rules.mandatoryStops.takeIf { it > 0 }?.let { "$it arrêt${if (it > 1) "s" else ""} obligatoire${if (it > 1) "s" else ""}" },
+            rules.requiredTyres.takeIf { it.isNotEmpty() }?.let { r -> "gommes imposées ${r.joinToString(" et ") { it.spoken }}" },
+        ).joinToString(", ")
+        journal.record(JournalType.DECISION, JournalSource.ENGINE, "Règlement local mémorisé à confirmer : $what",
+            decision = "non transmis par la PS5 ; question au pilote", details = localRulesDetails())
+        return listOf(EngineerMessage(
+            "Course personnalisée : j'ai en mémoire $what. Toujours valable pour cette course ?",
+            Priority.NORMAL, MessageCategory.RADIO, expectsReply = true,
+        ))
     }
 
     private fun briefingIfDue(p: TelemetryPacket): List<EngineerMessage> {
@@ -2152,6 +2227,11 @@ class RaceController(
      * règlement du pilote, jamais mis en doute.
      */
     fun regulationDoubt(): String? {
+        // Course personnalisée : obligations venues d'un règlement mémorisé, jamais de la PS5, tant que le pilote ne
+        // les a pas confirmées pour cette course.
+        if (profile.id.mode == SessionMode.CUSTOM && localRulesAsked && !localRulesConfirmed && localObligations()) {
+            return "règlement local mémorisé, non confirmé pour cette course"
+        }
         if (!profile.id.sport || profile.confirmed) return null
         val reasons = mutableListOf<String>()
         // Épreuve choisie par le pilote (officiel, entraînement) : son choix vaut identification. Seule une épreuve
@@ -3266,6 +3346,9 @@ class RaceController(
 
         /** « Tu confirmes … ? » : le « oui » est attendu 45 s au plus. */
         const val CONFIRMATION_WINDOW_MS = 45_000L
+
+        /** Question sur le règlement local mémorisé : réponse attendue 60 s (grille, début du premier tour). */
+        const val LOCAL_RULES_QUESTION_MS = 60_000L
 
         /** « B ou C ? » : la réponse est attendue une minute (grille, premier tour). */
         const val SERIES_QUESTION_WINDOW_MS = 60_000L
