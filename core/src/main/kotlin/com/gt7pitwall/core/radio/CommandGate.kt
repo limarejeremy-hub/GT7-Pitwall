@@ -148,7 +148,7 @@ object CommandGate {
     private const val RADIO_COMMAND_MAX_WORDS = 4
 
     private fun sensitive(c: DriverCommand) = when (c) {
-        DriverCommand.DeclareStop, is DriverCommand.StopAndTyres, DriverCommand.CancelStop, is DriverCommand.Tyres,
+        DriverCommand.DeclareStop, is DriverCommand.StopAndTyres, DriverCommand.CancelStop, DriverCommand.CancelPlannedStop, is DriverCommand.Tyres,
         DriverCommand.TyresChanged, is DriverCommand.TyresKept, is DriverCommand.Rule, is DriverCommand.ReportPosition, DriverCommand.ReportLast,
         DriverCommand.Overtook, DriverCommand.Overtaken, is DriverCommand.SeveralPlaces, DriverCommand.Rain, DriverCommand.Dry,
         -> true
@@ -191,7 +191,10 @@ object CommandGate {
         }
         // « J'ai changé les pneus mais pas fait le plein » : la négation porte sur le plein, pas sur les pneus.
         val clause = if (command is DriverCommand.Tyres || command == DriverCommand.TyresChanged) tyreClause(text) else text
-        val mode = StatementGuard.mode(clause, ignoreRuleNegations = command is DriverCommand.Rule || command == DriverCommand.CancelStop)
+        val mode = StatementGuard.mode(
+            clause,
+            ignoreRuleNegations = command is DriverCommand.Rule || command == DriverCommand.CancelStop || command == DriverCommand.CancelPlannedStop,
+        )
         val t = DriverCommandParser.normalize(text)
         val garbled = "[unk]" in t
         val v = when (command) {
@@ -200,6 +203,13 @@ object CommandGate {
                 StatementGuard.Mode.QUESTION, StatementGuard.Mode.HYPOTHETICAL, StatementGuard.Mode.FUTURE, StatementGuard.Mode.WISH,
                 StatementGuard.Mode.ABOUT_OTHERS,
                 -> Vetting.Discuss(mode, "D'accord, je ne retire aucun arrêt.")
+                else -> Vetting.Execute(command)
+            }
+            // « Oublie l'arrêt, tu n'en as pas besoin » : une consigne de stratégie (la négation porte sur le besoin).
+            DriverCommand.CancelPlannedStop -> when (mode) {
+                StatementGuard.Mode.QUESTION -> Vetting.Redirect(DriverCommand.Ask(DriverQuery.STOP_STATUS))
+                StatementGuard.Mode.HYPOTHETICAL, StatementGuard.Mode.ABOUT_OTHERS ->
+                    Vetting.Discuss(mode, "C'est une hypothèse : je garde le plan d'arrêt tel quel.")
                 else -> Vetting.Execute(command)
             }
             is DriverCommand.Tyres, DriverCommand.TyresChanged -> tyres(command, mode, garbled, ctx)
@@ -329,6 +339,7 @@ object CommandGate {
     fun confirmation(command: DriverCommand): String = when (command) {
         DriverCommand.DeclareStop, is DriverCommand.StopAndTyres -> "Tu confirmes que tu as effectué ton arrêt ?"
         DriverCommand.CancelStop -> "Tu confirmes que je retire le dernier arrêt ?"
+        DriverCommand.CancelPlannedStop -> "Tu confirmes : on supprime l'arrêt prévu ?"
         is DriverCommand.Tyres -> if (command.atStart || command.current) "Tu confirmes tes pneus ?" else "Tu confirmes ce changement de pneus ?"
         DriverCommand.TyresChanged -> "Tu confirmes que tu as changé les pneus ?"
         is DriverCommand.TyresKept -> "Tu confirmes que tu as gardé les mêmes pneus ?"

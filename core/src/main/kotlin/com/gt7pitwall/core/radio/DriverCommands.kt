@@ -42,8 +42,18 @@ sealed interface DriverCommand {
     /** « J'ai fait mon arrêt et changé les pneus » : arrêt déclaré et pneus dans la même phrase. */
     data class StopAndTyres(val tyres: DriverCommand) : DriverCommand
 
-    /** "Annule l'arrêt". */
+    /**
+     * « Annule l'arrêt », « je n'ai pas fait d'arrêt », « retire le dernier arrêt » : retirer un arrêt ENREGISTRÉ
+     * (déclaré ou détecté). Formulation générique « annule l'arrêt » sans arrêt récent : traitée comme
+     * [CancelPlannedStop] par le contrôleur.
+     */
     data object CancelStop : DriverCommand
+
+    /**
+     * « Oublie l'arrêt au stand, tu n'en as pas besoin », « on ne rentre pas » : renoncer à l'arrêt PRÉVU par le plan
+     * (stratégie). Jamais un arrêt enregistré (course du 27/10 : « Aucun arrêt à retirer », puis « box » continuait).
+     */
+    data object CancelPlannedStop : DriverCommand
 
     /** "J'ai mis les durs" / "je pars en mediums" : gommes déclarées (le texte est interprété avec le règlement). */
     data class Tyres(
@@ -141,6 +151,15 @@ object DriverCommandParser {
             .replace(Regex("\\s+"), " ")
             .trim()
 
+    private val STOP_WORD = Regex("(arret|stand|box)")
+
+    /** Renoncer à l'arrêt prévu (verbe d'abandon proche du mot arrêt / stand, ou « pas besoin de rentrer »). */
+    private val PLANNED_CANCEL = Regex(
+        "(oublie|oublier|zappe|laisse tomber|supprime|enleve|retire)( l'| la | le | les | ton | mon | cet | l |)(arret|stand|box)|" +
+            "pas besoin (d'arret|de stand|de rentrer|de t'arreter|de s'arreter|de m'arreter|de passer aux stands?)|" +
+            "(on|je) (ne )?rentre(s)? pas|annule(r)? (l'arret prevu|le stand|l'arret au stand|les stands)|plus (d'arret|de stand) prevu",
+    )
+
     fun parse(text: String): DriverCommand? {
         // Google ponctue (« J'ai fait mon arrêt. »), Vosk non : la ponctuation ne doit pas cacher un mot.
         // Le « ? » reste, séparé, comme indice de question.
@@ -184,8 +203,18 @@ object DriverCommandParser {
         if (has(t, "essentiel", "moins de messages", "moins de radio")) return DriverCommand.Essential
         if (has(t, "tu peux parler", "reparle", "parle-moi", "parle moi", "radio complete", "plus de messages")) return DriverCommand.Talk
 
+        // « As-tu enlevé les arrêts aux stands ? » (27/10) : une question sur le plan, jamais une nouvelle annulation.
+        if (STOP_WORD.containsMatchIn(t) && has(t, "enleve", "retire", "supprime", "annule", "oublie") &&
+            (has(t, "?") || Regex("^(est ce que |est-ce que )?(as tu|as-tu|t'as|tu as|tu l'as|l'as tu|c'est bon)").containsMatchIn(t))
+        ) return DriverCommand.Ask(DriverQuery.STOP_STATUS)
+        // Arrêt ENREGISTRÉ (déclaré ou détecté) : « je n'ai pas fait d'arrêt », « retire le dernier arrêt ».
+        if (has(t, "pas fait d'arret", "pas d'arret fait", "pas arrete", "dernier arret", "arret enregistre", "arret que j'ai fait", "arret fait par erreur")) {
+            return DriverCommand.CancelStop
+        }
+        // Arrêt PRÉVU : « oublie l'arrêt (au stand), tu n'en as pas besoin », « pas besoin de rentrer », « on ne rentre pas ».
+        if (PLANNED_CANCEL.containsMatchIn(t) && !has(t, "obligatoire")) return DriverCommand.CancelPlannedStop
         ruleIn(t)?.let { return it }
-        if (has(t, "annule l'arret", "annule arret", "annuler l'arret", "pas fait d'arret", "pas d'arret fait", "pas arrete")) {
+        if (has(t, "annule l'arret", "annule arret", "annuler l'arret")) {
             return DriverCommand.CancelStop
         }
         stopIn(t)?.let { return it }

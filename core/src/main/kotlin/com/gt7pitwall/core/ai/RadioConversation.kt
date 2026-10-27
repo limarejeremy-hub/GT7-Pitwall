@@ -100,7 +100,12 @@ class RadioConversation(
         // Question de pilotage : reconnue aussi sur la phrase libre (le vocabulaire radio la déforme).
         val drivingQuery = com.gt7pitwall.core.engineer.DrivingAnalysis.classify(heardFree)
             ?: com.gt7pitwall.core.engineer.DrivingAnalysis.classify(text)
-        val parsedQuick = DriverCommandParser.parse(text)
+        // Phrase libre d'abord pour les questions d'état du plan (« as tu enlever les arret aux stands »), que le
+        // vocabulaire radio déforme ; sinon le vocabulaire radio.
+        val parsedQuick = DriverCommandParser.parse(text).let { p ->
+            val free = DriverCommandParser.parse(heardFree)
+            if (free is DriverCommand.Ask && free.query == com.gt7pitwall.core.radio.DriverQuery.STOP_STATUS) free else p ?: free?.takeIf { it is DriverCommand.Ask }
+        }
         val quick = if (drivingQuery != null && (parsedQuick == null || parsedQuick is DriverCommand.Ask)) DriverCommand.Ask(drivingQuery) else parsedQuick
         val localQueries = setOf(
             com.gt7pitwall.core.radio.DriverQuery.PLAN,
@@ -109,6 +114,9 @@ class RadioConversation(
             com.gt7pitwall.core.radio.DriverQuery.TYRE_CHANGE,
             com.gt7pitwall.core.radio.DriverQuery.NEXT_TYRE,
             com.gt7pitwall.core.radio.DriverQuery.POSITION,
+            // « As-tu enlevé l'arrêt ? » (27/10) : l'état du plan, instantané, jamais une nouvelle annulation.
+            com.gt7pitwall.core.radio.DriverQuery.STOP_STATUS,
+            com.gt7pitwall.core.radio.DriverQuery.OBLIGATIONS,
         ) + com.gt7pitwall.core.engineer.DrivingAnalysis.QUERIES
         // Sauf une question sur l'aide de l'ingénieur (« tu vas m'aider pour l'essence ? ») ou une demande d'avis
         // (« tu penses que ma stratégie tient la route ? ») : ce ne sont pas des demandes de chiffre.

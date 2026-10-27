@@ -182,7 +182,8 @@ class PositionTracker(
 
     companion object {
         /** Une valeur doit tenir 3 s : un roue dans roue fait alterner 0x84 en quelques dixièmes. */
-        const val STABLE_MS = 3_000L
+        /** Place constante 2 s avant d'être retenue (27/10 : 3 s, places annoncées trop tard). */
+        const val STABLE_MS = 2_000L
         const val FINISH_STABLE_MS = 1_000L
         const val UNAVAILABLE_MS = 5_000L
         const val MAX_CARS = 40

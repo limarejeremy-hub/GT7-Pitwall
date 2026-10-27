@@ -99,6 +99,16 @@ data class PitwallUiState(
     val drivingReport: List<String> = emptyList(),
     /** Préparation intégrale au départ, affichée sans multiplier les annonces vocales. */
     val preRaceBrief: List<String> = emptyList(),
+    /** Virages de la session (libellé, X, Z) pour la carte d'Analyse. */
+    val cornerMarks: List<Triple<String, Float, Float>> = emptyList(),
+    /** Bilan par virage, le plus coûteux d'abord. */
+    val cornerReport: List<String> = emptyList(),
+    /** Origine de la numérotation des virages affichée. */
+    val cornerNumbering: String = "",
+    /** Baisse de rythme du relais : pneus ou pilotage, lue virage par virage (jamais d'usure en %). */
+    val tyreOrDriving: String = "",
+    /** Arrivée franchie (la télémétrie continue mais la course est finie : « Course terminée — 5/5 »). */
+    val raceFinished: Boolean = false,
     /** Épreuve reconnue par la télémétrie pour la session en cours (null : rien à dire). */
     val sessionIdentity: String? = null,
     /** Tours bouclés avec les pneus actuels (d'après les changements déclarés par le pilote). */
@@ -524,6 +534,7 @@ class PitwallEngine(
     private val _blackBoxReport = MutableStateFlow(listOf("Mesure arrêtée."))
     val blackBoxReport: StateFlow<List<String>> = _blackBoxReport.asStateFlow()
     private var lastBlackBoxReportMs = 0L
+    private var lastCornerMs = 0L
     private var lastBlackBoxJournalMs = 0L
 
     fun setBlackBoxMeasure(enabled: Boolean) {
@@ -631,6 +642,27 @@ class PitwallEngine(
                 db = database,
             )
         } else _state.value.garageCar
+        // Virages : recalculés au plus toutes les 2 s (passages ajoutés à la fin de chaque tour).
+        val cornersDue = force || now - lastCornerMs >= 2_000L
+        val tyreOrDriving = if (cornersDue) race.tyreOrDriving().text else _state.value.tyreOrDriving
+        val corners = if (cornersDue) {
+            lastCornerMs = now
+            val labels = race.cornerLabels()
+            Triple(
+                race.cornerMarks(),
+                race.cornerReport().map { it.text },
+                when {
+                    labels.isEmpty() -> ""
+                    labels.values.all { it.community } -> race.course?.let { c -> database.numberedCorners[c.id] }
+                        ?.let { if (it.matchesOfficial) "Numérotation du circuit (source communautaire CC0)." else "Numérotation communautaire, différente du nombre officiel de virages : à vérifier." }
+                        ?: ""
+                    labels.values.any { it.community } -> "T : numérotation du circuit (source communautaire CC0) ; V : virage détecté, numéro estimé."
+                    else -> "Numéros estimés (virages détectés par Pitwall) : pas de relevé pour ce circuit."
+                },
+            )
+        } else {
+            Triple(_state.value.cornerMarks, _state.value.cornerReport, _state.value.cornerNumbering)
+        }
         val archiveCount = race.archivedCount
         val career = if (force || archiveCount != lastCareerArchiveCount ||
             now - lastCareerMs >= 2_500L) {
@@ -663,6 +695,11 @@ class PitwallEngine(
             drivingReport = race.lastDrivingReport?.lines.orEmpty(),
             preRaceBrief = if (force || snap.packet?.currentLap == 0) race.victoryBriefing() else _state.value.preRaceBrief,
             sessionIdentity = race.sessionIdentityText,
+            raceFinished = race.raceFinished,
+            cornerMarks = corners.first,
+            cornerReport = corners.second,
+            cornerNumbering = corners.third,
+            tyreOrDriving = tyreOrDriving,
             tyreAgeLaps = race.ledger.tyreAge((race.snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)),
             askTyreChange = race.ledger.awaitingTyreChangeAnswer,
             profile = race.profile,

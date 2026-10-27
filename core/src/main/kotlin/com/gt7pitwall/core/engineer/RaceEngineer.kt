@@ -330,7 +330,8 @@ class RaceEngineer {
                 "Je reprends toutes les annonces."
             }
             // Confirmations, arrêts et gommes sont traités par le contrôleur de course, qui connaît le registre.
-            DriverCommand.Yes, DriverCommand.No, DriverCommand.DeclareStop, DriverCommand.CancelStop, is DriverCommand.Tyres, DriverCommand.TyresChanged,
+            DriverCommand.Yes, DriverCommand.No, DriverCommand.DeclareStop, DriverCommand.CancelStop, DriverCommand.CancelPlannedStop,
+            is DriverCommand.Tyres, DriverCommand.TyresChanged,
             is DriverCommand.TyresKept, is DriverCommand.StopAndTyres ->
                 "Je n'ai pas de registre de course pour enregistrer ça."
             DriverCommand.Repeat -> return lastSpoken?.copy(timestampMs = System.currentTimeMillis())
@@ -394,6 +395,7 @@ class RaceEngineer {
             ).joinToString(" ").ifBlank { "Pas encore de tour bouclé." }
 
             DriverQuery.OBLIGATIONS -> "Je n'ai pas de registre de course."
+            DriverQuery.STOP_STATUS -> plan?.stops?.firstOrNull()?.let { "Un arrêt est prévu fin du tour ${it.endOfLap}." } ?: "Aucun arrêt n'est prévu."
             DriverQuery.TYRE_CHANGE -> "Je n'ai pas de registre de course."
             DriverQuery.NEXT_TYRE -> "Je n'ai pas de registre de course."
 
@@ -948,17 +950,21 @@ class RaceEngineer {
         const val SECTOR_THRESHOLD_MS = 100
         const val WARNING_REPEAT_LAPS = 5
 
-        /** Au plus une annonce de position toutes les 8 s. */
-        const val POSITION_ANNOUNCE_MS = 8_000L
+        /** Au plus une annonce de position toutes les 5 s (course du 27/10 : P10 → P2, places dites trop tard). */
+        const val POSITION_ANNOUNCE_MS = 5_000L
 
         /**
-         * Course silencieuse : au plus une place toutes les 30 s (course du 25/10 : 30 annonces de place en 7 tours, parfois
-         * deux d'affilée). La place exacte reste à l'écran et sur « position ? ».
+         * Course silencieuse : au plus une place toutes les 10 s. Course du 25/10 : 30 annonces en 7 tours avec l'ancien
+         * réglage de 8 s sans mode silencieux ; course du 27/10 : avec 30 s, les nouvelles places arrivaient trop tard
+         * (P10 → P2). La mesure stabilisée et le regroupement évitent toujours de dire chaque dépassement.
          */
-        const val QUIET_POSITION_ANNOUNCE_MS = 30_000L
+        const val QUIET_POSITION_ANNOUNCE_MS = 10_000L
 
-        /** Position inchangée depuis 3 s (en plus des 3 s de stabilité de la mesure) : dépassements multiples regroupés. */
-        const val POSITION_GROUP_MS = 3_000L
+        /**
+         * Position inchangée depuis 1,5 s (en plus des 2 s de stabilité de la mesure) : deux dépassements à moins de
+         * 3,5 s l'un de l'autre (20/10 : P16 puis P15 à 3,1 s) donnent une seule annonce.
+         */
+        const val POSITION_GROUP_MS = 1_500L
 
         /** Sujet des annonces de position (voir [com.gt7pitwall.core.radio.RadioPacer]). */
         const val POSITION_TOPIC = "position"

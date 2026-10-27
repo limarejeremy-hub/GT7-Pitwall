@@ -379,8 +379,9 @@ fun PitwallScreen(
                     Text("Tes points forts, ce que tu peux améliorer, et pourquoi.",
                         color = PitColors.Muted, style = MaterialTheme.typography.bodySmall)
                     DrivingCard(engine)
+                    CornerReportCard(state)
                     LapCard(state)
-                    TrackMapCard(state.snapshot.trackOutline, state.snapshot.packet)
+                    TrackMapCard(state.snapshot.trackOutline, state.snapshot.packet, state.cornerMarks)
                     LapHistoryCard(state.snapshot.laps)
                     CarCard(state.snapshot.packet, state.gForce)
                     FuelCard(state.fuel, state.snapshot.packet)
@@ -407,12 +408,13 @@ fun PitwallScreen(
                                 RaceSetupCard(state, rules, engine.database, engine::setRules,
                                     engine::command, engine::selectProfile, engine::updateProfile,
                                     engine::confirmRules, onRefreshSchedule, engine::declareRules)
-                                TrackMapCard(state.snapshot.trackOutline, state.snapshot.packet)
+                                TrackMapCard(state.snapshot.trackOutline, state.snapshot.packet, state.cornerMarks)
                                 FuelCard(state.fuel, state.snapshot.packet)
                                 TyreCard(state, rules)
                                 RadioCard(radio, engine::command)
                                 voiceRadioCard()
                                 BlackBoxMeasureCard(engine)
+                                CarImageDiagnosticCard()
                             }
                         }
                     } else {
@@ -426,13 +428,14 @@ fun PitwallScreen(
                                 engine::confirmRules, onRefreshSchedule, engine::declareRules)
                             DriveCard(state.snapshot.packet)
                             CarCard(state.snapshot.packet, state.gForce)
-                            TrackMapCard(state.snapshot.trackOutline, state.snapshot.packet)
+                            TrackMapCard(state.snapshot.trackOutline, state.snapshot.packet, state.cornerMarks)
                             FuelCard(state.fuel, state.snapshot.packet)
                             TyreCard(state, rules)
                             RadioCard(radio, engine::command)
                             voiceRadioCard()
                             LapHistoryCard(state.snapshot.laps)
                             BlackBoxMeasureCard(engine)
+                            CarImageDiagnosticCard()
                         }
                     }
                 }
@@ -647,12 +650,7 @@ private fun LapCard(state: PitwallUiState) {
             Text("En attente de télémétrie", color = PitColors.Muted)
             return@PitCard
         }
-        val lapText = when {
-            p.currentLap <= 0 -> "Avant départ"
-            p.totalLaps > 0 && p.currentLap > p.totalLaps -> "Terminée"
-            p.totalLaps > 0 -> "${p.currentLap} / ${p.totalLaps}"
-            else -> "${p.currentLap}"
-        }
+        val lapText = com.gt7pitwall.core.session.LapDisplay.of(p.currentLap, p.totalLaps, state.raceFinished).line
         // Type de session toujours visible : un entraînement n'est jamais pris pour une Course Sport officielle.
         Text(
             state.profile.id.label,
@@ -1325,6 +1323,35 @@ private fun DrivingCard(engine: PitwallEngine) {
         }
         Text("Ce que Pitwall a appris", style = MaterialTheme.typography.bodyMedium)
         state.learning.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall) }
+    }
+}
+
+/** Bilan par virage (Analyse) : passages comparables, perte, cause mesurée et confiance. Le détail reste ici, pas à la radio. */
+@Composable
+private fun CornerReportCard(state: PitwallUiState) {
+    PitCard("Virages") {
+        if (state.cornerReport.isEmpty()) {
+            Text("Le bilan par virage apparaît après deux tours propres complets (départ, stands et tours perturbés écartés).",
+                style = MaterialTheme.typography.bodySmall, color = PitColors.Muted)
+        } else {
+            state.cornerReport.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall) }
+            Text(state.cornerNumbering, style = MaterialTheme.typography.bodySmall, color = PitColors.Muted)
+        }
+        if (state.tyreOrDriving.isNotEmpty()) {
+            Text("Pneus ou pilotage ? ${state.tyreOrDriving}", style = MaterialTheme.typography.bodySmall)
+            Text("Comparaison début/fin du relais sur les mêmes virages. GT7 ne transmet pas l'usure : aucun pourcentage.",
+                style = MaterialTheme.typography.bodySmall, color = PitColors.Muted)
+        }
+    }
+}
+
+/** Diagnostic de la photo officielle de la voiture (Atelier) : pourquoi la silhouette est affichée, le cas échéant. */
+@Composable
+private fun CarImageDiagnosticCard() {
+    val status by CarImageLoader.status.collectAsStateWithLifecycle()
+    PitCard("Photo de la voiture") {
+        Text(status.text, style = MaterialTheme.typography.bodySmall,
+            color = if (status is com.gt7pitwall.core.knowledge.CarImagePolicy.Outcome.Shown) PitColors.Green else PitColors.Muted)
     }
 }
 

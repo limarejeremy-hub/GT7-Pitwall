@@ -171,8 +171,10 @@ private fun RaceHero(state: PitwallUiState, modifier: Modifier, onOpen: () -> Un
             }
             Column(Modifier.weight(.85f), horizontalAlignment = Alignment.CenterHorizontally) {
                 Eyebrow("TOUR")
-                Value(packet?.currentLap?.takeIf { it > 0 }?.toString() ?: "—", 38)
-                Hint(packet?.totalLaps?.takeIf { it > 0 }?.let { "sur " + it } ?: "avant départ")
+                // Après l'arrivée, GT7 envoie « tour 6 sur 5 » : « 5/5 », course terminée (27/10).
+                val lap = com.gt7pitwall.core.session.LapDisplay.of(packet?.currentLap, packet?.totalLaps, state.raceFinished)
+                Value(lap.value, if (lap.finished) 30 else 38)
+                Hint(lap.hint)
             }
         }
     }

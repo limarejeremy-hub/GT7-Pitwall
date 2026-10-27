@@ -124,8 +124,11 @@ class PitDetectionTest {
         s.say("annule l'arrêt")
         assertEquals(0, s.controller.ledger.stopCount)
         assertTrue(s.lastAnswer.startsWith("Arrêt 1 retiré"))
+        // Plus d'arrêt enregistré récent : « annule l'arrêt » vise l'arrêt PRÉVU (course du 27/10). Règlement local d'une
+        // course personnalisée : l'obligation est retirée, saisie par le pilote, et le plan recalculé.
         s.say("annule l'arrêt")
-        assertTrue(s.lastAnswer.startsWith("Aucun arrêt à retirer"))
+        assertTrue(s.lastAnswer.startsWith("C'est noté : plus d'arrêt obligatoire."), s.lastAnswer)
+        assertEquals(0, s.controller.rules.mandatoryStops)
     }
 
     @Test

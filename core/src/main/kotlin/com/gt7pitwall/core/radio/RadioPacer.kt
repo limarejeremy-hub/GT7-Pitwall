@@ -99,6 +99,16 @@ class RadioPacer(
         // Annonces devenues périmées : trop anciennes, ou tour dépassé.
         held.removeAll { h -> nowMs - h.atMs > ttl(h.message) || (lap != null && h.message.validUntilLap?.let { lap > it } == true) }
         val free = freeSinceMs?.let { nowMs - it >= freeMs } == true
+        // Une place (« P5. ») est courte et vite périmée : un bref moment calme suffit (jamais pendant un freinage ou
+        // un virage serré : [busy] reste prioritaire).
+        val shortFree = freeSinceMs?.let { nowMs - it >= SHORT_FREE_MS } == true
+        if (!free && shortFree) {
+            val quick = held.filter { it.message.topic == com.gt7pitwall.core.engineer.RaceEngineer.POSITION_TOPIC }
+            if (quick.isNotEmpty()) {
+                held.removeAll(quick.toSet())
+                out += quick.last().message
+            }
+        }
         if (free && held.isNotEmpty()) {
             // Les plus importantes d'abord, au plus [MAX_RELEASE] d'un coup : le reste attend la ligne droite suivante.
             val release = held.sortedWith(compareByDescending<Held> { it.message.priority }.thenBy { it.atMs }).take(MAX_RELEASE)
@@ -113,6 +123,11 @@ class RadioPacer(
     private fun ttl(m: EngineerMessage): Long = m.ttlMs ?: when (m.priority) {
         Priority.INFO -> INFO_TTL_MS
         else -> NORMAL_TTL_MS
+    }
+
+    /** Retire de la file les annonces devenues fausses (plan d'arrêt annulé par le pilote). */
+    fun drop(predicate: (EngineerMessage) -> Boolean) {
+        held.removeAll { predicate(it.message) }
     }
 
     fun clear() {
@@ -142,6 +157,8 @@ class RadioPacer(
         const val LOCK_SLIP = 0.85f
         const val SPIN_SLIP = 1.2f
         const val FREE_MS = 1_200L
+        /** Calme suffisant pour une annonce de place (quelques syllabes). */
+        const val SHORT_FREE_MS = 500L
         const val MAX_TICK_PACKETS = 60
         const val RELEASE_GAP_MS = 3_000L
         const val MAX_RELEASE = 2

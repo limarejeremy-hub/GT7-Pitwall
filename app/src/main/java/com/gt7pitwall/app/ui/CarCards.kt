@@ -17,6 +17,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -227,7 +228,12 @@ private fun Indicator(label: String, active: Boolean, color: Color, modifier: Mo
 
 /** Carte du circuit dessinée avec les positions réelles de la voiture pendant le meilleur tour complet. */
 @Composable
-fun TrackMapCard(outline: TrackOutline?, p: TelemetryPacket?) {
+fun TrackMapCard(
+    outline: TrackOutline?,
+    p: TelemetryPacket?,
+    /** Virages (libellé, X, Z) : « T5 » numérotation du circuit, « V3 » virage détecté au numéro estimé. */
+    corners: List<Triple<String, Float, Float>> = emptyList(),
+) {
     SmallCard("Circuit") {
         if (outline == null || outline.xs.size < 2) {
             Text(
@@ -260,10 +266,26 @@ fun TrackMapCard(outline: TrackOutline?, p: TelemetryPacket?) {
             // Ligne de départ et débuts des secteurs Pitwall.
             drawCircle(Color.White, 5.dp.toPx(), pt(outline.xs[0], outline.zs[0]))
             outline.sectorStarts.forEach { i -> drawCircle(PitColors.Purple, 5.dp.toPx(), pt(outline.xs[i], outline.zs[i])) }
+            // Numéros des virages à leur apex (issue #30-C).
+            if (corners.isNotEmpty()) {
+                val paint = android.graphics.Paint().apply {
+                    isAntiAlias = true
+                    textSize = 11.dp.toPx()
+                    color = android.graphics.Color.WHITE
+                    typeface = android.graphics.Typeface.DEFAULT_BOLD
+                }
+                corners.forEach { (label, x, z) ->
+                    val o = pt(x, z)
+                    drawCircle(PitColors.Cyan, 3.dp.toPx(), o)
+                    paint.color = if (label.startsWith("T")) android.graphics.Color.WHITE else android.graphics.Color.LTGRAY
+                    drawContext.canvas.nativeCanvas.drawText(label, o.x + 5.dp.toPx(), o.y - 4.dp.toPx(), paint)
+                }
+            }
             if (p != null) drawCircle(PitColors.Orange, 7.dp.toPx(), pt(p.positionX, p.positionZ))
         }
         Text(
-            "Tracé du tour ${outline.lapNumber} • blanc : ligne • violet : secteurs • orange : toi",
+            "Tracé du tour ${outline.lapNumber} • blanc : ligne • violet : secteurs • orange : toi" +
+                if (corners.any { it.first.startsWith("V") }) " • V : virage détecté, numéro estimé" else "",
             color = PitColors.Muted,
             style = MaterialTheme.typography.bodySmall,
         )

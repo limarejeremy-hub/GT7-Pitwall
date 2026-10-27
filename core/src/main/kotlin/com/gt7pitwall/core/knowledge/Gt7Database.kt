@@ -64,6 +64,10 @@ class Gt7Database(cars: Map<Int, Car>, courses: List<Course>) {
     @Volatile
     var carGroups: Map<Int, String> = emptyMap()
 
+    /** Virages numérotés par circuit (fichier `track_corners.json`, source communautaire CC0) ; vide : virages estimés. */
+    @Volatile
+    var numberedCorners: Map<Int, com.gt7pitwall.core.analysis.NumberedCorners> = emptyMap()
+
     /** Signatures géométriques des circuits (fichier `track_signatures.json`) ; vide : reconnaissance par la longueur seule. */
     @Volatile
     var trackSignatures: List<TrackSignature> = emptyList()
