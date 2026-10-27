@@ -379,8 +379,9 @@ fun PitwallScreen(
                     Text("Tes points forts, ce que tu peux améliorer, et pourquoi.",
                         color = PitColors.Muted, style = MaterialTheme.typography.bodySmall)
                     DrivingCard(engine)
+                    CornerReportCard(state)
                     LapCard(state)
-                    TrackMapCard(state.snapshot.trackOutline, state.snapshot.packet)
+                    TrackMapCard(state.snapshot.trackOutline, state.snapshot.packet, state.cornerMarks)
                     LapHistoryCard(state.snapshot.laps)
                     CarCard(state.snapshot.packet, state.gForce)
                     FuelCard(state.fuel, state.snapshot.packet)
@@ -407,7 +408,7 @@ fun PitwallScreen(
                                 RaceSetupCard(state, rules, engine.database, engine::setRules,
                                     engine::command, engine::selectProfile, engine::updateProfile,
                                     engine::confirmRules, onRefreshSchedule, engine::declareRules)
-                                TrackMapCard(state.snapshot.trackOutline, state.snapshot.packet)
+                                TrackMapCard(state.snapshot.trackOutline, state.snapshot.packet, state.cornerMarks)
                                 FuelCard(state.fuel, state.snapshot.packet)
                                 TyreCard(state, rules)
                                 RadioCard(radio, engine::command)
@@ -427,7 +428,7 @@ fun PitwallScreen(
                                 engine::confirmRules, onRefreshSchedule, engine::declareRules)
                             DriveCard(state.snapshot.packet)
                             CarCard(state.snapshot.packet, state.gForce)
-                            TrackMapCard(state.snapshot.trackOutline, state.snapshot.packet)
+                            TrackMapCard(state.snapshot.trackOutline, state.snapshot.packet, state.cornerMarks)
                             FuelCard(state.fuel, state.snapshot.packet)
                             TyreCard(state, rules)
                             RadioCard(radio, engine::command)
@@ -1329,6 +1330,20 @@ private fun DrivingCard(engine: PitwallEngine) {
  * Mesures préalables à la Black Box, sur la Fold, pendant une vraie course : débit et pertes de paquets, temps de
  * calcul, taille de trace compressée, batterie. Rien n'est enregistré.
  */
+/** Bilan par virage (Analyse) : passages comparables, perte, cause mesurée et confiance. Le détail reste ici, pas à la radio. */
+@Composable
+private fun CornerReportCard(state: PitwallUiState) {
+    PitCard("Virages") {
+        if (state.cornerReport.isEmpty()) {
+            Text("Le bilan par virage apparaît après deux tours propres complets (départ, stands et tours perturbés écartés).",
+                style = MaterialTheme.typography.bodySmall, color = PitColors.Muted)
+        } else {
+            state.cornerReport.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall) }
+            Text(state.cornerNumbering, style = MaterialTheme.typography.bodySmall, color = PitColors.Muted)
+        }
+    }
+}
+
 /** Diagnostic de la photo officielle de la voiture (Atelier) : pourquoi la silhouette est affichée, le cas échéant. */
 @Composable
 private fun CarImageDiagnosticCard() {

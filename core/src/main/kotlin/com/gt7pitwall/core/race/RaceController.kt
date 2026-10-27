@@ -1486,7 +1486,9 @@ class RaceController(
         return out
     }
 
-    private fun journalCoaching(said: List<EngineerMessage>): List<EngineerMessage> {
+    private fun journalCoaching(raw: List<EngineerMessage>): List<EngineerMessage> {
+        // La voix et la carte d'Analyse parlent du même virage (numérotation du circuit quand elle est connue).
+        val said = if (raw.isEmpty()) raw else raw.map { it.copy(text = relabelCorners(it.text)) }
         for (m in said) {
             journal.record(
                 JournalType.ENGINEER, JournalSource.ENGINE, "Coaching : ${m.text}",
@@ -2718,13 +2720,57 @@ class RaceController(
     fun drivingAnswer(query: DriverQuery): String {
         if (query == DriverQuery.DRIVING_LEARNED) return learningReport().take(LEARNED_RADIO_LINES).joinToString(" ")
         val pitLaps = ledger.stopList.flatMap { listOf(it.lap, it.lap + 1) }.toSet()
-        return com.gt7pitwall.core.engineer.DrivingAnalysis.answer(query, snapshot.laps, pitLaps, cornerFindings())
+        // Virage où la perte se répète, avec une cause mesurée et une confiance au moins moyenne : en premier.
+        val measured = cornerReport().firstOrNull {
+            it.meanLossMs >= 100 && it.cause != null && it.confidence != com.gt7pitwall.core.analysis.CornerReport.Confidence.LOW
+        }?.let { l ->
+            "Au ${l.label} : ${String.format(java.util.Locale.FRANCE, "%.1f", l.meanLossMs / 1000.0)} s perdues en moyenne sur ton meilleur passage ; " +
+                "cause probable : ${l.cause} (confiance ${l.confidence.label})."
+        }
+        return com.gt7pitwall.core.engineer.DrivingAnalysis.answer(query, snapshot.laps, pitLaps, listOfNotNull(measured) + cornerFindings())
     }
 
     /** Constats mesurés virage par virage (profil de pilotage), vides tant qu'il n'y en a pas. */
-    fun cornerFindings(): List<String> = runCatching { driverCoach.findings() }.getOrElse { e ->
+    fun cornerFindings(): List<String> = runCatching { driverCoach.findings().map(::relabelCorners) }.getOrElse { e ->
         diagnostic("constats par virage", e)
         emptyList()
+    }
+
+    /**
+     * Libellés des virages détectés dans cette session : « T5 » d'après la numérotation communautaire du circuit quand
+     * l'apex correspond, sinon « V3 » (estimé). Vide sans carte des virages.
+     */
+    fun cornerLabels(): Map<Int, com.gt7pitwall.core.analysis.CornerLabels.Label> = runCatching {
+        val map = driverCoach.profile?.map ?: return emptyMap()
+        val c = course
+        com.gt7pitwall.core.analysis.CornerLabels.of(map, c?.let { database.numberedCorners[it.id] }, reverse = c?.reverse == true)
+    }.getOrElse { diagnostic("numérotation des virages", it); emptyMap() }
+
+    /** Apex des virages détectés (X, Z) avec leur libellé, pour la carte d'Analyse. */
+    fun cornerMarks(): List<Triple<String, Float, Float>> = runCatching {
+        val map = driverCoach.profile?.map ?: return emptyList()
+        val labels = cornerLabels()
+        map.corners.map { k ->
+            val i = (k.apexM / com.gt7pitwall.core.analysis.CornerMap.STEP_M).roundToInt().coerceIn(0, map.xs.size - 1)
+            Triple(labels[k.number]?.text ?: "V${k.number}", map.xs[i], map.zs[i])
+        }
+    }.getOrElse { emptyList() }
+
+    /** Bilan par virage de la session (passages valides comparés au meilleur), le plus coûteux d'abord. */
+    fun cornerReport(): List<com.gt7pitwall.core.analysis.CornerReport.Line> = runCatching {
+        com.gt7pitwall.core.analysis.CornerReport.of(driverCoach.passes, cornerLabels())
+    }.getOrElse { diagnostic("bilan par virage", it); emptyList() }
+
+    /**
+     * « Virage 7 » (numéro de détection) devient « virage 5 » quand la numérotation du circuit est connue, pour que la
+     * voix et la carte parlent du même virage.
+     */
+    private fun relabelCorners(text: String): String {
+        val labels = cornerLabels().takeIf { it.isNotEmpty() } ?: return text
+        return Regex("([Vv])irage (\\d+)").replace(text) { m ->
+            val l = labels[m.groupValues[2].toInt()]
+            if (l != null && l.community) "${m.groupValues[1]}irage ${l.text.removePrefix("T")}" else m.value
+        }
     }
 
     /** Une phrase vient d'être échangée : la suivante peut la continuer (« pourquoi ? »). */
