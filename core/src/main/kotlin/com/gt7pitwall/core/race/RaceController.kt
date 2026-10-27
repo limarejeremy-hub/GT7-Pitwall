@@ -4004,7 +4004,7 @@ class RaceController(
             val dist = e.lap.distanceM ?: continue
             if (dist < MIN_LEARN_LAP_M) continue
             // Épreuve Sport dont le circuit publié manque à la base (SUGO à sa sortie, le 15/10) : la longueur seule
-            // désignerait à tort un circuit voisin (Laguna Seca, 3,6 km, pour SUGO, 3,7 km). Le circuit est appris sous
+            // désignerait à tort un circuit voisin (Laguna Seca, 3 602 m, pour SUGO, 3 586 m). Le circuit est appris sous
             // son nom publié, avec la longueur mesurée.
             val published = edition?.takeIf { profile.id.series != Series.OTHER }?.trackName?.value
             if (published != null) {

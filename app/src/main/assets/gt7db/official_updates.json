@@ -1,0 +1,26 @@
+{
+  "format": "gt7pitwall-official-updates",
+  "game_version": "1.72",
+  "published": "15/10/2026",
+  "source": "Notes de mise à jour GT7 Spec IV partie 1 (1.72) : https://www.gran-turismo.com/fr/gt7/news/00_1852636.html — relevé de l'issue #33, à revérifier sur la page officielle",
+  "tracks": [
+    {
+      "name": "SUGO International Racing Course",
+      "aliases": ["sugo"],
+      "length_m": 3586,
+      "corners": 13,
+      "category": "circuit"
+    }
+  ],
+  "cars": [
+    {"id": 3653, "name": "Citroën 2 CV 6 Charleston '86"},
+    {"id": 3654, "name": "Ferrari F355 Berlinetta '94"},
+    {"id": 683, "name": "Honda Civic Si Group A version '87"},
+    {"id": 3655, "name": "Honda Step WGN Spada Premium Line '23"},
+    {"id": 3609, "name": "Mazda RX-VISION GT3 EVO '26"},
+    {"id": 3656, "name": "Xiaomi VGT"}
+  ],
+  "upcoming": [
+    "Spec IV partie 2 (décembre 2026) : Autumn Ring et six voitures, annoncés par le PlayStation Blog le 03/09/2026"
+  ]
+}

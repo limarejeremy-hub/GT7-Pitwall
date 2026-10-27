@@ -415,6 +415,7 @@ fun PitwallScreen(
                                 voiceRadioCard()
                                 BlackBoxMeasureCard(engine)
                                 CarImageDiagnosticCard()
+                                DatabaseCoverageCard(engine)
                             }
                         }
                     } else {
@@ -436,6 +437,7 @@ fun PitwallScreen(
                             LapHistoryCard(state.snapshot.laps)
                             BlackBoxMeasureCard(engine)
                             CarImageDiagnosticCard()
+                            DatabaseCoverageCard(engine)
                         }
                     }
                 }
@@ -1360,6 +1362,17 @@ private fun CornerReportCard(state: PitwallUiState) {
             Text("Comparaison début/fin du relais sur les mêmes virages. GT7 ne transmet pas l'usure : aucun pourcentage.",
                 style = MaterialTheme.typography.bodySmall, color = PitColors.Muted)
         }
+    }
+}
+
+/** Couverture de la base GT7 (Atelier) : voitures, circuits, géométrie, dernière mise à jour connue et sources. */
+@Composable
+private fun DatabaseCoverageCard(engine: PitwallEngine) {
+    val lines = remember(engine.database.cars.size, engine.database.courses.size) {
+        runCatching { com.gt7pitwall.core.knowledge.DatabaseCoverage.lines(engine.database) }.getOrElse { listOf("Couverture indisponible.") }
+    }
+    PitCard("Base GT7 : couverture") {
+        lines.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall, color = PitColors.Muted) }
     }
 }
 

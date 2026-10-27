@@ -25,6 +25,10 @@ data class Course(
      * Sport, longueur mesurée sur un tour complet. Remplacé par la fiche officielle dès qu'elle paraît.
      */
     val learned: Boolean = false,
+    /** Fiche tirée des notes officielles de mise à jour (absente de la base communautaire) : leur libellé. */
+    val source: String? = null,
+    /** Nombre officiel de virages, quand la source le donne (jamais leurs positions). */
+    val officialCorners: Int? = null,
 ) {
     val label: String get() = if (reverse) "$name (inversé)" else name
 }
@@ -50,11 +54,33 @@ class Gt7Database(cars: Map<Int, Car>, courses: List<Course>) {
     var courses: List<Course> = courses
         private set
 
+    /**
+     * Notes officielles de mise à jour (circuits que la base communautaire n'a pas encore). Un circuit déjà appris sous
+     * le même nom garde son identifiant : sa mémoire (chronos, consommation, historique) reste attachée.
+     */
+    @Volatile
+    var updates: OfficialUpdates? = null
+        set(value) {
+            field = value
+            recompute()
+        }
+
     /** Liste combinée recalculée à chaque changement, jamais à chaque lecture (elle sert à chaque paquet). */
     private fun recompute() {
         val o = official
         val names = o.map { key(it.name) }.toSet()
-        courses = o + learnedCourses.filter { key(it.name) !in names }
+        val u = updates
+        val added = u?.tracks.orEmpty()
+            // La base communautaire a publié le circuit : sa fiche fait foi.
+            .filter { t -> o.none { t.matches(it.name) } }
+            .mapIndexed { i, t ->
+                val adopted = learnedCourses.firstOrNull { t.matches(it.name) }
+                Course(
+                    adopted?.id ?: (UPDATES_FIRST_ID - i), t.name, t.category, t.lengthM, null, 1, reverse = false, noRain = false,
+                    source = u!!.label, officialCorners = t.corners,
+                )
+            }
+        courses = o + added + learnedCourses.filter { l -> key(l.name) !in names && added.none { it.id == l.id } }
     }
 
     /**
@@ -75,8 +101,11 @@ class Gt7Database(cars: Map<Int, Car>, courses: List<Course>) {
     /** Catégorie GT7 de la voiture [code] (« 3 » pour Gr.3, « N » pour les voitures de route), si la base la donne. */
     fun carGroup(code: Int): String? = carGroups[code]
 
-    /** Circuits appris encore utiles (sans fiche officielle du même nom), pour l'enregistrement. */
-    val learned: List<Course> get() = courses.filter { it.learned }
+    /**
+     * Circuits appris encore utiles, pour l'enregistrement : sans fiche de la base communautaire du même nom. Un circuit
+     * appris complété par les notes officielles reste enregistré (son identifiant porte sa mémoire).
+     */
+    val learned: List<Course> get() = learnedCourses.filter { l -> official.none { key(it.name) == key(l.name) } }
 
     /** Nouvelle version de la base communautaire : remplace voitures et circuits officiels, garde les circuits appris. */
     fun replace(fresh: Gt7Database) {
@@ -98,6 +127,8 @@ class Gt7Database(cars: Map<Int, Car>, courses: List<Course>) {
      */
     fun learn(name: String, lengthM: Int): Course {
         courses.firstOrNull { key(it.name) == key(name) }?.let { return it }
+        // Nom d'épreuve différent du nom officiel (« Sportsland SUGO ») : la fiche des notes officielles.
+        updates?.tracks?.firstOrNull { it.matches(name) }?.let { t -> courses.firstOrNull { it.name == t.name } }?.let { return it }
         val id = minOf(LEARNED_FIRST_ID, (learnedCourses.minOfOrNull { it.id } ?: 0) - 1)
         val c = Course(id, name, "circuit", lengthM, null, 1, reverse = false, noRain = false, learned = true)
         learnedCourses = learnedCourses + c
@@ -130,6 +161,9 @@ class Gt7Database(cars: Map<Int, Car>, courses: List<Course>) {
 
         /** Premier identifiant d'un circuit appris (les identifiants officiels sont positifs). */
         const val LEARNED_FIRST_ID = -1
+
+        /** Circuits des notes officielles sans identifiant GT7 connu ni circuit appris : jamais un identifiant de la base. */
+        const val UPDATES_FIRST_ID = -100_000
 
         /** Une nouvelle version publiée ne remplace la base que si elle n'a pas perdu plus de 10 % de son contenu. */
         const val MIN_KEPT = 0.9
