@@ -131,6 +131,9 @@ class DriverCoach(
         )
     }
     private val recorder = LapRecorder()
+
+    /** Motricité en sortie de virage, à commande comparable (issue #35) : alimentée par les tours propres mesurés. */
+    val traction = com.gt7pitwall.core.tyres.TractionMonitor()
     private val finished = HashMap<Int, List<LapSample>>()
     private var lastLap = -1
     private var pitThisLap = false
@@ -166,6 +169,7 @@ class DriverCoach(
         incompatibleNoted = false
         lastLap = -1
         recorder.invalidate()
+        traction.reset()
         rejectedCount.clear()
         lapsSeen = 0
         lastNoAdvice = null
@@ -230,6 +234,15 @@ class DriverCoach(
         val map = prof.map ?: return emptyList()
         val passes = CornerMeasure.passes(map, lap.lapNumber, samples, ctx.wheelBaseM, continuation)
         sessionPasses += passes
+        // Sorties de virage (de la vitesse minimale à la fin de la zone) pour la motricité ; sorties de piste écartées.
+        runCatching {
+            val placed = TrackProjection.project(map, samples).filterNotNull()
+            val exits = passes.filter { it.offTrack != true }.mapNotNull { pass ->
+                val c = map.corners.firstOrNull { it.number == pass.corner } ?: return@mapNotNull null
+                pass.corner to placed.filter { it.m >= pass.minAtM && it.m <= c.zoneEndM && it.s.offTrack != true }.map { it.s }
+            }.toMap()
+            traction.addLap(lap.lapNumber, exits)
+        }
         return advise(lap.lapNumber, ctx, prof)
     }
 
@@ -301,6 +314,14 @@ class DriverCoach(
             ?: return noAdvice(
                 if (usable.values.none { it.size >= CornerCoach.RECENT }) "pas encore trois passages comparables par virage" else "aucune perte nette et répétée dans un virage",
             )
+        // Arbitrage (issue #36-D4) : un patinage que la motricité mesurée attribue aux pneus (même geste, plus de glisse
+        // en fin de relais) n'est pas reproché au pilote.
+        val t = traction.last
+        if (f.issue == CornerIssue.WHEELSPIN && t.level >= com.gt7pitwall.core.tyres.TractionMonitor.Level.DEGRADATION_SUSPECTED &&
+            (f.corner in t.flaggedCorners || t.level == com.gt7pitwall.core.tyres.TractionMonitor.Level.DEGRADATION_REPEATED)
+        ) {
+            return noAdvice("patinage au virage ${f.corner} mesuré comme une perte de motricité à commande égale (pneus probables), pas un défaut de pilotage")
+        }
         val text = CornerCoach.advice(f, ctx.race) ?: return noAdvice("perte au virage ${f.corner} sans cause mesurable")
         lastNoAdvice = null
         lastAdviceLap = lap

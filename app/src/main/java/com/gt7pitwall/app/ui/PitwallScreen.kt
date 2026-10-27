@@ -1362,6 +1362,11 @@ private fun CornerReportCard(state: PitwallUiState) {
             Text("Comparaison début/fin du relais sur les mêmes virages. GT7 ne transmet pas l'usure : aucun pourcentage.",
                 style = MaterialTheme.typography.bodySmall, color = PitColors.Muted)
         }
+        if (state.traction.isNotEmpty()) {
+            Text("Motricité en sortie : ${state.traction}", style = MaterialTheme.typography.bodySmall)
+            Text("Même virage, même tranche d'accélérateur, rapport et vitesse ; vibreurs exclus (format C). Mesure de motricité, pas d'usure en %.",
+                style = MaterialTheme.typography.bodySmall, color = PitColors.Muted)
+        }
     }
 }
 

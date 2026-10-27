@@ -75,6 +75,7 @@ import com.gt7pitwall.core.tyres.GripLevel
 import com.gt7pitwall.core.tyres.GripDiagnosis
 import com.gt7pitwall.core.telemetry.TelemetryPacket
 import kotlin.math.roundToInt
+import com.gt7pitwall.core.tyres.TractionMonitor.Level as TractionLevel
 import kotlin.math.sqrt
 
 /** Stockage du règlement et de la mémoire voiture × circuit (implémenté côté Android). */
@@ -328,7 +329,10 @@ class RaceController(
 
     /** Contexte de la session en cours, pour l'archive et les comparaisons. */
     val sessionContext: SessionContext
-        get() = SessionContext(profile, rules, snapshot.packet?.carCode, snapshot.packet?.fuelCapacity?.takeIf { it > 0f })
+        get() = SessionContext(
+            profile, rules, snapshot.packet?.carCode, snapshot.packet?.fuelCapacity?.takeIf { it > 0f },
+            snapshot.packet?.totalLaps?.takeIf { it > 0 },
+        )
 
     /** Sessions archivées comparables à celle-ci. */
     val history: HistorySummary get() = HistorySummary.of(sessionContext, sessions.values, excludeId = sessionId)
@@ -412,6 +416,7 @@ class RaceController(
         journalPositions(positionChanges)
         val out = mutableListOf<EngineerMessage>()
         if (events.isEmpty()) out += journalCoaching(coached)
+        if (!sessionFinished) out += runCatching { tractionCheck() }.getOrElse { diagnostic("motricité", it); emptyList() }
         val windowWasOpen = pitWindowPackets > 0
         if (pitWindowPackets > 0) pitWindowPackets--
         // « As-tu changé les pneus ? » sans réponse : la question expire, les pneus de cet arrêt restent « non précisés »
@@ -1345,6 +1350,8 @@ class RaceController(
         sessionStartMs = clock()
         sessionId = "$sessionStartMs-${snapshot.packet?.carCode ?: 0}"
         driverCoach.start(sessionId!!)
+        tractionVersion = 0
+        tractionLevel = com.gt7pitwall.core.tyres.TractionMonitor.Level.INSUFFICIENT
         sessionFinished = false
         planLog.clear()
         raceMemory.clear()
@@ -2038,9 +2045,11 @@ class RaceController(
             // Coûts des arrêts (passage, pneus, plein) : détaillés par la comparaison elle-même.
             if (model.pitLossMs == null && laneMs == null && model.pitLossByKind.isEmpty()) add("perte par arrêt inconnue")
             if (model.sessionsExcluded > 0) add("${model.sessionsExcluded} course(s) de cette épreuve écartée(s) car non comparables")
+            if (model.quarantined.isNotEmpty()) add("${model.quarantined.size} course(s) au règlement contredit par GT7 : rythme et consommation seulement (${model.quarantined.first().substringAfter(" : ")})")
             if (model.relatedUsed > 0) add("dont ${model.relatedUsed} entraînement(s) ou session(s) au type non précisé : BoP et réglages non vérifiés, confiance limitée")
         }
-        val degrading = engineer.grip.degrading || (stint != null && stint.first > 0)
+        val degrading = engineer.grip.degrading || (stint != null && stint.first > 0) ||
+            tractionLevel == com.gt7pitwall.core.tyres.TractionMonitor.Level.DEGRADATION_REPEATED
         return StrategyOptions.compare(input, pace, basis, unverifiedRuleLabels(), TyreInputs(degrading = degrading))
     }
 
@@ -2402,7 +2411,7 @@ class RaceController(
             val rear = (t.rl + t.rr) / 2
             " Avant ${front.roundToInt()}, arrière ${rear.roundToInt()} degrés."
         } ?: ""
-        return "${tyreStintText()}.$temps $body${tyreOrDrivingSentence()}$declared"
+        return "${tyreStintText()}.$temps $body${tyreOrDrivingSentence()}${tractionSentence()}$declared"
     }
 
     private fun answerTyreLife(): String {
@@ -2782,6 +2791,78 @@ class RaceController(
             driverCoach.passes.filter { it.lap !in ctx.excludedLaps }, ctx.startLap,
         ) { labels[it]?.text ?: "V$it" }
     }.getOrElse { diagnostic("pneus ou pilotage", it); com.gt7pitwall.core.tyres.TyreOrDriving.Report(com.gt7pitwall.core.tyres.TyreOrDriving.Verdict.UNKNOWN) }
+
+    private var tractionVersion = 0
+    private var tractionLevel = com.gt7pitwall.core.tyres.TractionMonitor.Level.INSUFFICIENT
+
+    /** Dernier constat de motricité, avec la numérotation affichée des virages (Analyse, réponses). */
+    fun tractionReport(): String = driverCoach.traction.last.let { r ->
+        val labels = cornerLabels()
+        r.text { labels[it]?.text ?: "V$it" }
+    }
+
+    /**
+     * Motricité à commande comparable (issue #35) : réévaluée à chaque tour mesuré, sur le relais en cours. La radio ne
+     * parle qu'à un changement de niveau, jamais pour ordonner un arrêt : la perte entre dans la stratégie, qui seule
+     * décide d'un « Box ».
+     */
+    private fun tractionCheck(): List<EngineerMessage> {
+        val m = driverCoach.traction
+        if (m.version == tractionVersion) return emptyList()
+        tractionVersion = m.version
+        val st = tyreStintContext()
+        val r = m.evaluate(st.startLap, st.excludedLaps)
+        val before = tractionLevel
+        tractionLevel = r.level
+        if (r.level == before) return emptyList()
+        val lossMs = tractionLossMs(r)
+        journal.record(
+            JournalType.STRATEGY, JournalSource.ENGINE, "Motricité : ${tractionReport()}",
+            details = listOfNotNull(
+                "niveau" to r.level.name.lowercase(),
+                "virages" to r.flaggedCorners.joinToString("/"),
+                "tours_reference" to r.refLaps.joinToString("/"),
+                "tours_recents" to r.recentLaps.joinToString("/"),
+                lossMs?.let { "perte_ms_par_tour" to it.toString() },
+                "relais_certain" to if (st.certain) "oui" else "non",
+                "surface_connue" to if (r.surfaceKnown) "oui" else "non",
+            ).toMap(),
+        )
+        // Relais incertain (arrêt sans réponse sur les pneus) : consigné, pas dit.
+        if (!st.certain) return emptyList()
+        val text = when {
+            r.level == TractionLevel.DEGRADATION_SUSPECTED && before < TractionLevel.DEGRADATION_SUSPECTED ->
+                "Les pneus semblent perdre de la motricité en sortie de virage. Je surveille."
+            r.level == TractionLevel.DEGRADATION_REPEATED ->
+                "Motricité en baisse confirmée sur ${r.flaggedCorners.size} virages" +
+                    (lossMs?.takeIf { it >= 100 }?.let { ", environ ${com.gt7pitwall.core.driver.CornerCoach.tenths(it)} par tour" } ?: "") +
+                    ". J'en tiens compte pour la stratégie."
+            else -> null
+        } ?: return emptyList()
+        return listOf(
+            EngineerMessage(text, Priority.NORMAL, MessageCategory.RADIO, topic = "traction", dedupKey = "motricite:$sessionId:${r.level}"),
+        )
+    }
+
+    /** Temps perdu par tour dans les virages concernés : passages récents contre passages de référence (ms). */
+    private fun tractionLossMs(r: com.gt7pitwall.core.tyres.TractionMonitor.Report): Int? {
+        if (r.flaggedCorners.isEmpty()) return null
+        val passes = driverCoach.passes
+        val per = r.flaggedCorners.mapNotNull { c ->
+            val ref = passes.filter { it.corner == c && it.lap in r.refLaps }.map { it.timeMs }
+            val rec = passes.filter { it.corner == c && it.lap in r.recentLaps }.map { it.timeMs }
+            if (ref.isEmpty() || rec.isEmpty()) null else rec.average() - ref.average()
+        }
+        return per.takeIf { it.isNotEmpty() }?.sum()?.roundToInt()
+    }
+
+    /** Version courte pour la voix : le niveau et le nombre de virages ; le détail chiffré reste dans Analyse. */
+    private fun tractionSentence(): String {
+        val r = driverCoach.traction.last
+        if (r.level == com.gt7pitwall.core.tyres.TractionMonitor.Level.INSUFFICIENT) return ""
+        return " ${r.level.label.replaceFirstChar { it.uppercase() }}" +
+            (if (r.flaggedCorners.isNotEmpty()) " sur ${r.flaggedCorners.size} virages" else "") + " à accélérateur comparable."
+    }
 
     /** Phrase radio du diagnostic pneus/pilotage, seulement quand il conclut quelque chose. */
     private fun tyreOrDrivingSentence(): String {
