@@ -1038,9 +1038,27 @@ private fun RadioDiagnosticsCard(
     val google = voiceInput.googleSpeech
     val diag by (google?.diag ?: remember { kotlinx.coroutines.flow.MutableStateFlow(com.gt7pitwall.app.voice.GoogleDiag()) })
         .collectAsStateWithLifecycle()
+    val watch by voiceInput.diagnostic.collectAsStateWithLifecycle()
     PitCard("Diagnostic radio") {
         DiagLine("Écoute", listen.name.lowercase().replace('_', ' '))
         DiagLine("Micro écouté", mic ?: "aucun")
+        watch?.let { w ->
+            fun s(ms: Long?) = ms?.let { if (it < 1_000) "à l'instant" else "il y a ${it / 1000} s" } ?: "jamais"
+            val stalled = w.state != ListenState.OFF && !w.micLentToGoogle && (w.lastBlockAgoMs ?: Long.MAX_VALUE) > 3_000
+            DiagLine(
+                "Blocs audio reçus",
+                "${"%.1f".format(w.blocksPerSecond)}/s (attendu ≈ 4), dernier ${s(w.lastBlockAgoMs)}, niveau ${w.levelPct} %",
+                if (stalled) PitColors.Red else PitColors.Muted,
+            )
+            if (w.mic?.contains("Fold") == true) {
+                DiagLine("Son non nul (Fold)", s(w.lastSoundAgoMs), if ((w.lastSoundAgoMs ?: Long.MAX_VALUE) > 20_000) PitColors.Red else PitColors.Muted)
+            }
+            if (w.mic?.contains("Discord") == true) DiagLine("Voix du pilote reçue du salon", s(w.remoteVoiceAgoMs))
+            w.pausedForMs?.let { DiagLine("Micro en pause (ingénieur parle)", "depuis ${it / 1000} s", if (it > 30_000) PitColors.Red else PitColors.Muted) }
+            if (w.micLentToGoogle) DiagLine("Micro", "prêté à Google pour une phrase", PitColors.Yellow)
+            DiagLine("Dernier « radio » reconnu", s(w.lastWakeAgoMs))
+            DiagLine("Reprises automatiques", "${w.restarts}" + (w.lastAction?.let { " — $it" } ?: ""), if (w.restarts > 0) PitColors.Yellow else PitColors.Muted)
+        }
         DiagLine("Google", if (!googleOn) "désactivé (Vosk seul)" else if (google?.available == false) "indisponible sur ce téléphone" else diag.phase)
         if (googleOn && diag.engine != null) {
             DiagLine("Dernier essai Google", listOfNotNull(

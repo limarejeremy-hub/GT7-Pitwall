@@ -431,6 +431,8 @@ class PitwallEngine(
                 EngineerMessage(if (event.byDriver) "🎙 Conversation terminée" else "🎙 Conversation refermée (silence)", Priority.INFO, MessageCategory.DRIVER),
             )
             is VoiceInputEvent.Notice -> deliver(EngineerMessage(event.text, Priority.HIGH, MessageCategory.ANSWER))
+            // Surveillance de l'écoute : consigné et affiché, jamais dit (aucun son enregistré).
+            is VoiceInputEvent.Diagnostic -> deliver(EngineerMessage("🎙 ${event.text}", Priority.INFO, MessageCategory.DRIVER))
             is VoiceInputEvent.BargeIn -> {
                 // Le pilote coupe l'ingénieur : la voix s'arrête, la réponse en préparation ne sera pas dite.
                 voice.stop()

@@ -172,13 +172,21 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
      */
     fun openMicSource(): PcmSource? = if (live) DiscordMicSource() else null
 
+    /** Dernière voix du pilote reçue du salon pendant l'écoute (horloge monotone, 0 : aucune). Diagnostic seulement. */
+    @Volatile
+    var lastPilotVoiceMs = 0L
+        private set
+
     private inner class DiscordMicSource : PcmSource {
         override val label = "micro du casque PS5 (Discord)"
         override val isPhoneMic = false
         private val packets = LinkedBlockingQueue<ByteArray>(MIC_BUFFER)
         private val sink: (Long, ByteArray) -> Unit = { user, opus ->
             val pilot = pilotUserId ?: user.also { pilotUserId = it }
-            if (user == pilot) packets.offer(opus)
+            if (user == pilot) {
+                lastPilotVoiceMs = android.os.SystemClock.elapsedRealtime()
+                packets.offer(opus)
+            }
         }
         private var decoder: OpusDecoderStream? = null
         private var pending = ShortArray(0)

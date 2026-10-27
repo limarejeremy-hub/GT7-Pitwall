@@ -6,6 +6,7 @@ import com.gt7pitwall.core.radio.ConversationWindow
 import com.gt7pitwall.core.radio.DuplexMode
 import com.gt7pitwall.core.radio.DuplexPolicy
 import com.gt7pitwall.core.radio.InterruptDetector
+import com.gt7pitwall.core.radio.ListenWatchdog
 import com.gt7pitwall.core.radio.VoiceActivity
 import com.gt7pitwall.core.radio.GoogleOutcome
 import com.gt7pitwall.core.radio.RadioTone
@@ -313,7 +314,129 @@ class VoskVoiceInput(
 
     val isRunning: Boolean get() = audioJob != null || _state.value == ListenState.LOADING
 
+    /**
+     * Le pilote a activé l'écoute : elle doit tourner, même après une erreur (issue #32 : après une bascule de micro
+     * ratée, l'écoute restait arrêtée toute la course, et les redémarrages suivants étaient ignorés).
+     */
+    @Volatile
+    private var wanted = false
+
+    /** Micro du casque PS5 disponible et choisi : l'écoute doit le lire (bascule manquée sinon). */
+    var remoteMicAvailable: () -> Boolean = { false }
+
+    /** La voix de l'ingénieur n'a pas signalé sa fin depuis une minute : elle est réinitialisée. */
+    var onStuckSpeaking: () -> Unit = {}
+
+    /** Dernière voix du pilote reçue du salon Discord (horloge monotone, 0 : aucune), pour le diagnostic. */
+    var remoteVoiceMs: () -> Long = { 0L }
+
+    private val watchdog = ListenWatchdog()
+
+    @Volatile private var startedMs = 0L
+    @Volatile private var lastBlockMs = 0L
+    @Volatile private var lastSoundMs = 0L
+    @Volatile private var blocks = 0L
+    @Volatile private var peak = 0
+    @Volatile private var lastWakeMs = 0L
+    private var pausedSinceMs = 0L
+    private var lastAction: String? = null
+
+    /** État de l'écoute pour l'Atelier : de quoi savoir pourquoi « Radio » ne répond pas, sans aucun son enregistré. */
+    data class Diagnostic(
+        val state: ListenState,
+        val mic: String?,
+        val blocksPerSecond: Float,
+        val lastBlockAgoMs: Long?,
+        val levelPct: Int,
+        val lastSoundAgoMs: Long?,
+        val pausedForMs: Long?,
+        val micLentToGoogle: Boolean,
+        val lastWakeAgoMs: Long?,
+        val lastHeard: String,
+        val remoteVoiceAgoMs: Long?,
+        val restarts: Int,
+        val lastAction: String?,
+    )
+
+    private val _diagnostic = MutableStateFlow<Diagnostic?>(null)
+    val diagnostic: StateFlow<Diagnostic?> = _diagnostic.asStateFlow()
+
+    init {
+        // Surveillance permanente (une lecture d'état par seconde, aucun calcul audio).
+        scope.launch {
+            var lastBlocks = 0L
+            while (true) {
+                delay(WATCHDOG_MS)
+                val now = SystemClock.elapsedRealtime()
+                val n = blocks
+                publishDiagnostic(now, (n - lastBlocks) * 1000f / WATCHDOG_MS)
+                lastBlocks = n
+                runCatching { watch(now) }
+            }
+        }
+    }
+
+    private fun publishDiagnostic(now: Long, rate: Float) {
+        fun ago(t: Long) = t.takeIf { it > 0 }?.let { now - it }
+        _diagnostic.value = Diagnostic(
+            _state.value, _micLabel.value, rate, ago(lastBlockMs), peak * 100 / Short.MAX_VALUE, ago(lastSoundMs),
+            ago(pausedSinceMs), micReleased, ago(lastWakeMs), _heard.value, ago(remoteVoiceMs()), watchdog.restarts, lastAction,
+        )
+        peak = 0
+    }
+
+    private fun watch(now: Long) {
+        pausedSinceMs = if (paused) (pausedSinceMs.takeIf { it > 0 } ?: now) else 0L
+        val action = watchdog.check(
+            ListenWatchdog.Input(
+                now = now,
+                wanted = wanted,
+                running = audioJob?.isActive == true || _state.value == ListenState.LOADING,
+                error = _state.value == ListenState.ERROR,
+                paused = paused,
+                speaking = speaking.value,
+                micReleased = micReleased,
+                googleListening = googleSpeech?.listening == true,
+                lastBlockMs = lastBlockMs,
+                lastSoundMs = lastSoundMs,
+                remoteAvailable = remoteMicAvailable(),
+                usingRemote = audioJob != null && !phoneMicInUse,
+                startedMs = startedMs,
+            ),
+        ) ?: return
+        val text = "Écoute radio : ${action.reason}" + when (action) {
+            is ListenWatchdog.Action.Restart -> " — écoute relancée."
+            is ListenWatchdog.Action.Unpause -> " — écoute reprise."
+            is ListenWatchdog.Action.ReclaimMic -> " — micro repris."
+            is ListenWatchdog.Action.Report -> "."
+        }
+        lastAction = clock.format(Date()) + " " + text.removePrefix("Écoute radio : ")
+        log("surveillance", null, text)
+        _events.tryEmit(VoiceInputEvent.Diagnostic(text))
+        when (action) {
+            is ListenWatchdog.Action.Restart -> {
+                halt()
+                start()
+            }
+            is ListenWatchdog.Action.Unpause -> {
+                onStuckSpeaking()
+                paused = false
+                conversation.engineerSpeaking(false, now)
+                if (_state.value == ListenState.PAUSED) _state.value = ListenState.WAITING_WAKE_WORD
+            }
+            is ListenWatchdog.Action.ReclaimMic -> {
+                shadow = null
+                googleSpeech?.cancel()
+                micReleased = false
+                awakeUntil = 0
+                if (_state.value == ListenState.AWAKE && !conversation.open) _state.value = ListenState.WAITING_WAKE_WORD
+            }
+            is ListenWatchdog.Action.Report -> Unit
+        }
+    }
+
     fun start() {
+        wanted = true
         if (isRunning) return
         val dir = models.installedDir()
         if (dir == null) {
@@ -361,6 +484,7 @@ class VoskVoiceInput(
             } catch (e: Exception) {
                 _error.value = e.message ?: e.javaClass.simpleName
                 _state.value = ListenState.ERROR
+                _events.tryEmit(VoiceInputEvent.Diagnostic("Écoute radio : démarrage impossible (${_error.value})."))
             }
         }
     }
@@ -437,7 +561,13 @@ class VoskVoiceInput(
         }
     }
 
+    /** Écoute coupée par le pilote (réglage) : la surveillance ne la relance pas. */
     fun stop() {
+        wanted = false
+        halt()
+    }
+
+    private fun halt() {
         conversation.reset()
         setConversation(false)
         tickJob?.cancel()
@@ -454,14 +584,16 @@ class VoskVoiceInput(
         audioJob?.cancel() // la boucle ferme le micro et les reconnaisseurs
         audioJob = null
         awakeUntil = 0
+        paused = false
+        startedMs = 0L
         _micLabel.value = null
         _state.value = ListenState.OFF
     }
 
-    /** Redémarre l'écoute (changement de réglage). */
+    /** Redémarre l'écoute (changement de réglage, bascule de micro), y compris après une erreur. */
     fun restart() {
-        if (!isRunning) return
-        stop()
+        if (!wanted) return
+        halt()
         start()
     }
 
@@ -470,6 +602,9 @@ class VoskVoiceInput(
         val buffer = ShortArray(BUFFER_SAMPLES)
         try {
             record.start()
+            startedMs = SystemClock.elapsedRealtime()
+            lastBlockMs = 0L
+            lastSoundMs = 0L
             var recording = true
             while (scope.isActive && kotlinx.coroutines.currentCoroutineContext().isActive) {
                 // Micro du casque PS5 pendant une écoute Google : le flux lui est transmis au lieu de Vosk.
@@ -477,6 +612,7 @@ class VoskVoiceInput(
                 if (micReleased && !record.isPhoneMic) {
                     val n = record.read(buffer)
                     if (n > 0) {
+                        measure(buffer, n)
                         googleSpeech?.feed(buffer, n)
                         bench?.feed(buffer, n)
                         shadow?.let { s ->
@@ -510,6 +646,7 @@ class VoskVoiceInput(
                 val n = record.read(buffer)
                 if (n < 0) error("Erreur micro ($n)")
                 if (n == 0) continue
+                measure(buffer, n)
                 if (paused) {
                     // L'ingénieur parle : seul le mode d'interruption autorisé par le matériel écoute (jamais une commande).
                     if (bargeListening()) bargeFeed(buffer, n, rec)
@@ -548,6 +685,20 @@ class VoskVoiceInput(
             rec.close()
             free?.close()
         }
+    }
+
+    /** Bloc audio reçu : horodatage et niveau crête, pour le diagnostic (rien n'est conservé). */
+    private fun measure(buffer: ShortArray, n: Int) {
+        val now = SystemClock.elapsedRealtime()
+        lastBlockMs = now
+        blocks++
+        var max = 0
+        for (i in 0 until n) {
+            val v = kotlin.math.abs(buffer[i].toInt())
+            if (v > max) max = v
+        }
+        if (max > 0) lastSoundMs = now
+        if (max > peak) peak = max.coerceAtMost(Short.MAX_VALUE.toInt())
     }
 
     /**
@@ -751,8 +902,12 @@ class VoskVoiceInput(
             (result.outcome == GoogleOutcome.SPEECH_TIMEOUT || result.outcome == GoogleOutcome.NO_MATCH)
         val decision = policy.finish(session, if (quiet) GoogleOutcome.CANCELLED else result.outcome, result.errorCode)
         refreshFallbackInfo()
-        // Écoute annulée ou remplacée entre-temps (redémarrage, l'ingénieur a repris la parole) : rien à faire ici.
-        decision ?: return
+        // Écoute annulée ou remplacée entre-temps (redémarrage, l'ingénieur a repris la parole) : rien à faire ici,
+        // sauf rendre le micro si plus aucune écoute Google ne l'utilise (sinon Vosk restait sourd).
+        if (decision == null) {
+            if (googleSpeech?.listening != true) micReleased = false
+            return
+        }
         micReleased = false
         awakeUntil = 0
         if (quiet) {
@@ -862,6 +1017,7 @@ class VoskVoiceInput(
         }?.takeIf { it.length >= 2 }
         val match = wakeRegex.find(norm)
         if (wake.isNotEmpty() && match != null) {
+            lastWakeMs = SystemClock.elapsedRealtime()
             val rest = norm.substring(match.range.last + 1).trim()
             if (rest.length >= 2) {
                 // Demande dite d'un trait : elle est transmise, et la conversation reste ouverte pour la suite.
@@ -952,5 +1108,6 @@ class VoskVoiceInput(
         const val VOICE_GRACE_MS = 1_500L
         /** Délai après une demande sans réponse parlée avant de reprendre l'écoute. */
         const val REOPEN_IF_SILENT_MS = 2_500L
+        const val WATCHDOG_MS = 1_000L
     }
 }
