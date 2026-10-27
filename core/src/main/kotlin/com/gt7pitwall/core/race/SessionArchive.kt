@@ -111,6 +111,17 @@ data class SessionRecord(
 ) {
     val completedLaps: Int get() = laps.size
 
+    /**
+     * Raison de mettre le règlement de cette session en quarantaine avant tout apprentissage sensible (durée, arrêts,
+     * gomme, relais) : contradiction avec GT7, ou plus de tours courus que le règlement n'en prévoyait (archives
+     * anciennes sans le nombre de GT7). null : rien ne le contredit.
+     */
+    val rulesQuarantine: String?
+        get() = context.rulesContradiction ?: context.rules.totalLaps?.let { declared ->
+            val run = laps.maxOfOrNull { it.lap } ?: 0
+            if (run > declared) "règlement de $declared tours, $run tours courus" else null
+        }
+
     /** Plan annoncé en premier (la stratégie prévue) et dernier plan (ce qui a été suivi). */
     val plannedStops: List<Int>? get() = plans.firstOrNull()?.stopLaps
     val actualStops: List<Int> get() = stops.map { it.lap }

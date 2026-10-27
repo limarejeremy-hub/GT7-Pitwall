@@ -67,8 +67,10 @@ data class TyreModel(
             val pool = sessions.filter { it.id != excludeId }
             val same = pool.filter { HistoryRelation.of(context.profile.id, it.context.profile.id) == HistoryRelation.SAME }
             val related = pool.filter { HistoryRelation.of(context.profile.id, it.context.profile.id) == HistoryRelation.RELATED }
-            val usable = same.filter { Compatibility.compare(context, it.context).first != Comparability.INCOMPATIBLE } +
-                related.filter { Compatibility.compare(context, it.context).first == Comparability.SAME_EVENT }
+            // Règlement contredit par GT7 (issue #36-D2) : relais et gommes de cette session ne sont pas appris.
+            val usable = (same.filter { Compatibility.compare(context, it.context).first != Comparability.INCOMPATIBLE } +
+                related.filter { Compatibility.compare(context, it.context).first == Comparability.SAME_EVENT })
+                .filter { it.rulesQuarantine == null }
             val excluded = same.size + related.size - usable.size
             val rows = mutableListOf<StintLap>()
             val gains = mutableListOf<Triple<String, TyreCompound?, Double>>()

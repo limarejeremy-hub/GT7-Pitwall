@@ -43,7 +43,8 @@ object TyreOrDriving {
      * changement de pneus) ; [label] : libellé affiché d'un virage (« T5 »).
      */
     fun analyze(passes: List<CornerPass>, stintStartLap: Int, label: (Int) -> String = { "V$it" }): Report {
-        val stint = passes.filter { it.lap > stintStartLap } // premier tour du relais (pneus froids) écarté
+        // Premier tour du relais (pneus froids) et sorties de piste mesurées écartés.
+        val stint = passes.filter { it.lap > stintStartLap && it.offTrack != true }
         val laps = stint.map { it.lap }.distinct().sorted()
         if (laps.size < MIN_LAPS) return Report(Verdict.UNKNOWN)
         val early = laps.take(2).toSet()

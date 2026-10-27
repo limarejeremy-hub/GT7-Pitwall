@@ -327,7 +327,20 @@ data class SessionContext(
     val carCode: Int?,
     /** Capacité du réservoir transmise par GT7 (unité de carburant de GT7). */
     val fuelCapacity: Float?,
-)
+    /** Nombre de tours annoncé par GT7 dans le paquet (null : inconnu, essai libre ou archive ancienne). */
+    val gameTotalLaps: Int? = null,
+) {
+    /**
+     * Règlement capturé au départ contredit par GT7 (issue #36-D2 : « 6 tours » déclarés, 14 annoncés et courus). Le
+     * règlement de cette session n'est alors pas une preuve : ni durée, ni arrêts, ni gomme n'en sont appris.
+     */
+    val rulesContradiction: String?
+        get() {
+            val declared = rules.totalLaps ?: return null
+            val game = gameTotalLaps ?: return null
+            return if (declared != game) "règlement de $declared tours, GT7 en annonçait $game" else null
+        }
+}
 
 /** Deux sessions sont-elles comparables ? Le niveau dit ce qu'on peut en réutiliser. */
 enum class Comparability {
@@ -356,6 +369,8 @@ object Compatibility {
         val va = a.profile.gameVersion?.trim()?.takeIf { it.isNotEmpty() }
         val vb = b.profile.gameVersion?.trim()?.takeIf { it.isNotEmpty() }
         if (va != null && vb != null && va != vb) return no("version de GT7 différente")
+        // Règlement contredit par GT7 : jamais « même épreuve » (stratégie, arrêts, gomme), seulement voiture et circuit.
+        if (a.rulesContradiction != null || b.rulesContradiction != null) return Comparability.SAME_CAR_TRACK to null
         val sameRace = a.rules.totalLaps == b.rules.totalLaps && a.rules.durationMin == b.rules.durationMin &&
             a.rules.mandatoryStops == b.rules.mandatoryStops && a.rules.requiredTyres == b.rules.requiredTyres
         return (if (sameRace) Comparability.SAME_EVENT else Comparability.SAME_CAR_TRACK) to null

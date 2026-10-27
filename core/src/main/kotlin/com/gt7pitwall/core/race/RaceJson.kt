@@ -97,6 +97,7 @@ object RaceJson {
             .put("rules", rules(r.context.rules))
             .put("car", r.context.carCode ?: 0)
             .put("fuelCapacity", (r.context.fuelCapacity ?: 0f).toDouble())
+            .put("gameTotalLaps", r.context.gameTotalLaps ?: 0)
         val laps = JSONArray()
         r.laps.forEach { l ->
             laps.put(
@@ -159,6 +160,7 @@ object RaceJson {
                 rules = rules(ctx.optJSONObject("rules") ?: JSONObject()),
                 carCode = ctx.optInt("car", 0).takeIf { it > 0 },
                 fuelCapacity = ctx.optDouble("fuelCapacity", 0.0).toFloat().takeIf { it > 0f },
+                gameTotalLaps = ctx.optInt("gameTotalLaps", 0).takeIf { it > 0 },
             ),
             startedAtMs = o.optLong("startedAt", 0),
             updatedAtMs = o.optLong("updatedAt", 0),

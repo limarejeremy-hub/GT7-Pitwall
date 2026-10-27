@@ -75,7 +75,10 @@ class PacketCTest {
         assertEquals(listOf(Surface.TARMAC, Surface.KERB, Surface.GRASS, Surface.UNKNOWN), s.toList())
         assertEquals("TCGX", s.raw)
         assertEquals(1, s.count(Surface.KERB))
-        assertEquals(2, s.wheelsOff) // herbe + code inconnu : jamais classé asphalte par défaut
+        // Issue #36-D3 : un code inconnu n'est ni asphalte ni sortie de piste ; seule l'herbe compte comme hors piste.
+        assertEquals(1, s.wheelsOff)
+        assertEquals(1, s.unknownWheels)
+        assertEquals(false, s.allTarmac)
         assertEquals(0.05f, p.frontWheelAngleLeftRad)
         assertEquals(0.04f, p.frontWheelAngleRightRad)
         assertEquals(2.65f, p.wheelBaseM)

@@ -64,6 +64,11 @@ data class HistoryModel(
     val pitLossByKind: Map<StopKind, Learned> = emptyMap(),
     /** Arrêts dont on ne sait pas ce qui a été fait aux pneus (sessions anciennes, pas de réponse) : contenu inconnu. */
     val pitLossUnknownContent: Learned? = null,
+    /**
+     * Sessions dont le règlement est contredit par GT7 (issue #36-D2) : seuls leur rythme et leur consommation servent ;
+     * arrêts, relais et prévisions n'en sont pas appris. Raison lisible pour chacune.
+     */
+    val quarantined: List<String> = emptyList(),
 ) {
     companion object {
         val EMPTY = HistoryModel(null, null, null, null, null, 0, 0)
@@ -78,7 +83,7 @@ data class HistoryModel(
             val candidates = same + related
             // Un entraînement ne compte que s'il reproduit exactement l'épreuve (règlement, voiture, circuit, multiplicateurs).
             val usable = same.filter { Compatibility.compare(context, it.context).first != Comparability.INCOMPATIBLE } +
-                related.filter { Compatibility.compare(context, it.context).first == Comparability.SAME_EVENT }
+                related.filter { Compatibility.compare(context, it.context).first == Comparability.SAME_EVENT && it.rulesQuarantine == null }
             if (usable.isEmpty()) return EMPTY.copy(sessionsExcluded = candidates.size)
             val relatedIds = usable.filter { it in related }.map { it.id }.toSet()
 
@@ -90,7 +95,10 @@ data class HistoryModel(
             val pitUnknown = mutableListOf<Pair<String, Double>>()
             val forecast = mutableListOf<Pair<String, Double>>()
 
+            val quarantined = mutableListOf<String>()
             for (s in usable) {
+                val quarantine = s.rulesQuarantine
+                if (quarantine != null) quarantined += "session ${s.id} : $quarantine"
                 val stopLaps = s.stops.map { it.lap }.toSet()
                 val incidents = s.notes.filter { INCIDENT.containsMatchIn(it.text) }.map { it.lap }.toSet()
                 val excluded = { lap: Int -> lap == 1 || lap in stopLaps || (lap - 1) in stopLaps || lap in incidents }
@@ -98,6 +106,8 @@ data class HistoryModel(
                 clean.mapNotNull { it.fuelUsed?.toDouble() }.filter { it > 0.01 }.forEach { fuel += s.id to it }
                 // Une sortie de piste mesurée (format C) fausse le rythme, pas la consommation.
                 clean.filter { (it.offTrackEvents ?: 0) == 0 }.mapNotNull { it.timeMs?.toDouble() }.forEach { pace += s.id to it }
+                // Règlement contredit : rythme et consommation seulement (ni relais, ni arrêts, ni prévision).
+                if (quarantine != null) continue
                 // Âge des pneus : depuis le départ ou le dernier changement de pneus déclaré, jamais depuis un simple
                 // ravitaillement. Tours au relais pneus incertain (arrêt sans réponse sur les pneus) écartés.
                 for (l in clean) {
@@ -144,7 +154,7 @@ data class HistoryModel(
             val byKind = pitByKind.mapNotNull { (k, v) -> cap(learned(v.filter { it.second > 0 }, minSamples = 1), v.map { it.first })?.let { k to it } }.toMap()
             val unknownV = pitUnknown.filter { it.second > 0 }
             val unknownL = cap(learned(unknownV, minSamples = 1), unknownV.map { it.first })
-            return HistoryModel(fuelL, paceL, slope, pitL, forecastL, usable.size, candidates.size - usable.size, relatedIds.size, byKind, unknownL)
+            return HistoryModel(fuelL, paceL, slope, pitL, forecastL, usable.size, candidates.size - usable.size, relatedIds.size, byKind, unknownL, quarantined)
         }
 
         /**

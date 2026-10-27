@@ -47,7 +47,17 @@ object CornerCoach {
     private fun median(xs: List<Float>): Float? = xs.sorted().let { if (it.isEmpty()) null else it[it.size / 2] }
 
     fun reference(passes: List<CornerPass>): List<CornerPass> =
-        passes.filter { it.offTrack != true }.sortedBy { it.timeMs }.take(MIN_REFERENCE)
+        referencePool(passes).sortedBy { it.timeMs }.take(MIN_REFERENCE)
+
+    /**
+     * Passages admissibles comme référence (issue #36-D6) : d'abord ceux dont la surface prouve qu'ils sont restés sur la
+     * piste ; une surface inconnue (formats A/B, codes non documentés) n'est retenue que s'il n'y a pas assez de passages
+     * prouvés, jamais une sortie mesurée.
+     */
+    fun referencePool(passes: List<CornerPass>): List<CornerPass> {
+        val confirmed = passes.filter { it.offTrack == false }
+        return if (confirmed.size >= MIN_REFERENCE) confirmed else passes.filter { it.offTrack != true }
+    }
 
     /** Perte moyenne récente de chaque virage (ms), quand elle est mesurable. */
     fun losses(history: Map<Int, List<CornerPass>>, recent: Map<Int, List<CornerPass>>): Map<Int, Int> =

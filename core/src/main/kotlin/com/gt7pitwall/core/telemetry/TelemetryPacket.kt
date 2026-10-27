@@ -37,8 +37,19 @@ data class TyreSurfaces(val fl: Surface, val fr: Surface, val rl: Surface, val r
     fun toList(): List<Surface> = listOf(fl, fr, rl, rr)
     fun count(s: Surface): Int = toList().count { it == s }
 
-    /** Nombre de roues hors asphalte et hors vibreur (herbe, terre, sable, neige ou inconnu). */
-    val wheelsOff: Int get() = toList().count { it != Surface.TARMAC && it != Surface.KERB }
+    /**
+     * Nombre de roues sur une surface **connue** hors asphalte et hors vibreur (herbe, terre, sable, neige). Un code
+     * inconnu n'est jamais compté comme une sortie de piste (issue #36-D3) : voir [unknownWheels].
+     */
+    val wheelsOff: Int get() = toList().count { it == Surface.DIRT || it == Surface.GRASS || it == Surface.SAND || it == Surface.SNOW }
+
+    /** Roues dont le code de surface n'est pas documenté : surface incertaine, ni piste ni sortie. */
+    val unknownWheels: Int get() = count(Surface.UNKNOWN)
+
+    val kerbWheels: Int get() = count(Surface.KERB)
+
+    /** Les quatre roues sur l'asphalte : seule situation retenue comme référence de motricité. */
+    val allTarmac: Boolean get() = toList().all { it == Surface.TARMAC }
 
     companion object {
         fun parse(bytes: ByteArray): TyreSurfaces {
