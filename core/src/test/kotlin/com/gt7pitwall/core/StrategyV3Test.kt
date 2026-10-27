@@ -85,7 +85,10 @@ class StrategyV3Test {
         val next = RaceSim(c, totalLaps = 6, perLap = 5.5f)
         next.start()
         assertNotNull(c.lastReview)
-        assertTrue(c.journal.recent(2000).any { it.text.startsWith("Bilan : Consommation") }, "bilan journalisé")
+        // Le bilan appartient à la course terminée, pas à celle qui commence (il y glissait avant la correction).
+        val finished = storage.sessions.filter { it.outcome == com.gt7pitwall.core.race.SessionOutcome.FINISHED }.maxBy { it.updatedAtMs }
+        assertTrue(com.gt7pitwall.core.race.SessionJournal.load(storage, finished.id).any { it.text.startsWith("Bilan : Consommation") }, "bilan journalisé dans la course terminée")
+        assertTrue(c.journal.recent(2000).none { it.text.startsWith("Bilan : ") }, "aucun bilan dans la course suivante")
         val corr = assertNotNull(c.fuelCorrectionPct, c.forecastTrack().toString())
         assertTrue(corr > 2.0, corr.toString())
         assertEquals(DataSource.HISTORY, c.plan!!.fuelSource)
