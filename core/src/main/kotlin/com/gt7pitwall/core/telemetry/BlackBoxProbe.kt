@@ -164,3 +164,25 @@ class BlackBoxProbe(private val clock: () -> Long = System::currentTimeMillis) {
         const val FLUSH_SAMPLES = 1_200L
     }
 }
+
+/**
+ * Courses du journal vues pendant une mesure Black Box, dans l'ordre. Le compte rendu appartient à la dernière course
+ * mesurée, même close (mesure arrêtée depuis le menu) ; une course qui commence après l'arrêt n'en fait jamais partie.
+ */
+class BlackBoxRuns {
+    private val ids = mutableListOf<String>()
+
+    @Synchronized
+    fun seen(sessionId: String?) {
+        if (sessionId != null && ids.lastOrNull() != sessionId) ids += sessionId
+    }
+
+    @Synchronized
+    fun last(): String? = ids.lastOrNull()
+
+    @Synchronized
+    fun all(): List<String> = ids.toList()
+
+    @Synchronized
+    fun clear() = ids.clear()
+}

@@ -40,6 +40,7 @@ Avant la course : laisser le type de session tel quel (ne pas toucher « Sport o
 |---|---|---|
 | Course reconnue | `Épreuve reconnue : Course Sport X (reconnue automatiquement)` ; `preuves` contient les tours, et le circuit après la géométrie | Bonne lettre ; `certitude=RECOGNIZED` au plus tard au 1er tour |
 | Annonce radio | « Course Sport X reconnue. N tours. … » | Chaque obligation dite correspond à la fiche du jeu ; inconnue ⇒ « non confirmé » |
+| Bilan de fin de course | `Bilan : …` | Dans l'export de **cette** course, juste avant `Fin de session` ; absent de la course suivante |
 | Pas d'officialité implicite | Type de session = « Sport reconnu » | La carrière (Briefing) ne compte **pas** cette course |
 | Appel au stand (si arrêt obligatoire) | « Box, box ! … » | Si une seule source donne l'obligation : « Obligation à confirmer : seule la fiche … la donne. » |
 
@@ -77,6 +78,10 @@ Mêmes circuit, voiture et tours qu'une course de la semaine, en salon privé ou
    - batterie (% par heure) et température maximale.
 
    Les champs `appareil` et `android` identifient le téléphone.
+   Rattachement : couper la mesure **au menu, après l'arrivée**. Réussi si l'événement figure dans l'export de la
+   course mesurée, en dernier, avec `apres_cloture=oui` et `courses_mesurees` égal à cet identifiant. Lancer ensuite
+   une nouvelle course : son export ne doit contenir **ni** « Mesure Black Box » **ni** de ligne « Bilan : »
+   de la course précédente.
 5. Refaire une course comparable **sans** la mesure et noter la batterie à la main (début, fin, durée) : la
    différence entre les deux courses donne le coût de la mesure.
 

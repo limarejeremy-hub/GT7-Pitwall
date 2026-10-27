@@ -527,20 +527,37 @@ class PitwallEngine(
     private var lastBlackBoxJournalMs = 0L
 
     fun setBlackBoxMeasure(enabled: Boolean) {
-        if (enabled) blackBox.start() else blackBox.stop()
+        if (enabled) {
+            blackBoxRuns.clear()
+            blackBox.start()
+        } else {
+            blackBox.stop()
+        }
         _blackBoxReport.value = if (enabled) listOf("Mesure en cours : lance une course.") else blackBox.report()
         if (!enabled) journalBlackBox("Mesure Black Box terminée")
     }
 
-    /** Compte rendu de la mesure dans le journal de course (exportable) : preuve réelle, pas une simulation. */
+    /** Courses du journal vues pendant la mesure, dans l'ordre : le bilan appartient à la dernière, même close. */
+    private val blackBoxRuns = com.gt7pitwall.core.telemetry.BlackBoxRuns()
+
+    /**
+     * Compte rendu de la mesure dans le journal de la course mesurée (exportable) : preuve réelle, pas une simulation.
+     * Mesure arrêtée depuis le menu après l'arrivée : rattaché à cette course, jamais à la suivante. Aucune course vue
+     * pendant la mesure : rien n'est écrit (rien n'a été mesuré en course).
+     */
     private fun journalBlackBox(title: String) {
+        val target = blackBoxRuns.last() ?: return
         val lines = blackBox.report()
         runCatching {
-            race.journal.record(
-                com.gt7pitwall.core.race.JournalType.DECISION, com.gt7pitwall.core.race.JournalSource.SYSTEM, title,
+            race.journal.recordFor(
+                target, com.gt7pitwall.core.race.JournalType.DECISION, com.gt7pitwall.core.race.JournalSource.SYSTEM, title,
                 decision = "mesure seulement, rien n'est enregistré",
                 details = lines.mapIndexed { i, l -> "mesure_${i + 1}" to l }.toMap() +
-                    mapOf("appareil" to "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}", "android" to android.os.Build.VERSION.RELEASE),
+                    mapOf(
+                        "appareil" to "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}",
+                        "android" to android.os.Build.VERSION.RELEASE,
+                        "courses_mesurees" to blackBoxRuns.all().joinToString(","),
+                    ),
             )
         }
     }
@@ -565,6 +582,7 @@ class PitwallEngine(
             val messages = race.onPacket(p)
             if (blackBox.running) {
                 blackBox.onPacket(p, System.nanoTime() - t0)
+                blackBoxRuns.seen(race.journal.sessionId)
                 if (now - lastBlackBoxReportMs >= 5_000L) {
                     lastBlackBoxReportMs = now
                     _blackBoxReport.value = blackBox.report()
