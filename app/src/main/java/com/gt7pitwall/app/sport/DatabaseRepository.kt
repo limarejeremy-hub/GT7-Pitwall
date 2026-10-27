@@ -2,6 +2,7 @@ package com.gt7pitwall.app.sport
 
 import android.content.Context
 import com.gt7pitwall.core.knowledge.Gt7Database
+import com.gt7pitwall.core.knowledge.TrackSignature
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -134,6 +135,7 @@ class DatabaseRepository(context: Context, private val database: Gt7Database, pr
         const val COURSES = "course.csv"
         val FILES = listOf(CARS, MAKERS, COURSES)
         const val GROUPS = "cargrp.csv"
+        const val SIGNATURES = "track_signatures.json"
         /** En dessous, le fichier de catégories téléchargé est jugé incomplet (507 lignes le 27/10/2026). */
         const val MIN_GROUPS = 400
         const val REFRESH_MS = 24 * 3_600_000L
@@ -159,6 +161,8 @@ class DatabaseRepository(context: Context, private val database: Gt7Database, pr
             base.carGroups = runCatching { Gt7Database.parseGroups(File(dir, GROUPS).readText()) }.getOrNull()
                 ?.takeIf { it.size >= MIN_GROUPS }
                 ?: runCatching { Gt7Database.parseGroups(asset(GROUPS)) }.getOrDefault(emptyMap())
+            // Signatures géométriques des circuits (livrées avec l'APK ; données CC0, voir assets/licenses).
+            base.trackSignatures = runCatching { TrackSignature.parseAll(asset(SIGNATURES)) }.getOrDefault(emptyList())
             return base
         }
     }

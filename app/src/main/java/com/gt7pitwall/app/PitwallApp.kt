@@ -137,6 +137,22 @@ class PitwallApp : Application() {
                 },
             )
         }
+        // Mesure Black Box (Atelier) : batterie et température relevées chaque minute pendant la mesure.
+        CoroutineScope(SupervisorJob() + Dispatchers.Default).launch {
+            while (true) {
+                if (engine.blackBox.running) {
+                    runCatching {
+                        val i = registerReceiver(null, android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED))
+                        val level = i?.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1) ?: -1
+                        val scale = i?.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, 100) ?: 100
+                        val temp = i?.getIntExtra(android.os.BatteryManager.EXTRA_TEMPERATURE, Int.MIN_VALUE)
+                            ?.takeIf { it != Int.MIN_VALUE }?.let { it / 10f }
+                        if (level >= 0 && scale > 0) engine.blackBox.battery(level * 100 / scale, temp)
+                    }
+                }
+                kotlinx.coroutines.delay(60_000)
+            }
+        }
         freshness = combine(sport.state, database.status, minuteTicks()) { s, _, _ ->
             val now = System.currentTimeMillis()
             com.gt7pitwall.core.sport.DataFreshness.of(

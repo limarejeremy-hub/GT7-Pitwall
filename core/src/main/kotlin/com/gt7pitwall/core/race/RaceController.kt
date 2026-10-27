@@ -486,6 +486,7 @@ class RaceController(
             pendingSchedule = null
             out += applySchedule(it)
         }
+        if (sessionId != null && !sessionFinished && !replay) trackGeometry(p, raceActive, out)
         if (sessionId != null && !sessionFinished && !sessionIdentitySettled && snapshot.laps.size <= 2) identifySession(out)
         val frozen = tracker.pitVisitOpen || pitWindowPackets > 0
         if (!frozen && (events.isNotEmpty() || windowWasOpen)) out += replan()
@@ -1267,6 +1268,9 @@ class RaceController(
         finishPosition = null
         internalErrors.clear()
         trackInconsistencyNoted = false
+        geometry?.reset()
+        geometryHandled.clear()
+        firstGeometryPosition = "aucune"
         sessionIdentity = SessionMatcher.Result.Unknown
         sessionIdentitySettled = false
         sessionTrackEvidence = null
@@ -3543,6 +3547,111 @@ class RaceController(
             details = mapOf("longueur_m" to c.lengthM.toString(), "identifiant" to c.id.toString()),
         )
         return listOf(EngineerMessage("Nouveau circuit enregistré : ${c.name}.", Priority.INFO, MessageCategory.RADIO))
+    }
+
+    /** Reconnaissance géométrique (créée avec les signatures de la base, recréée si elles changent). */
+    private var geometry: com.gt7pitwall.core.knowledge.TrackGeometryRecognizer? = null
+    private var geometrySignatures: List<com.gt7pitwall.core.knowledge.TrackSignature>? = null
+    /** Dernier verdict géométrique déjà traité dans cette session (journal et décision une seule fois). */
+    private val geometryHandled = mutableSetOf<String>()
+    /** Première position échantillonnée de la session (diagnostic du repère X/Z au journal). */
+    private var firstGeometryPosition = "aucune"
+
+    /** Ce que la géométrie a conclu dans cette session (diagnostic). */
+    val trackGeometryVerdict: com.gt7pitwall.core.knowledge.TrackGeometryRecognizer.Verdict?
+        get() = geometry?.verdict
+
+    /**
+     * Circuit reconnu par sa géométrie (positions X/Z) bien avant la fin du premier tour, pour que la stratégie parte
+     * du bon circuit (mémoire, historique, règlement Sport). Seul un verdict unique agit : il fixe le circuit, remplace
+     * un circuit mémorisé contradictoire et sert de preuve pour reconnaître la course Sport. Ambigu ou inconnu : noté au
+     * journal seulement (circuit absent des signatures, configurations voisines, repère à confirmer en course).
+     */
+    private fun trackGeometry(p: TelemetryPacket, raceActive: Boolean, out: MutableList<EngineerMessage>) {
+        val sigs = database.trackSignatures
+        if (sigs.isEmpty()) return
+        if (geometrySignatures !== sigs) {
+            geometrySignatures = sigs
+            geometry = com.gt7pitwall.core.knowledge.TrackGeometryRecognizer(sigs)
+            geometryHandled.clear()
+        }
+        val g = geometry ?: return
+        val moving = raceActive && !tracker.pitVisitOpen && p.speedKmh > 10f
+        if (moving && firstGeometryPosition == "aucune") {
+            firstGeometryPosition = String.format(java.util.Locale.ROOT, "x=%.0f z=%.0f", p.positionX, p.positionZ)
+        }
+        val v = g.onPosition(p.positionX, p.positionZ, moving)
+        // Chaque conclusion n'est traitée qu'une fois par session (pas de journal à chaque échantillon).
+        val key = when (v) {
+            is com.gt7pitwall.core.knowledge.TrackGeometryRecognizer.Verdict.Identified -> "circuit ${v.course}"
+            is com.gt7pitwall.core.knowledge.TrackGeometryRecognizer.Verdict.Ambiguous -> "ambigu ${v.courses}"
+            is com.gt7pitwall.core.knowledge.TrackGeometryRecognizer.Verdict.Unknown -> "inconnu"
+            com.gt7pitwall.core.knowledge.TrackGeometryRecognizer.Verdict.Pending -> {
+                // Diagnostic : toujours rien après un tour complet (positions non échantillonnées, voiture aux stands…).
+                if (p.currentLap >= 2 && geometryHandled.add("sans conclusion")) {
+                    journal.record(
+                        JournalType.DECISION, JournalSource.ENGINE, "Géométrie : pas de conclusion après un tour",
+                        decision = "reconnaissance par la longueur",
+                        details = mapOf(
+                            "distance_m" to g.distanceM.roundToInt().toString(),
+                            "echantillons" to g.sampleCount.toString(),
+                            "premiere_position" to firstGeometryPosition,
+                        ),
+                    )
+                }
+                return
+            }
+        }
+        if (!geometryHandled.add(key)) return
+        when (v) {
+            is com.gt7pitwall.core.knowledge.TrackGeometryRecognizer.Verdict.Identified -> {
+                val c = database.course(v.course) ?: return
+                val previous = rules.trackId
+                journal.record(
+                    JournalType.DECISION, JournalSource.ENGINE, "Circuit reconnu par la géométrie : ${c.label}",
+                    decision = when {
+                        previous == v.course -> "circuit enregistré confirmé"
+                        previous == null -> "circuit appliqué"
+                        else -> "circuit enregistré (${database.course(previous)?.label ?: previous}) remplacé"
+                    },
+                    details = mapOf(
+                        "distance_m" to v.distanceM.roundToInt().toString(),
+                        "ecart_moyen_m" to String.format(java.util.Locale.ROOT, "%.1f", v.meanDevM),
+                        "sens" to if (v.reverse) "inverse" else "normal",
+                        "signature" to v.name,
+                        "premiere_position" to firstGeometryPosition,
+                        "source" to "gt7-datalogger-track-data (CC0)",
+                    ),
+                )
+                sessionTrackEvidence = v.course
+                trackCandidates = emptyList()
+                if (previous != v.course) {
+                    applyRules(rules.copy(trackId = v.course))
+                    out += EngineerMessage("Circuit reconnu : ${c.label}.", Priority.NORMAL, MessageCategory.RADIO, dedupKey = "geometrie:$sessionId:${v.course}")
+                    out += replan()
+                }
+            }
+            is com.gt7pitwall.core.knowledge.TrackGeometryRecognizer.Verdict.Ambiguous -> journal.record(
+                JournalType.DECISION, JournalSource.ENGINE,
+                "Géométrie : ${v.courses.joinToString(" ou ") { database.course(it)?.label ?: it.toString() }}",
+                decision = "configurations voisines, aucune choisie",
+                details = mapOf("distance_m" to v.distanceM.roundToInt().toString()),
+            )
+            is com.gt7pitwall.core.knowledge.TrackGeometryRecognizer.Verdict.Unknown -> journal.record(
+                JournalType.DECISION, JournalSource.ENGINE, "Géométrie : aucune signature ne correspond",
+                decision = "circuit absent des signatures ou repère à vérifier ; reconnaissance par la longueur",
+                details = listOfNotNull(
+                    "distance_m" to v.distanceM.roundToInt().toString(),
+                    "echantillons" to g.sampleCount.toString(),
+                    "circuit_enregistre" to (rules.trackId?.toString() ?: "aucun"),
+                    g.closest().takeIf { it.isNotEmpty() }?.let { list ->
+                        "plus_proche" to list.joinToString(" ; ") { c -> "${c.frame} : ${c.name} à ${String.format(java.util.Locale.ROOT, "%.0f", c.meanDevM)} m" }
+                    },
+                    "premiere_position" to firstGeometryPosition,
+                ).toMap(),
+            )
+            com.gt7pitwall.core.knowledge.TrackGeometryRecognizer.Verdict.Pending -> Unit
+        }
     }
 
     /** Circuit déjà signalé incohérent dans cette session (un seul message). */

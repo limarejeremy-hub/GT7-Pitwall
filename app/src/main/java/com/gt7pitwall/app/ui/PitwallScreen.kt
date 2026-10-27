@@ -412,6 +412,7 @@ fun PitwallScreen(
                                 TyreCard(state, rules)
                                 RadioCard(radio, engine::command)
                                 voiceRadioCard()
+                                BlackBoxMeasureCard(engine)
                             }
                         }
                     } else {
@@ -431,6 +432,7 @@ fun PitwallScreen(
                             RadioCard(radio, engine::command)
                             voiceRadioCard()
                             LapHistoryCard(state.snapshot.laps)
+                            BlackBoxMeasureCard(engine)
                         }
                     }
                 }
@@ -1323,6 +1325,27 @@ private fun DrivingCard(engine: PitwallEngine) {
         }
         Text("Ce que Pitwall a appris", style = MaterialTheme.typography.bodyMedium)
         state.learning.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall) }
+    }
+}
+
+/**
+ * Mesures préalables à la Black Box, sur la Fold, pendant une vraie course : débit et pertes de paquets, temps de
+ * calcul, taille de trace compressée, batterie. Rien n'est enregistré.
+ */
+@Composable
+private fun BlackBoxMeasureCard(engine: PitwallEngine) {
+    val report by engine.blackBoxReport.collectAsStateWithLifecycle()
+    var on by remember { mutableStateOf(engine.blackBox.running) }
+    PitCard("Mesure Black Box") {
+        SwitchLine(
+            "Mesurer pendant la prochaine course",
+            "Taille, calcul et batterie, sans rien enregistrer. Au moins 10 minutes pour la batterie.",
+            on,
+        ) {
+            on = it
+            engine.setBlackBoxMeasure(it)
+        }
+        report.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall, color = PitColors.Muted) }
     }
 }
 

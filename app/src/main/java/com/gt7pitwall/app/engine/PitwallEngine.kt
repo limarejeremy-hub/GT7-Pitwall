@@ -519,6 +519,49 @@ class PitwallEngine(
         voice.speak(EngineerMessage("Radio check. Ici ton ingénieur, je te reçois cinq sur cinq.", Priority.HIGH, MessageCategory.RADIO))
     }
 
+    /** Mesures préalables à la Black Box (Atelier) : rien n'est enregistré, seulement mesuré. */
+    val blackBox = com.gt7pitwall.core.telemetry.BlackBoxProbe()
+    private val _blackBoxReport = MutableStateFlow(listOf("Mesure arrêtée."))
+    val blackBoxReport: StateFlow<List<String>> = _blackBoxReport.asStateFlow()
+    private var lastBlackBoxReportMs = 0L
+    private var lastBlackBoxJournalMs = 0L
+
+    fun setBlackBoxMeasure(enabled: Boolean) {
+        if (enabled) {
+            blackBoxRuns.clear()
+            blackBox.start()
+        } else {
+            blackBox.stop()
+        }
+        _blackBoxReport.value = if (enabled) listOf("Mesure en cours : lance une course.") else blackBox.report()
+        if (!enabled) journalBlackBox("Mesure Black Box terminée")
+    }
+
+    /** Courses du journal vues pendant la mesure, dans l'ordre : le bilan appartient à la dernière, même close. */
+    private val blackBoxRuns = com.gt7pitwall.core.telemetry.BlackBoxRuns()
+
+    /**
+     * Compte rendu de la mesure dans le journal de la course mesurée (exportable) : preuve réelle, pas une simulation.
+     * Mesure arrêtée depuis le menu après l'arrivée : rattaché à cette course, jamais à la suivante. Aucune course vue
+     * pendant la mesure : rien n'est écrit (rien n'a été mesuré en course).
+     */
+    private fun journalBlackBox(title: String) {
+        val target = blackBoxRuns.last() ?: return
+        val lines = blackBox.report()
+        runCatching {
+            race.journal.recordFor(
+                target, com.gt7pitwall.core.race.JournalType.DECISION, com.gt7pitwall.core.race.JournalSource.SYSTEM, title,
+                decision = "mesure seulement, rien n'est enregistré",
+                details = lines.mapIndexed { i, l -> "mesure_${i + 1}" to l }.toMap() +
+                    mapOf(
+                        "appareil" to "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}",
+                        "android" to android.os.Build.VERSION.RELEASE,
+                        "courses_mesurees" to blackBoxRuns.all().joinToString(","),
+                    ),
+            )
+        }
+    }
+
     private suspend fun onPacket(p: TelemetryPacket) {
         val now = System.currentTimeMillis()
         if (p.carCode > 0) lastCarPacketAtMs = now
@@ -535,7 +578,21 @@ class PitwallEngine(
         }
         mutex.withLock {
             race.engineer.askPositionEachLap = askPositionEachLap()
+            val t0 = System.nanoTime()
             val messages = race.onPacket(p)
+            if (blackBox.running) {
+                blackBox.onPacket(p, System.nanoTime() - t0)
+                blackBoxRuns.seen(race.journal.sessionId)
+                if (now - lastBlackBoxReportMs >= 5_000L) {
+                    lastBlackBoxReportMs = now
+                    _blackBoxReport.value = blackBox.report()
+                }
+                // Point de mesure au journal toutes les 10 minutes : chaque course mesurée garde ses chiffres.
+                if (now - lastBlackBoxJournalMs >= 600_000L) {
+                    if (lastBlackBoxJournalMs > 0) journalBlackBox("Mesure Black Box (point d'étape)")
+                    lastBlackBoxJournalMs = now
+                }
+            }
             publish(force = messages.isNotEmpty())
             messages.forEach(::deliver)
         }
