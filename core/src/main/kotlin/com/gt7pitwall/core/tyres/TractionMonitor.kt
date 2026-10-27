@@ -32,6 +32,10 @@ class TractionMonitor {
     enum class Axle(val label: String) { FRONT("avant"), REAR("arrière"), UNKNOWN("roues motrices non identifiées") }
 
     /** Conditions comparables d'une fenêtre de réaccélération. */
+    /**
+     * Pas de tranche de régime : à rapport et vitesse égaux, un patinage fait justement monter le régime ; le classer à
+     * part empêcherait de comparer les sorties dégradées aux sorties de référence.
+     */
     data class Key(val corner: Int, val throttleBin: Int, val gear: Int, val speedBin: Int, val lateralBin: Int)
 
     class Agg {
@@ -61,7 +65,15 @@ class TractionMonitor {
     }
 
     /** Ce qu'un tour a donné : fenêtres comparables et échantillons écartés (raison visible). */
-    class LapProfile(val lap: Int, val windows: Map<Key, Agg>, val excludedSurface: Int, val unknownSurface: Int, val used: Int)
+    class LapProfile(
+        val lap: Int,
+        val windows: Map<Key, Agg>,
+        val excludedSurface: Int,
+        val unknownSurface: Int,
+        val used: Int,
+        /** Paquets écartés parce que l'ASM corrigeait la voiture. */
+        val excludedAsm: Int = 0,
+    )
 
     data class Report(
         val level: Level,
@@ -142,10 +154,15 @@ class TractionMonitor {
         var excluded = 0
         var unknown = 0
         var used = 0
+        var asm = 0
         for ((corner, samples) in exits) {
             for (s in samples) {
                 if (s.brake > BRAKE_OFF || s.throttle < THROTTLE_MIN || s.slips == null || s.longAccel == null || s.speedMps < MIN_SPEED_MPS) continue
                 if (abs(s.longAccel) > MAX_ACCEL) continue // choc, téléportation : pas une accélération de la voiture
+                if (s.asm) {
+                    asm++
+                    continue
+                }
                 val sf = s.surfaces
                 if (sf != null && !sf.allTarmac) {
                     excluded++
@@ -163,14 +180,14 @@ class TractionMonitor {
                 used++
             }
         }
-        return LapProfile(lap, w, excluded, unknown, used)
+        return LapProfile(lap, w, excluded, unknown, used, asm)
     }
 
     /**
      * Compare le début du relais et ses deux derniers tours. [stintStartLap] : premier tour du relais (écarté : pneus
      * froids) ; [excludedLaps] : arrêts, tour suivant, incidents déclarés.
      */
-    fun evaluate(stintStartLap: Int, excludedLaps: Set<Int>): Report {
+    fun evaluate(stintStartLap: Int, excludedLaps: Set<Int>, raining: Boolean = false): Report {
         // Nouveau relais : l'hystérésis repart de zéro (les tours d'avant sont déjà écartés par le filtre).
         if (stintStart != stintStartLap) {
             stintStart = stintStartLap
@@ -180,7 +197,12 @@ class TractionMonitor {
         }
         val usable = laps.values.filter { it.lap > stintStartLap && it.lap !in excludedLaps }
         val newest = usable.lastOrNull()?.lap
-        val r = compare(usable)
+        // Pluie déclarée : l'adhérence change pour une autre raison que les pneus ; rien n'est conclu (l'UDP ne dit pas la météo).
+        val r = if (raining) {
+            Report(Level.INSUFFICIENT, listOf("pluie déclarée : adhérence modifiée par la piste, comparaison suspendue"))
+        } else {
+            compare(usable)
+        }
         // Hystérésis : une seule évaluation par tour ; « répétée » après deux constats successifs ; retour au calme après
         // deux tours stables seulement.
         if (newest != null && newest != lastEvaluatedLap) {
@@ -228,6 +250,10 @@ class TractionMonitor {
         }
         val excluded = recent.sumOf { it.excludedSurface }
         if (excluded > 0) reasons += "$excluded mesures sur vibreur ou hors asphalte écartées"
+        val asm = recent.sumOf { it.excludedAsm }
+        if (asm > 0) reasons += "$asm mesures sous correction ASM écartées"
+        // Pneus nettement plus chauds : la perte peut venir de la surchauffe autant que de l'usure (dit, pas exclu).
+        if (tRef > 0 && tRecent > tRef + HOT_RISE_C) reasons += "pneus ${(tRecent - tRef).roundToInt()} °C plus chauds qu'en début de relais : surchauffe possible"
 
         data class Cmp(val corner: Int, val loss: Boolean, val dSlip: Double, val dAcc: Double, val dTcs: Double)
         val perLap = recent.map { lp ->
@@ -289,5 +315,6 @@ class TractionMonitor {
         const val TCS_RISE = 0.15
         const val AXLE_MARGIN = 0.01
         const val COLD_DROP_C = 10.0
+        const val HOT_RISE_C = 15.0
     }
 }

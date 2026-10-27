@@ -2811,7 +2811,7 @@ class RaceController(
         if (m.version == tractionVersion) return emptyList()
         tractionVersion = m.version
         val st = tyreStintContext()
-        val r = m.evaluate(st.startLap, st.excludedLaps)
+        val r = m.evaluate(st.startLap, st.excludedLaps, st.raining)
         val before = tractionLevel
         tractionLevel = r.level
         if (r.level == before) return emptyList()

@@ -21,12 +21,12 @@ class TractionMonitorTest {
 
     private fun sample(
         rearSlip: Float = 1.02f, accel: Float = 4.0f, tcs: Boolean = false, gear: Int = 3, kmh: Float = 80f,
-        throttle: Int = 128, temp: Float = 80f, surfaces: TyreSurfaces? = tarmac,
+        throttle: Int = 128, temp: Float = 80f, surfaces: TyreSurfaces? = tarmac, rpm: Float = 6000f, asm: Boolean = false,
     ) = LapSample(
         tick = 0, x = 0f, z = 0f, speedMps = kmh / 3.6f, throttle = throttle, brake = 0, yawRate = 0.05f, wheelAngle = null,
         frontSlip = 1.0f, rearSlip = rearSlip, tcs = tcs, offTrack = false, surfaces = surfaces,
-        slips = Wheels(1.0f, 1.0f, rearSlip, rearSlip), gear = gear, rpm = 6000f, longAccel = accel,
-        tyreTemps = Wheels(temp, temp, temp, temp),
+        slips = Wheels(1.0f, 1.0f, rearSlip, rearSlip), gear = gear, rpm = rpm, longAccel = accel,
+        tyreTemps = Wheels(temp, temp, temp, temp), asm = asm,
     )
 
     /** Quatre virages, 30 paquets de réaccélération chacun. */
@@ -129,5 +129,51 @@ class TractionMonitorTest {
         val r = run(TractionMonitor(), mapOf(2 to freshA, 3 to freshA, 4 to wornA, 5 to wornA))
         assertEquals(Level.DEGRADATION_SUSPECTED, r.level)
         assertTrue(r.text().contains("Surface des roues inconnue"), r.text())
+    }
+
+    @Test
+    fun wheelspinThatRaisesTheRevsIsStillCompared() {
+        // Même rapport et même vitesse : le patinage fait monter le régime. Il ne doit pas sortir de la comparaison.
+        val spinning = lap { List(30) { sample(rearSlip = 1.22f, accel = 3.0f, rpm = 7400f) } }
+        val r = run(TractionMonitor(), mapOf(2 to fresh(), 3 to fresh(), 4 to spinning, 5 to spinning))
+        assertEquals(Level.DEGRADATION_SUSPECTED, r.level, r.text())
+    }
+
+    @Test
+    fun stabilityControlCorrectionsAreExcluded() {
+        val asm = lap { List(30) { sample(rearSlip = 1.30f, accel = 2.5f, asm = true) } }
+        val r = run(TractionMonitor(), mapOf(2 to fresh(), 3 to fresh(), 4 to asm, 5 to asm))
+        assertEquals(Level.INSUFFICIENT, r.level, r.text())
+        assertTrue(r.text().contains("ASM"), r.text())
+    }
+
+    @Test
+    fun declaredRainSuspendsTheComparison() {
+        val m = TractionMonitor()
+        listOf(2 to fresh(), 3 to fresh(), 4 to worn(), 5 to worn()).forEach { (n, l) -> m.addLap(n, l) }
+        val r = m.evaluate(1, emptySet(), raining = true)
+        assertEquals(Level.INSUFFICIENT, r.level)
+        assertTrue(r.text().contains("Pluie déclarée"), r.text())
+    }
+
+    @Test
+    fun overheatingIsReportedAsAPossibleCauseNotHidden() {
+        val hot = lap { List(30) { sample(rearSlip = 1.22f, accel = 3.0f, temp = 100f) } }
+        val r = run(TractionMonitor(), mapOf(2 to fresh(), 3 to fresh(), 4 to hot, 5 to hot))
+        assertEquals(Level.DEGRADATION_SUSPECTED, r.level)
+        assertTrue(r.text().contains("20 °C plus chauds") && r.text().contains("surchauffe possible"), r.text())
+    }
+
+    @Test
+    fun aLapProfileIsCheapToCompute() {
+        // Coût mesuré sur le PC de développement (pas sur le Fold) : un tour de 90 s à 60 Hz, 12 virages.
+        val m = TractionMonitor()
+        val exits = (1..12).associateWith { c -> List(450) { sample(kmh = 60f + (it % 80), rearSlip = 1.0f + (it % 7) / 100f) } }
+        repeat(5) { m.profile(it, exits) }
+        val t0 = System.nanoTime()
+        repeat(20) { m.profile(it, exits) }
+        val ms = (System.nanoTime() - t0) / 20 / 1_000_000.0
+        println("TractionMonitor.profile : %.2f ms par tour (5 400 paquets, PC)".format(ms))
+        assertTrue(ms < 50.0, "$ms ms")
     }
 }

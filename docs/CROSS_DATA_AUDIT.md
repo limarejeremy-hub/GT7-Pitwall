@@ -1,10 +1,121 @@
-# Croisement des données GT7 — Sprint A (intégrité) et Sprint B (motricité)
+# Croisement des données GT7 — audit des 13 croisements, Sprint A (intégrité) et Sprint B (motricité)
 
 Issues #35 et #36. Branche `claude/v436-tyre-traction`, partie de `claude/v426-radio-hotfix` (APK #432, radio validée).
 Données utilisées : **UDP seulement**. Rien ne vient du HUD, de Remote Play, d'une image, d'un PC ni d'un autre matériel.
 
 Tout ce qui suit est vérifié par des tests JVM et par la compilation Android. **Rien n'est validé sur PS5** : les seuils
 sont des valeurs de départ, à recalibrer sur de vraies sorties de virage.
+
+## Progression 13/13 (issue #36, périmètre global)
+
+États :
+- **à vérifier** : données présentes, diagnostic pas encore construit ;
+- **partiel** : des briques existent, le croisement complet n'est pas fait ;
+- **implémenté** : code et tests JVM ;
+- **testé sur PS5** : vérifié en jeu ;
+- **impossible sans source** : la donnée n'existe pas dans l'UDP.
+
+**Aucun croisement n'est encore « testé sur PS5 ».**
+
+| # | Croisement | Lot | État | Où dans le code |
+|---|---|---|---|---|
+| 1 | Accélérateur × glissement × surfaces × TCS × accélération obtenue ⇒ motricité | 1 | **implémenté** (15 tests) | `TractionMonitor`, `DriverCoach`, `RaceController.tractionCheck` |
+| 2 | Frein × décélération × blocage × surface ⇒ efficacité de freinage | 1 | partiel | `CornerPass.lockup/brakeStartM/brakeRampMs`, `CornerCoach` (freinage tôt/tard) |
+| 3 | Braquage × lacet × trajectoire ⇒ sous-virage / survirage | 1 | partiel | `CornerPass.rotationRatio` (format C seulement) |
+| 4 | 4 températures × charge latérale × surfaces × glissements ⇒ stress thermique | 1 | partiel | `RaceController.tyreSummary`, `GripDiagnosis`, `TyreCoach` |
+| 5 | Temps par virage × causes mesurées ⇒ où et combien la voiture perd | 1 | **implémenté** (JVM) | `CornerReport`, `TyreOrDriving`, `tractionLossMs` |
+| 6 | Arrêt avec ou sans pneus × carburant ⇒ séparer effet pneus et effet masse | 2 | partiel | `TyreChangeHunter` (soupçon thermique), `CompoundBook` (pente carburant), gain de pneus neufs dans `TyreModel.pool` |
+| 7 | Perte par tour × tours restants × coût d'arrêt ⇒ Box ou continuer | 2 | partiel | `StrategyOptions`, `TyreScenarios` ; la motricité répétée y entre (`degrading`) |
+| 8 | Voiture × circuit × version × règlement × multiplicateurs ⇒ historique comparable | 2 | **implémenté** (JVM) ; version physique encore déclarée à la main | `Compatibility`, `SessionRecord.rulesQuarantine` (Sprint A) |
+| 9 | Position X/Z × temps ⇒ delta en direct contre son propre meilleur tour | 3 | à vérifier | rien encore ; `LapRecorder` et `TrackProjection` le permettent |
+| 10 | Rapport × régime × accélérateur × accélération × glissement ⇒ rendement par rapport | 3 | partiel | les fenêtres de `TractionMonitor` sont déjà par rapport ; aucun bilan par rapport |
+| 11 | Hauteurs de suspension × caisse × heave/sway/surge × vibreur ⇒ talonnage | 3 | à vérifier sur PS5 | champs lus (`suspensionHeight` 0xC4, `bodyHeight` 0x38, 0x130–0x138 en B/~/C), jamais utilisés |
+| 12 | Rang 0x84 × participants 0x86 ⇒ places fiables | 3 | **implémenté** pour les places ; **impossible sans source** pour les écarts en secondes | `PositionTracker` |
+| 13 | Consigne radio × passages avant/après × état des pneus ⇒ la consigne a-t-elle aidé ? | 3 | partiel | `DriverCoach` (vérification sur 3 passages, virages « bloqués »), arbitrage motricité (Sprint B) |
+
+### Détail par croisement
+
+**1. Motricité.** Détail plus bas (Sprint B).
+- Implémenté et testé sur données synthétiques.
+- Non calibré : il manque une vraie trace PS5.
+
+**2. Freinage.**
+- Sources : frein 0x92, vitesse 0x4C (décélération = Δv entre paquets), glissement avant (< 1 = blocage), surfaces,
+  TCS/ASM.
+- Déjà en place : début de freinage, pression maximale, montée en pression, blocage, causes « freinage trop tôt/tard ».
+- Manque : la décélération obtenue à pression comparable, au même endroit et sur la même surface (même méthode que le
+  n°1, côté frein). Sans cela, impossible de séparer « freiné trop tard » de « grip avant moindre ».
+- Limite : GT7 ne transmet pas la température des freins, donc aucune « usure des freins ».
+- Cas négatifs à tester : freinage sur vibreur, freinage en appui, pneus froids.
+- Coût Fold : du même ordre que le n°1.
+- Prochaine étape (lot 1).
+
+**3. Rotation.**
+- Le rapport lacet mesuré / lacet attendu existe, mais seulement en format C (angle des roues + empattement).
+- En format B/~, l'angle de direction (0x128) n'est pas encore utilisé.
+- Angle de dérive (vitesse dans le monde + quaternion) : **convention des axes non vérifiée**. Il faut une trace PS5
+  avant de le calculer ; sinon le signe serait deviné.
+- Ne jamais présenter un patinage longitudinal comme une dérive latérale.
+
+**4. Stress thermique.**
+- Déjà fait : écarts avant/arrière et gauche/droite (réponse pneus), tendance par tour (`GripDiagnosis`), alertes de
+  `TyreCoach`.
+- Manque : le croisement avec le sens du virage et la charge latérale.
+- Limite : le signe gauche/droite de la charge latérale (vitesse × lacet) reste à confirmer en jeu (note de
+  `Dynamics.kt`).
+- Une température haute n'est jamais une usure.
+
+**5. Temps perdu.**
+- Bilan par virage (PR #31) et pneus ou pilotage.
+- La motricité convertit maintenant sa perte en dixièmes par tour, sur les virages concernés.
+
+**6. Pneus ou carburant.**
+- Briques en place : soupçon de changement de pneus par saut thermique (toujours à confirmer par le pilote) et pente
+  « carburant » apprise entre relais.
+- Manque : la motricité avant/après un arrêt **sans** pneus (même masse retirée) comparée à un arrêt **avec** pneus.
+  Il faut des courses avec les deux types d'arrêt.
+
+**7. Box ou continuer.**
+- La comparaison temps restant / coût d'arrêt existe ; la motricité répétée y entre comme « pneus dégradés ».
+- Manque : convertir la perte mesurée en pente pour l'intervalle d'incertitude.
+- Aucun « Box » ne vient de la motricité seule (vérifié dans le code).
+
+**8. Historique comparable.**
+- Compatibilité voiture, circuit, multiplicateurs, version déclarée.
+- Quarantaine des règlements contredits par GT7 (Sprint A, testée).
+- Limite : la version physique (1.71) n'est pas lue dans l'UDP. Elle reste déclarée dans le profil.
+
+**9. Delta personnel.**
+- Données présentes : X/Z à ~60 Hz et tour de référence enregistrable.
+- Il faudrait garder le meilleur tour propre (≈ 5 400 échantillons pour 90 s) et projeter la position courante dessus.
+- À faire au lot 3. Afficher « contre ton meilleur tour », jamais un écart adverse.
+
+**10. Rendement par rapport.**
+- Les fenêtres de motricité sont déjà séparées par rapport.
+- Il manque un bilan « rapport × section » (coupure TCS, patinage, régime hors plage).
+- Découverte : le régime **ne doit pas** servir de critère de comparaison, car un patinage le fait monter à vitesse
+  égale.
+
+**11. Suspension.**
+- Champs lus mais d'unité et d'axes non vérifiés.
+- Aucune analyse avant une trace PS5 sur vibreurs connus. Pas de diagnostic de casse.
+
+**12. Places.**
+- Positions stables, groupées, arrivée figée.
+- Les sondes Gap Hunter (73 000 paquets en format C) n'ont trouvé aucun champ d'écart : **écarts en secondes
+  impossibles sans source**. Aucun n'est inventé.
+
+**13. Effet des consignes.**
+- La vérification après trois passages existe ; un virage sans amélioration n'est plus conseillé.
+- Le patinage attribué aux pneus n'est plus reproché au pilote.
+- La causalité n'est pas démontrable (le pilote change aussi pour d'autres raisons). Ce sera dit tel quel.
+
+### Plan des lots suivants
+- **Lot 1** : n°2 (freinage à pression comparable), puis n°3 et n°4. Même méthode de fenêtres comparables que le n°1.
+- **Lot 2** : n°6 et n°7 (motricité avant/après arrêt, pente mesurée dans la stratégie).
+- **Lot 3** : n°9, n°10, puis n°11 et n°13 selon les traces.
+- **Lot 0 (en continu)** : enregistreur compact opt-in (Sprint D). Sans trace PS5 réelle, aucun seuil ne peut être
+  calibré.
 
 ## Champs utilisés
 
@@ -73,6 +184,15 @@ sont des valeurs de départ, à recalibrer sur de vraies sorties de virage.
 - `DEGRADATION_REPEATED` : deux constats successifs.
 - Retour au calme après deux tours stables.
 
+**Ajouts après la mise à jour du cahier des charges.**
+- Paquets sous correction ASM écartés.
+- Pluie déclarée : comparaison suspendue. L'UDP ne transmet pas la météo.
+- Pneus plus chauds de 15 °C ou plus : « surchauffe possible » est dit, sans être exclu.
+- **Découverte : pas de tranche de régime.** Un patinage fait monter le régime à vitesse égale ; trier par régime
+  empêcherait la comparaison (test `wheelspinThatRaisesTheRevsIsStillCompared`).
+- Coût de calcul : **6,6 ms par tour de 5 400 paquets sur le PC de développement**, une fois par tour. Le coût réel
+  sur le Fold n'est pas mesuré ; il faudra la mesure Black Box de l'Atelier pendant un essai.
+
 **Causes écartées.**
 
 | Situation | Effet |
@@ -82,6 +202,8 @@ sont des valeurs de départ, à recalibrer sur de vraies sorties de virage.
 | Pneus froids | Comparaison suspendue |
 | Une seule sortie ratée | Pas une tendance |
 | Accélération plus faible sans patinage ni TCS (aspiration, moteur, trajectoire) | Explicitement pas une perte de motricité |
+| Correction ASM | Paquets écartés |
+| Pluie déclarée | Comparaison suspendue |
 | Premier tour, arrêts, incidents | Écartés |
 
 **Sorties.**

@@ -42,6 +42,8 @@ data class LapSample(
     val longAccel: Float? = null,
     /** Température des quatre pneus (°C). */
     val tyreTemps: com.gt7pitwall.core.telemetry.Wheels? = null,
+    /** Contrôle de stabilité (ASM) actif : la voiture est corrigée, ce n'est pas une sortie de virage comparable. */
+    val asm: Boolean = false,
 )
 
 /**
@@ -112,7 +114,7 @@ class LapRecorder {
         return LapSample(
             tick, p.positionX, p.positionZ, p.speedMps, p.throttle, p.brake, p.angularVelocityY,
             angle, slip?.let { minOf(it.fl, it.fr) }, slip?.let { maxOf(it.rl, it.rr) }, p.isTcsActive,
-            off, p.surfaces, slip, p.currentGear, p.engineRpm, longAccel?.takeIf { it.isFinite() }, p.tyreTemps,
+            off, p.surfaces, slip, p.currentGear, p.engineRpm, longAccel?.takeIf { it.isFinite() }, p.tyreTemps, p.isAsmActive,
         )
     }
 
