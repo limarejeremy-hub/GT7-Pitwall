@@ -413,6 +413,7 @@ fun PitwallScreen(
                                 RadioCard(radio, engine::command)
                                 voiceRadioCard()
                                 BlackBoxMeasureCard(engine)
+                                CarImageDiagnosticCard()
                             }
                         }
                     } else {
@@ -433,6 +434,7 @@ fun PitwallScreen(
                             voiceRadioCard()
                             LapHistoryCard(state.snapshot.laps)
                             BlackBoxMeasureCard(engine)
+                            CarImageDiagnosticCard()
                         }
                     }
                 }
@@ -1327,6 +1329,16 @@ private fun DrivingCard(engine: PitwallEngine) {
  * Mesures préalables à la Black Box, sur la Fold, pendant une vraie course : débit et pertes de paquets, temps de
  * calcul, taille de trace compressée, batterie. Rien n'est enregistré.
  */
+/** Diagnostic de la photo officielle de la voiture (Atelier) : pourquoi la silhouette est affichée, le cas échéant. */
+@Composable
+private fun CarImageDiagnosticCard() {
+    val status by CarImageLoader.status.collectAsStateWithLifecycle()
+    PitCard("Photo de la voiture") {
+        Text(status.text, style = MaterialTheme.typography.bodySmall,
+            color = if (status is com.gt7pitwall.core.knowledge.CarImagePolicy.Outcome.Shown) PitColors.Green else PitColors.Muted)
+    }
+}
+
 @Composable
 private fun BlackBoxMeasureCard(engine: PitwallEngine) {
     val report by engine.blackBoxReport.collectAsStateWithLifecycle()

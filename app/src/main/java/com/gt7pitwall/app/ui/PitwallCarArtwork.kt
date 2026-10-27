@@ -29,6 +29,7 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import com.gt7pitwall.core.knowledge.CarImagePolicy
 
 /**
  * GT7 official imagery belongs to Sony/Polyphony, not Pitwall. A personal
@@ -41,9 +42,11 @@ fun PitwallCarArtwork(carCode: Int?, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val preview = (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
     val photo = produceState<Bitmap?>(initialValue = null, key1 = carCode, key2 = preview) {
-        value = if (preview && carCode != null) withContext(Dispatchers.IO) {
-            CarImagePreview.load(context, carCode)
-        } else null
+        value = when {
+            carCode == null -> null
+            !preview -> null.also { CarImageLoader.disabled("version de diffusion : photos officielles désactivées (droits Sony / Polyphony)") }
+            else -> withContext(Dispatchers.IO) { CarImageLoader.load(context, carCode) }
+        }
     }
     Box(modifier.clip(RoundedCornerShape(12.dp))
         .background(Brush.linearGradient(listOf(Color(0xFF283D4D), Color(0xFF101922)))),
@@ -74,45 +77,120 @@ fun PitwallCarArtwork(carCode: Int?, modifier: Modifier = Modifier) {
     }
 }
 
-private object CarImagePreview {
-    private const val MAX_BYTES = 2_500_000
-    private const val HOST = "www.gran-turismo.com"
-    private const val PATH = "/common/dist/gt7/carlist/car_images/"
+/**
+ * Photo officielle de la voiture conduite (une image à la fois, cache borné sur le téléphone). Chaque tentative laisse
+ * un diagnostic lisible dans l'Atelier ([status]) : course du 27/10, la silhouette restait sans explication.
+ */
+object CarImageLoader {
+    private val _status = kotlinx.coroutines.flow.MutableStateFlow<CarImagePolicy.Outcome>(CarImagePolicy.Outcome.NoCar)
+    val status: kotlinx.coroutines.flow.StateFlow<CarImagePolicy.Outcome> = _status
+
+    /** Échecs récents par voiture : pas de nouvelle requête avant [CarImagePolicy.RETRY_AFTER_FAILURE_MS]. */
+    private val failures = java.util.concurrent.ConcurrentHashMap<Int, Pair<Long, String>>()
+
+    fun disabled(reason: String) {
+        _status.value = CarImagePolicy.Outcome.Disabled(reason)
+    }
 
     fun load(context: Context, id: Int): Bitmap? {
-        if (id !in 1..20_000) return null
-        val disk = File(context.cacheDir,"pitwall-car-" + id + ".webp")
-        if (disk.isFile && disk.length() in 1..MAX_BYTES.toLong()) {
-            BitmapFactory.decodeFile(disk.path)?.let { return it }
+        val address = CarImagePolicy.url(id) ?: return null.also { _status.value = CarImagePolicy.Outcome.Disabled("identifiant de voiture $id hors limites") }
+        val dir = File(context.cacheDir, "car-images").apply { mkdirs() }
+        val disk = File(dir, "car$id.img")
+        val now = System.currentTimeMillis()
+        if (disk.isFile && disk.length() in 1..CarImagePolicy.MAX_BYTES.toLong() && now - disk.lastModified() < CarImagePolicy.CACHE_MAX_AGE_MS) {
+            BitmapFactory.decodeFile(disk.path)?.let {
+                _status.value = CarImagePolicy.Outcome.Shown(id, disk.length().toInt(), fromCache = true)
+                return it
+            }
         }
-        return runCatching {
-            val url = URL("https://" + HOST + PATH + "car" + id + ".webp")
-            require(url.protocol == "https" && url.host == HOST)
+        failures[id]?.let { (at, why) ->
+            if (now - at < CarImagePolicy.RETRY_AFTER_FAILURE_MS) {
+                _status.value = CarImagePolicy.Outcome.Waiting(id, why)
+                return null
+            }
+        }
+        val outcome = fetch(id, address)
+        _status.value = outcome.first
+        val bytes = outcome.second
+        if (bytes == null) {
+            failures[id] = now to outcome.first.text
+            return null
+        }
+        val image = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        if (image == null) {
+            val o = CarImagePolicy.Outcome.Undecodable(id, CarImagePolicy.imageFormat(bytes.copyOf(minOf(16, bytes.size))) ?: "?")
+            _status.value = o
+            failures[id] = now to o.text
+            return null
+        }
+        runCatching {
+            val tmp = File(dir, "car$id.tmp")
+            tmp.writeBytes(bytes)
+            tmp.renameTo(disk)
+            // Cache borné : les images les plus anciennes partent d'abord.
+            dir.listFiles { f -> f.name.endsWith(".img") }?.sortedByDescending { it.lastModified() }
+                ?.drop(CarImagePolicy.MAX_CACHED)?.forEach { it.delete() }
+        }
+        failures.remove(id)
+        return image
+    }
+
+    /** Téléchargement (hors fil de l'interface) : redirections seulement vers le site officiel, image vérifiée à ses octets. */
+    private fun fetch(id: Int, first: String): Pair<CarImagePolicy.Outcome, ByteArray?> = try {
+        var url = URL(first)
+        var result: Pair<CarImagePolicy.Outcome, ByteArray?>? = null
+        var hops = 0
+        while (result == null) {
             val connection = (url.openConnection() as HttpURLConnection).apply {
                 connectTimeout = 5_000; readTimeout = 6_000
                 instanceFollowRedirects = false
-                setRequestProperty("Accept","image/webp,image/*")
-                setRequestProperty("User-Agent","GT7-Pitwall/0.8 (personal preview)")
+                setRequestProperty("Accept", "image/webp,image/*;q=0.9,*/*;q=0.5")
+                setRequestProperty("User-Agent", "GT7-Pitwall/0.8 (Android; one car image)")
             }
             try {
-                if (connection.responseCode != 200 ||
-                    !connection.contentType.orEmpty().lowercase().startsWith("image/") ||
-                    connection.contentLengthLong > MAX_BYTES) return null
+                val code = connection.responseCode
+                if (code in 300..399) {
+                    val location = connection.getHeaderField("Location")
+                    if (!CarImagePolicy.redirectAllowed(location) || ++hops > CarImagePolicy.MAX_REDIRECTS) {
+                        result = CarImagePolicy.Outcome.Http(id, code) to null
+                    } else {
+                        url = URL(url, location)
+                    }
+                    continue
+                }
+                if (code != 200) {
+                    result = CarImagePolicy.Outcome.Http(id, code) to null
+                    continue
+                }
+                if (connection.contentLengthLong > CarImagePolicy.MAX_BYTES) {
+                    result = CarImagePolicy.Outcome.TooLarge(id) to null
+                    continue
+                }
                 val buf = ByteArray(16_384)
                 val output = ByteArrayOutputStream()
+                var tooLarge = false
                 connection.inputStream.use { input ->
                     while (true) {
                         val n = input.read(buf)
                         if (n < 0) break
-                        if (output.size() + n > MAX_BYTES) return null
-                        output.write(buf,0,n)
+                        if (output.size() + n > CarImagePolicy.MAX_BYTES) { tooLarge = true; break }
+                        output.write(buf, 0, n)
                     }
                 }
                 val bytes = output.toByteArray()
-                val image = BitmapFactory.decodeByteArray(bytes,0,bytes.size) ?: return null
-                runCatching { disk.writeBytes(bytes) }
-                image
-            } finally { connection.disconnect() }
-        }.getOrNull()
+                result = when {
+                    tooLarge -> CarImagePolicy.Outcome.TooLarge(id) to null
+                    // Le type annoncé peut être générique (octet-stream) : seuls les octets font foi.
+                    CarImagePolicy.imageFormat(bytes.copyOf(minOf(16, bytes.size))) == null ->
+                        CarImagePolicy.Outcome.NotAnImage(id, connection.contentType) to null
+                    else -> CarImagePolicy.Outcome.Shown(id, bytes.size, fromCache = false) to bytes
+                }
+            } finally {
+                connection.disconnect()
+            }
+        }
+        result
+    } catch (e: Exception) {
+        CarImagePolicy.Outcome.Network(id, (e.javaClass.simpleName + (e.message?.let { " : ${it.take(80)}" } ?: ""))) to null
     }
 }
