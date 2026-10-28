@@ -219,12 +219,13 @@ class ProfileBook(entries: Map<ProfileId, ProfileEntry>, active: ProfileId) {
     fun updateRules(rules: RaceRules): ProfileEntry {
         val old = current
         if (rules == old.rules) return old
+        val changed = changedFields(old.rules, rules)
         var status = old.profile.ruleStatus
-        if (status.isNotEmpty()) {
-            val changed = changedFields(old.rules, rules)
-            status = status + changed.associateWith { FieldStatus.PILOT }
-        }
-        return ProfileEntry(old.profile.copy(confirmed = false, ruleStatus = status), rules).also { book[active] = it }
+        if (status.isNotEmpty()) status = status + changed.associateWith { FieldStatus.PILOT }
+        // Essai du 28/10 : la gomme de départ dite à la radio, ou le circuit reconnu par Pitwall, retiraient en silence la
+        // confirmation du pilote. Ni l'une ni l'autre ne change le règlement confirmé : la confirmation reste.
+        val keeps = changed.isEmpty() || (changed == setOf(RuleField.TRACK) && old.rules.trackId == null)
+        return ProfileEntry(old.profile.copy(confirmed = old.profile.confirmed && keeps, ruleStatus = status), rules).also { book[active] = it }
     }
 
     /** Le pilote donne lui-même ces champs (même si la valeur ne change pas : « aucun arrêt obligatoire »). */
