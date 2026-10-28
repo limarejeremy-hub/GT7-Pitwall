@@ -17,10 +17,11 @@ import kotlin.test.assertTrue
 class HandlingCrossTest {
     private val tarmac = TyreSurfaces.parse("TTTT".toByteArray())
 
-    private fun brake(decel: Float = 12f, front: Float = 0.98f, kmh: Float = 120f, temp: Float = 80f, surfaces: TyreSurfaces? = tarmac) = LapSample(
+    private fun brake(decel: Float = 12f, front: Float = 0.98f, kmh: Float = 120f, temp: Float = 80f, surfaces: TyreSurfaces? = tarmac, applied: Int? = null) = LapSample(
         tick = 0, x = 0f, z = 0f, speedMps = kmh / 3.6f, throttle = 0, brake = 160, yawRate = 0f, wheelAngle = null,
         frontSlip = front, rearSlip = 1f, tcs = false, offTrack = false, surfaces = surfaces,
         slips = Wheels(front, front, 1f, 1f), gear = 4, rpm = 6000f, longAccel = -decel, tyreTemps = Wheels(temp, temp, temp, temp),
+        brakeApplied = applied,
     )
 
     private fun lap(n: Int, each: () -> LapSample) = BrakingMonitor.lap(n, (1..3).associateWith { List(20) { each() } })
@@ -79,5 +80,19 @@ class HandlingCrossTest {
         assertTrue(r.text.contains("14 °C au-dessus des trois autres") && r.text.contains("Température élevée ≠ usure"), r.text)
         assertTrue(r.text.contains("blocages avant en hausse (+3)"), r.text)
         assertNull(ThermalStress.analyze(listOf(lapRecord(2, 81f), lapRecord(3, 81f), lapRecord(4, 82f)), 1).wheel, "écarts faibles : pneus équilibrés")
+    }
+
+    /** Revue complémentaire PR #37 : frein appliqué (0x13D) contre pédale (0x92), observation seulement ; nul en replay. */
+    @Test
+    fun appliedBrakeIsComparedToThePedalAndAReplayIsRecognised() {
+        val laps = listOf(lap(2) { brake(applied = 160) }, lap(3) { brake(applied = 160) }, lap(4) { brake(10.8f, 0.93f, applied = 120) }, lap(5) { brake(10.8f, 0.93f, applied = 120) })
+        val r = BrakingMonitor.compare(laps, 1, emptySet())
+        assertTrue(r.text().contains("Frein appliqué / demandé (0x13D, expérimental) : 100 % → 75 %, ABS peut-être plus actif (hypothèse)"), r.text())
+        // Même verdict sans 0x13D : observation seulement.
+        val without = BrakingMonitor.compare(listOf(lap(2) { brake() }, lap(3) { brake() }, lap(4) { brake(10.8f, 0.93f) }, lap(5) { brake(10.8f, 0.93f) }), 1, emptySet())
+        assertEquals(without.level, r.level)
+        // Replay : 0x13D toujours nul pendant les freinages.
+        val replay = BrakingMonitor.compare((2..5).map { n -> lap(n) { brake(applied = 0) } }, 1, emptySet())
+        assertTrue(replay.text().contains("replay probable ou champ absent"), replay.text())
     }
 }

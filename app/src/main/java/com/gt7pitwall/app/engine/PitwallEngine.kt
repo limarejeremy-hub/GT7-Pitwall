@@ -188,6 +188,13 @@ class PitwallEngine(
 
     val connection: StateFlow<ConnectionStatus> = client.status
 
+    /** Journal passif des formats demandés et reçus (revue PR #37) : automatique, se lit après la session. */
+    val formatLog = com.gt7pitwall.core.telemetry.FormatLog()
+
+    init {
+        scope.launch { client.status.collect { formatLog.onStatus(it, race.profile.id.label, System.currentTimeMillis()) } }
+    }
+
     private val _state = MutableStateFlow(PitwallUiState(localCareer = PitwallLocalCareer.fromSessions(race.archivedSessions)))
     val state: StateFlow<PitwallUiState> = _state.asStateFlow()
 
@@ -588,6 +595,7 @@ class PitwallEngine(
         runCatching {
             positionProbe.onPacket(p, now)
             torqueProbe.onPacket(p)
+            formatLog.onPacket(now)
             if (now - lastProbeMs >= PROBE_REFRESH_MS) {
                 lastProbeMs = now
                 refreshProbe()

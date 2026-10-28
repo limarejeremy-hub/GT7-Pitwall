@@ -33,7 +33,9 @@ développement. Ses chiffres sont repris **tels que résumés par l'issue 150**,
 - Valeur non finie : `null` (des paquets GT7 contiennent des flottants non finis, jegr78/gt-racing-broadcast #717).
 - Tests : `ExperimentalFieldsTest`.
 
-**Ce qu'on n'en tire jamais** : un couple en Nm, une puissance à la roue, une usure.
+**Ce qu'on n'en tire jamais** : un couple en Nm, une puissance à la roue, une usure, ni un verdict. Le test
+`verdictsAreIdenticalWithOrWithoutTheExperimentalTorque` vérifie que niveau, virages et entrée stratégie sont identiques
+avec ou sans 0x154.
 
 **Validation sur PS5** : sonde `TorqueProbe`, carte Atelier « Champs GT7 expérimentaux ». Elle mesure sur ta voiture la
 corrélation avec l'accélérateur en prise, la part de zéros au point mort, la part de négatifs en frein moteur et la plage.
@@ -47,7 +49,7 @@ Ce que la combinaison peut révéler :
 |---|---|---|
 | Perte de motricité des pneus | Même pédale, **même couple** délivré, glissement en hausse, accélération en baisse | Détecté par `TractionMonitor` (sans le couple) |
 | Coupure électronique (TCS) | Même pédale, **couple en baisse**, TCS actif, glissement contenu | Comptée comme perte de motricité : le TCS coupe parce que ça patine |
-| Perte côté moteur ou commande | Même pédale, **couple en baisse sans TCS**, glissement stable | **Écartée des pneus** quand 0x154 est présent (seul usage décisionnel, et seulement pour écarter) |
+| Perte côté moteur ou commande | Même pédale, **couple en baisse sans TCS**, glissement stable | **Notée comme observation** (« moteur ou commande probables »), sans effet sur le verdict. Une telle fenêtre n'était de toute façon pas une perte de motricité (ni patinage ni TCS en hausse) : l'ancien « veto » était redondant (revue complémentaire PR #37, P0-2) |
 | Moins de puissance sans changer de couple | Couple égal, glissement stable, accélération en baisse | Dit : « pas une perte de motricité » (aspiration, trajectoire, pente) |
 | Turbo pas encore en charge | Couple qui monte avec retard à pédale égale | À étudier : corrélation turbo +0,92 |
 | Différence de performance entre deux trains de pneus | Glissement et accélération à couple égal, avant et après un arrêt | À faire (croisement n°6) |
@@ -58,19 +60,33 @@ et la vitesse le sont.
 Tests : `TractionReviewTest.lessDeliveredTorqueWithoutTcsIsNotBlamedOnTheTyres` (couple en baisse sans TCS → stable ;
 couple en baisse avec TCS → perte de motricité).
 
-## Découverte à vérifier en priorité : disponibilité des formats selon le mode
+## À vérifier en priorité : disponibilité des formats selon le mode (hypothèse, rien n'est conclu)
 
 Le README de gt7-udp indique :
-- format B : **« not available in Sport Mode »** ;
-- format ~ : **« not available in Replays »**.
+- format B (316 octets) : **« not available in Sport Mode »** ;
+- format ~ (344 octets) : **« not available in Replays »** ;
+- format C : aucune restriction écrite.
 
-Si c'est vrai :
-- **en course Sport, seul le format A (296 octets) arriverait**, donc ni surfaces, ni 0x154, ni angle des roues ;
-- cela expliquerait nos 152 969 paquets de 296 octets ;
-- le croisement 1 reste utilisable, mais jamais « confirmé » (voir P0-C), et les croisements 3 et 14 seraient
-  indisponibles en Sport.
+**Correction (revue complémentaire de la PR #37)** : une première version de ce document en déduisait « en Sport, seul
+le format A arriverait ». **C'était une erreur de logique.** Le README ne parle que du format B, pas de ~ ni de C ; or
+Pitwall demande **C d'abord**, puis ~, puis A.
 
-**À vérifier sur PS5** : noter la taille des paquets (Atelier) en course Sport et en course hors ligne.
+Les 152 969 paquets de 296 octets ne disent rien du mode tant qu'on ignore :
+- la session ;
+- le format demandé par le heartbeat à ce moment-là ;
+- un éventuel repli ou une reconnexion.
+
+**Journal automatique (nouveau)** : `FormatLog` lit les statuts que le client publie déjà (format demandé, format reçu,
+formats restés sans réponse, silences, erreurs), par profil d'épreuve.
+- Il ne change rien au protocole et n'interrompt pas l'analyse (contrairement à la sonde des formats, qui suspend le
+  traitement : à ne pas lancer en course).
+- Il tourne seul, sans manipulation du Fold : compatible avec le PSVR2.
+- Atelier → « Champs GT7 expérimentaux » → Exporter.
+- Le profil est celui choisi dans Pitwall, **pas une détection du mode**.
+- Test : `FormatLogTest`.
+
+**Essai décisif** : course hors ligne, puis qualification Sport, puis course Sport, sans rien toucher. Exporter le
+journal après la session.
 
 ## Inventaire des autres champs inexploités
 
@@ -95,7 +111,7 @@ Si c'est vrai :
 | **0x13F** | ~ | Récupération d'énergie transmise | **Oui, expérimental** | Non | — |
 | **0x140–0x14C** | ~ | **Couple par roue** (vectorisation ; + motricité, − freinage ou récupération) | **Oui, expérimental** | Non | Toujours 0 sur nos voitures thermiques ; utile seulement pour les voitures à vectorisation |
 | 0x150 | ~ | Récupération d'énergie | Oui | Affichée (électrique) | — |
-| **0x154** | ~ | **Couple moteur normalisé ?** | **Oui, expérimental** | **Seulement pour écarter les pneus** | Voir plus haut |
+| **0x154** | ~ | **Couple moteur normalisé ?** | **Oui, expérimental** | **Observation seulement** : aucun verdict n'en dépend (test d'invariance) | Voir plus haut |
 
 ## Expériences PS5 à faire (sans HUD, comme d'habitude)
 

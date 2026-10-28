@@ -9,6 +9,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.test.assertFalse
 
 /**
  * Champs UDP jusqu'ici ignorés par Pitwall (revue PR #37, P1-E). Ces tests vérifient le **décodage** aux offsets publiés
@@ -88,5 +89,29 @@ class TorqueProbeTest {
         val probe = com.gt7pitwall.core.telemetry.TorqueProbe()
         probe.onPacket(com.gt7pitwall.core.telemetry.TelemetryParser.parseDecrypted(TestPackets.plain(speedMps = 30f, packetId = 1))!!)
         assertEquals("0x154 absent : format A ou B (il faut le format ~ ou C).", probe.report().single())
+    }
+}
+
+/** Revue PR #37, P0-1 : journal passif des formats demandés et reçus, sans conclusion sur le mode Sport. */
+class FormatLogTest {
+    @Test
+    fun requestedAndReceivedFormatsAreLoggedPerProfileWithoutAddresses() {
+        val log = com.gt7pitwall.core.telemetry.FormatLog()
+        val c = com.gt7pitwall.core.telemetry.PacketFormat.C
+        val a = com.gt7pitwall.core.telemetry.PacketFormat.A
+        val t = com.gt7pitwall.core.telemetry.PacketFormat.TILDE
+        log.onStatus(com.gt7pitwall.core.telemetry.ConnectionStatus.Searching(null), "Course personnalisée", 0)
+        log.onStatus(com.gt7pitwall.core.telemetry.ConnectionStatus.Receiving("192.168.1.20", 60, c, requested = c), "Course personnalisée", 1_000)
+        repeat(600) { log.onPacket(1_000L + it * 16) }
+        // Repli : C puis ~ sans réponse, A reçu (dans une autre épreuve).
+        log.onStatus(com.gt7pitwall.core.telemetry.ConnectionStatus.Receiving("192.168.1.20", 60, a, requested = a, unanswered = listOf(c, t)), "Course Sport C", 20_000)
+        repeat(300) { log.onPacket(20_000L + it * 16) }
+        log.onStatus(com.gt7pitwall.core.telemetry.ConnectionStatus.Error("Réseau : 192.168.1.20 injoignable"), "Course Sport C", 30_000)
+        val s = log.summary()
+        assertTrue(s.any { it.startsWith("Course personnalisée — C (368 octets) : 600 paquets") }, s.joinToString("\n"))
+        assertTrue(s.any { it.startsWith("Course Sport C — A (296 octets) : 300 paquets") && "sans réponse : C (368 octets), ~ (344 octets)" in it }, s.joinToString("\n"))
+        val e = log.export()
+        assertFalse(e.contains("192.168"), "aucune adresse réseau")
+        assertTrue(e.contains("pas une détection du mode"))
     }
 }

@@ -83,7 +83,7 @@ class TractionReviewTest {
         mapOf(2 to ref, 3 to ref, 4 to lowTorque, 5 to lowTorque).forEach { (n, l) -> m.addLap(n, l); m.evaluate(1, emptySet()) }
         assertEquals(Level.STABLE, m.last.level, m.last.text())
         assertTrue(m.last.torqueExplained > 0)
-        assertTrue(m.last.text().contains("couple délivré (0x154, expérimental) baisse sans TCS"), m.last.text())
+        assertTrue(m.last.text().contains("couple délivré (0x154, expérimental) baisse sans TCS ni patinage"), m.last.text())
         // Couple qui baisse **avec** le TCS : coupure électronique parce que ça patine, la perte de motricité reste vue.
         val cut = TractionMonitor()
         val tcsCut = lap { sample(rearSlip = 1.03f, accel = 3.0f, torque = 0.55f, tcs = true) }
@@ -137,5 +137,24 @@ class TractionReviewTest {
         assertTrue(coach.traction.last.level >= Level.DEGRADATION_SUSPECTED, coach.traction.last.text())
         assertNull(coach.advices.firstOrNull { it.issue == CornerIssue.WHEELSPIN }, said.toString())
         assertTrue(said.none { "dose l'accélérateur" in it }, said.toString())
+    }
+
+    /** Revue complémentaire PR #37, P0-2 : 0x154 n'est qu'une observation ; le verdict ne change pas sans lui. */
+    @Test
+    fun verdictsAreIdenticalWithOrWithoutTheExperimentalTorque() {
+        fun run(torque: Float?, worn: LapSample): TractionMonitor.Report {
+            val m = TractionMonitor()
+            val ref = lap { sample(torque = torque?.let { 0.8f }) }
+            val w = lap { worn.copy(engineTorque = torque) }
+            mapOf(2 to ref, 3 to ref, 4 to w, 5 to w, 6 to w).forEach { (n, l) -> m.addLap(n, l); m.evaluate(1, emptySet()) }
+            return m.last
+        }
+        for (worn in listOf(sample(rearSlip = 1.22f, accel = 3.0f), sample(rearSlip = 1.03f, accel = 3.0f, tcs = true), sample(accel = 3.0f), sample())) {
+            val with = run(0.55f, worn)
+            val without = run(null, worn)
+            assertEquals(without.level, with.level, worn.toString())
+            assertEquals(without.flaggedCorners, with.flaggedCorners)
+            assertEquals(without.strategyEligible, with.strategyEligible)
+        }
     }
 }

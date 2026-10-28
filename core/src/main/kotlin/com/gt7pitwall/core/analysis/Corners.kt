@@ -46,6 +46,11 @@ data class LapSample(
     val asm: Boolean = false,
     /** Couple moteur normalisé (0x154, formats ~ et C, **expérimental**), null ailleurs. */
     val engineTorque: Float? = null,
+    /**
+     * Frein réellement appliqué (0x13D, formats ~ et C, 0..255), d'après la communauté : après l'ABS, distinct de la
+     * pédale ([brake], 0x92). Nul en replay selon les mesures publiées. Expérimental.
+     */
+    val brakeApplied: Int? = null,
 )
 
 /**
@@ -117,7 +122,7 @@ class LapRecorder {
             tick, p.positionX, p.positionZ, p.speedMps, p.throttle, p.brake, p.angularVelocityY,
             angle, slip?.let { minOf(it.fl, it.fr) }, slip?.let { maxOf(it.rl, it.rr) }, p.isTcsActive,
             off, p.surfaces, slip, p.currentGear, p.engineRpm, longAccel?.takeIf { it.isFinite() }, p.tyreTemps, p.isAsmActive,
-            p.engineTorqueNorm,
+            p.engineTorqueNorm, p.brakeFiltered,
         )
     }
 

@@ -30,13 +30,17 @@ object BrakingMonitor {
         var decel = 0.0
         var frontSlip = 0.0
         var temp = 0.0
+        /** Frein appliqué / pédale (0x13D / 0x92), seulement quand 0x13D est transmis et non nul. */
+        var applied = 0.0
+        var appliedN = 0
         fun add(s: LapSample) {
             n++
             decel += -s.longAccel!!
             frontSlip += s.slips!!.let { (it.fl + it.fr) / 2.0 }
             temp += s.tyreTemps?.toList()?.average() ?: 0.0
+            s.brakeApplied?.takeIf { it > 0 }?.let { applied += it.toDouble() / s.brake; appliedN++ }
         }
-        fun merge(o: Agg) { n += o.n; decel += o.decel; frontSlip += o.frontSlip; temp += o.temp }
+        fun merge(o: Agg) { n += o.n; decel += o.decel; frontSlip += o.frontSlip; temp += o.temp; applied += o.applied; appliedN += o.appliedN }
         val meanDecel get() = decel / n
         val meanFront get() = frontSlip / n
         val meanTemp get() = temp / n
@@ -51,6 +55,15 @@ object BrakingMonitor {
         val decelDelta: Double? = null,
         val frontSlipDelta: Double? = null,
         val surfaceKnown: Boolean = false,
+        /**
+         * Frein appliqué / pédale (0x13D / 0x92), début contre fin de relais, quand 0x13D est transmis. Observation : un
+         * rapport en baisse à pédale égale pourrait signaler un ABS plus actif (moins d'adhérence) — **hypothèse**, sans
+         * effet sur le verdict tant que ce n'est pas validé sur PS5.
+         */
+        val appliedRef: Double? = null,
+        val appliedRecent: Double? = null,
+        /** 0x13D nul alors que la pédale est enfoncée : replay probable ou champ absent. */
+        val appliedMissing: Boolean = false,
     ) {
         fun text(label: (Int) -> String = { "V$it" }): String = buildString {
             append(level.label.replaceFirstChar { it.uppercase() })
@@ -60,6 +73,11 @@ object BrakingMonitor {
             if (decelDelta != null && frontSlipDelta != null && level != Level.INSUFFICIENT) {
                 append(" À pression égale : décélération ${signed(decelDelta, 2)} m/s², glissement avant ${signed(frontSlipDelta * 100, 1)} points.")
             }
+            if (appliedRef != null && appliedRecent != null) {
+                append(" Frein appliqué / demandé (0x13D, expérimental) : ${(appliedRef * 100).roundToInt()} % → ${(appliedRecent * 100).roundToInt()} %" +
+                    (if (appliedRecent < appliedRef - 0.05) ", ABS peut-être plus actif (hypothèse)" else "") + ".")
+            }
+            if (appliedMissing) append(" Frein appliqué (0x13D) nul pendant les freinages : replay probable ou champ absent, non utilisé.")
             if (reasons.isNotEmpty()) append(" ${reasons.joinToString(" ; ").replaceFirstChar { it.uppercase() }}.")
             if (!surfaceKnown && level != Level.INSUFFICIENT) append(" Surface des roues inconnue : vibreurs non exclus.")
         }
@@ -78,16 +96,22 @@ object BrakingMonitor {
             val key = Key(corner, (s.brake * 100 / 255 / 15).coerceIn(1, 6), (s.speedMps * 3.6f / 10f).toInt(), (abs(s.yawRate * s.speedMps) / 3f).toInt())
             w.getOrPut(key) { Agg() }.add(s)
         }
-        return w.mapValues { (_, a) -> a.n to doubleArrayOf(a.decel, a.frontSlip, a.temp) }
+        return w.mapValues { (_, a) -> a.n to doubleArrayOf(a.decel, a.frontSlip, a.temp, a.applied, a.appliedN.toDouble()) }
     }
 
     /** Un tour : fenêtres et indicateur « surface inconnue ». */
-    class Lap(val lap: Int, val windows: Map<Key, Pair<Int, DoubleArray>>, val surfaceKnown: Boolean)
+    class Lap(val lap: Int, val windows: Map<Key, Pair<Int, DoubleArray>>, val surfaceKnown: Boolean, val appliedMissing: Boolean = false)
 
-    fun lap(lap: Int, entries: Map<Int, List<LapSample>>): Lap =
-        Lap(lap, profile(entries), entries.values.flatten().none { it.surfaces == null })
+    fun lap(lap: Int, entries: Map<Int, List<LapSample>>): Lap {
+        val braking = entries.values.flatten().filter { it.brake >= BRAKE_MIN }
+        // 0x13D transmis (formats ~ et C) mais toujours nul alors qu'on freine : replay probable (mesures publiées).
+        val missing = braking.size >= MIN_N && braking.all { it.brakeApplied != null } && braking.all { it.brakeApplied == 0 }
+        return Lap(lap, profile(entries), entries.values.flatten().none { it.surfaces == null }, missing)
+    }
 
-    private fun agg(v: Pair<Int, DoubleArray>) = Agg().also { it.n = v.first; it.decel = v.second[0]; it.frontSlip = v.second[1]; it.temp = v.second[2] }
+    private fun agg(v: Pair<Int, DoubleArray>) = Agg().also {
+        it.n = v.first; it.decel = v.second[0]; it.frontSlip = v.second[1]; it.temp = v.second[2]; it.applied = v.second[3]; it.appliedN = v.second[4].toInt()
+    }
 
     /** Début du relais (deux premiers tours après le premier) contre ses deux derniers tours. */
     fun compare(laps: List<Lap>, stintStartLap: Int, excludedLaps: Set<Int>, raining: Boolean = false): Report {
@@ -123,7 +147,13 @@ object BrakingMonitor {
         val flags = perLap.map { flagged(it) }.reduce { a, b -> a intersect b }.intersect(compared).sorted()
         val all = perLap.flatten().filter { it.corner in compared }
         val level = if (flags.size >= MIN_CORNERS && flags.size * 3 >= compared.size) Level.DEGRADATION_SUSPECTED else Level.STABLE
-        return Report(level, emptyList(), compared.size, flags, all.map { it.dDecel }.average(), all.map { it.dFront }.average(), surfaceKnown)
+        val refApplied = ref.values.let { v -> v.sumOf { it.applied } / v.sumOf { it.appliedN }.coerceAtLeast(1) }.takeIf { ref.values.sumOf { it.appliedN } >= MIN_N }
+        val recAgg = recent.flatMap { it.windows.values }.map(::agg)
+        val recApplied = recAgg.let { v -> v.sumOf { it.applied } / v.sumOf { it.appliedN }.coerceAtLeast(1) }.takeIf { recAgg.sumOf { it.appliedN } >= MIN_N }
+        return Report(
+            level, emptyList(), compared.size, flags, all.map { it.dDecel }.average(), all.map { it.dFront }.average(), surfaceKnown,
+            refApplied, recApplied, usable.any { it.appliedMissing },
+        )
     }
 
     const val BRAKE_MIN = 38 // 15 %

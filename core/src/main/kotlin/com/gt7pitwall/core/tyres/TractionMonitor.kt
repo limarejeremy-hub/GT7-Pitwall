@@ -295,13 +295,14 @@ class TractionMonitor {
                 val dSlip = driven(a) - driven(r)
                 val dAcc = a.meanAccel - r.meanAccel
                 val dTcs = a.tcsShare - r.tcsShare
-                // 0x154 (expérimental) ne sert qu'à écarter : moins de couple délivré sans TCS ni patinage en hausse, la
-                // baisse d'accélération vient du moteur ou de la commande, pas des pneus. Jamais pour confirmer une perte.
+                // 0x154 (expérimental, non validé sur PS5) : **observation explicative seulement** (revue PR #37, P0-2).
+                // Une accélération plus faible avec moins de couple délivré, sans TCS ni patinage en hausse, est notée
+                // « moteur ou commande ». Le verdict ne dépend jamais de 0x154 : il est identique avec ou sans ce champ.
                 val ta = a.meanTorque
                 val tr = r.meanTorque
                 val torqueDrop = ta != null && tr != null && tr > TORQUE_MIN && (ta - tr) / tr <= -TORQUE_DROP
-                val explained = torqueDrop && dTcs < TCS_RISE && dSlip < SLIP_RISE
-                Cmp(k.corner, !explained && dAcc <= -ACCEL_DROP && (dSlip >= SLIP_RISE || dTcs >= TCS_RISE), dSlip, dAcc, dTcs, explained)
+                val explained = torqueDrop && dAcc <= -ACCEL_DROP && dTcs < TCS_RISE && dSlip < SLIP_RISE
+                Cmp(k.corner, dAcc <= -ACCEL_DROP && (dSlip >= SLIP_RISE || dTcs >= TCS_RISE), dSlip, dAcc, dTcs, explained)
             }
         }
         // Virage retenu s'il montre la perte sur chacun des deux derniers tours (une sortie ratée ne suffit pas).
@@ -315,7 +316,7 @@ class TractionMonitor {
         val all = perLap.flatten().filter { it.corner in compared }
         val level = if (flags.size >= MIN_CORNERS && flags.size * 3 >= compared.size) Level.DEGRADATION_SUSPECTED else Level.STABLE
         val torqueExplained = all.count { it.torqueExplained }
-        if (torqueExplained > 0) reasons += "$torqueExplained fenêtres où le couple délivré (0x154, expérimental) baisse sans TCS : moteur ou commande, pas les pneus"
+        if (torqueExplained > 0) reasons += "$torqueExplained fenêtres où le couple délivré (0x154, expérimental) baisse sans TCS ni patinage : moteur ou commande probables (observation, sans effet sur le verdict)"
         if (level == Level.STABLE && torqueExplained == 0 && all.count { it.dAcc <= -ACCEL_DROP } * 2 > all.size) {
             reasons += "accélération plus faible sans patinage ni TCS en hausse : pas une perte de motricité (aspiration, trajectoire, moteur ?)"
         }

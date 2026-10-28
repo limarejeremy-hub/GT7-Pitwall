@@ -20,7 +20,7 @@ sont des valeurs de départ, à recalibrer sur de vraies sorties de virage.
 | # | Croisement | Lot | État | Où dans le code |
 |---|---|---|---|---|
 | 1 | Accélérateur × glissement × surfaces × TCS × accélération obtenue ⇒ motricité | 1 | **implémenté** (25 tests, corrections de la revue #37 comprises) | `TractionMonitor`, `DriverCoach`, `RaceController.tractionCheck` |
-| 2 | Frein × décélération × blocage × surface ⇒ efficacité de freinage | 1 | **implémenté** (JVM), Analyse seulement | `BrakingMonitor`, `DriverCoach.braking` |
+| 2 | Frein × décélération × blocage × surface ⇒ efficacité de freinage | 1 | **partiel** : pédale (0x92) × décélération × blocage implémentés (JVM) ; frein **appliqué** (0x13D) seulement observé ; Analyse seulement | `BrakingMonitor`, `DriverCoach.braking` |
 | 3 | Braquage × lacet × trajectoire ⇒ sous-virage / survirage | 1 | **implémenté** (JVM), format C seulement, Analyse seulement | `BalanceTrend` |
 | 4 | 4 températures × blocages et patinages par essieu ⇒ stress thermique | 1 | **implémenté** (JVM), Analyse seulement ; sans le sens gauche/droite | `ThermalStress` |
 | 5 | Temps par virage × causes mesurées ⇒ où et combien la voiture perd | 1 | **implémenté** (JVM) | `CornerReport`, `TyreOrDriving`, `tractionLossMs` |
@@ -32,7 +32,7 @@ sont des valeurs de départ, à recalibrer sur de vraies sorties de virage.
 | 11 | Hauteurs de suspension × caisse × heave/sway/surge × vibreur ⇒ talonnage | 3 | à vérifier sur PS5 | champs lus (`suspensionHeight` 0xC4, `bodyHeight` 0x38, 0x130–0x138 en B/~/C), jamais utilisés |
 | 12 | Rang 0x84 × participants 0x86 ⇒ places fiables | 3 | **implémenté** pour les places ; **impossible sans source** pour les écarts en secondes | `PositionTracker` |
 | 13 | Consigne radio × passages avant/après × état des pneus ⇒ la consigne a-t-elle aidé ? | 3 | partiel | `DriverCoach` (vérification sur 3 passages, virages « bloqués »), arbitrage motricité (Sprint B) |
-| 14 | Accélérateur × **couple délivré (0x154)** × rapport × glissement × TCS × accélération × surface | 1 | **expérimental** : décodé, utilisé seulement pour **écarter** les pneus | `engineTorqueNorm`, `TractionMonitor`, `TorqueProbe` ; voir [UDP_FIELDS.md](UDP_FIELDS.md) |
+| 14 | Accélérateur × **couple délivré (0x154)** × rapport × glissement × TCS × accélération × surface | 1 | **expérimental** : décodé, **observation seulement** (verdict invariant, testé) | `engineTorqueNorm`, `TractionMonitor`, `TorqueProbe` ; voir [UDP_FIELDS.md](UDP_FIELDS.md) |
 
 ### Détail par croisement
 
@@ -141,6 +141,37 @@ Défaut trouvé en écrivant ces tests : la sortie du dernier virage, qui passe 
   arrière.
   - Toujours suivi de « Température élevée ≠ usure ». Aucune conclusion sur le sens du virage (signe non vérifié).
 - Tests : `HandlingCrossTest` (4). Affichage : carte Virages d'Analyse. **Aucune radio** avant validation PS5.
+
+### Veille GTPlanet (relayée dans #36 le 27/10)
+
+GTPlanet n'est pas joignable depuis l'environnement de développement. Ces constats sont repris **tels que rapportés**
+dans l'issue #36, avec leur source, et **pas relus à la source**.
+
+| # | Constat rapporté | Source citée (date) | Niveau de preuve | Croisements | Ce qu'en fait Pitwall |
+|---|---|---|---|---|---|
+| 1 | 0x13D = frein réellement appliqué (après ABS), distinct de la pédale 0x92 ; nul en replay | GTPlanet, Mumster, message 386 (05/10/2026), environ 400 freinages | Essai communautaire | 2 | Observé dans `BrakingMonitor` (rapport appliqué/demandé, replay détecté), sans effet sur le verdict |
+| 2 | 0x154 = couple ou charge moteur délivré ; chute 0,93 → 0,57 après un dommage moteur | Mumster, message 386 (05/10/2026), BRZ S, Barker, WRX Gr.3 | Essai communautaire | 1, 14 | Observation seulement ; `TorqueProbe` pour valider |
+| 3 | La 1.71 (20/08/2026) change glissement, adhérence, chauffe et usure, TCS, ABS ; la 1.72 (15/10) change suspension et différentiel par défaut Gr.1–Gr.4 | Notes officielles, fil des changements non documentés | Officiel + communauté | 1–4, 8 | Version de GT7 déjà dans la compatibilité ; protocole de calibration ci-dessous |
+| 4 | 0x15C = chrono du tour en cours (C) | MacManley, messages 335 et 337 (03/2026) | Confirmé chez nous le 21/10 | 9 | Décodé ; delta personnel pas encore fait |
+| 5 | X/Y/Z seuls n'identifient pas le circuit ; certains tracés ne divergent qu'à la voie des stands | Lord Grey, Bornhall, messages 364 et 369 | Communauté | Reconnaissance | Signatures géométriques déjà prudentes ; à garder en tête pour SUGO |
+| 6 | Replay ≠ direct : 0x13D et d'autres mesures moteur nuls en replay | Message 386 | Communauté | Tous | Replay détecté pour 0x13D ; étiquette direct/replay à généraliser |
+| 7 | Endurance Le Mans : retour tour 250 → 248 et carburant 94,32 → 10,00 | Lord Grey, messages 388 et 392 (06/10/2026) | Deux fichiers | 6, 7 | Non traité ; le suivi de tours garde ses garde-fous (tour qui recule = nouvelle session) |
+| 8 | Température « optimale » non universelle (75–87 °C non généralisable) | Simtezilo, message 325 | Communauté | 4 | `ThermalStress` ne compare que des écarts entre pneus, aucun seuil fixe |
+| 9 | 0x13F, 0x140–0x14F, 0x150 actifs seulement sur certains hybrides et électriques ; à zéro sur 23 voitures thermiques (2,06 millions de paquets) | Lord Grey, Mumster, messages 379 à 385 | Communauté | 10 | Décodés, jamais utilisés pour identifier l'essieu moteur |
+| 10 | Décalage de l'affichage et des appels au stand si l'on traite tout à 60 Hz ; GC Android délicat | EzioDash, messages 349 à 354 et 317 | Retour d'expérience | Tous | Analyses une fois par tour ; à instrumenter (âge des paquets, files) |
+| 11 | Bibliothèques de référence entre pilotes (Tractivvity, Victory Dash) | Messages 350 et 357 | Annonces | 13 | Rien : pas d'accès ni de consentement |
+| 12 | Pas d'usure ni de coordonnées adverses dans l'UDP ; le Live Timing API demande une autorisation | Message 384 (03/10/2026) | Communauté | 12 | Écarts adverses déclarés impossibles sans source ; aucun contournement |
+
+### Protocole de calibration selon la version de GT7
+
+1. Chaque session archive la version déclarée dans le profil. La compatibilité refuse déjà deux versions différentes
+   déclarées.
+2. **Première course sous une nouvelle version** (1.71, 1.72, puis les suivantes) : seuils de motricité et de freinage
+   considérés **non calibrés**. Il faut une course de 10 tours ou plus hors ligne, voiture thermique Gr.3, puis la même
+   en voiture électrique si possible, avec export du journal et de la carte « Champs GT7 expérimentaux ».
+3. Ne jamais comparer des relais de versions différentes. Ne jamais former de seuil sur un replay.
+4. À faire : rappel automatique « première course sous la version X » dès que la version déclarée change (pas encore
+   codé).
 
 ### Plan des lots suivants
 - **Lot 1** : n°2 (freinage à pression comparable), puis n°3 et n°4. Même méthode de fenêtres comparables que le n°1.

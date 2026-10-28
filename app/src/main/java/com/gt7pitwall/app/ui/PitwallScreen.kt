@@ -1383,8 +1383,20 @@ private fun ExperimentalFieldsCard(engine: PitwallEngine) {
         Text("Couple moteur (0x154) et autres champs non documentés : observés pour validation, jamais utilisés pour décider.",
             style = MaterialTheme.typography.bodySmall, color = PitColors.Muted)
         lines.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall) }
+        Text("Formats reçus par épreuve (journal automatique) :", style = MaterialTheme.typography.labelMedium, color = PitColors.Muted)
+        var formats by remember { mutableStateOf(engine.formatLog.summary()) }
+        formats.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall) }
+        val context = LocalContext.current
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = { lines = engine.torqueProbe.report() }) { Text("Actualiser") }
+            OutlinedButton(onClick = { lines = engine.torqueProbe.report(); formats = engine.formatLog.summary() }) { Text("Actualiser") }
+            OutlinedButton(onClick = {
+                val send = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_SUBJECT, "GT7 Pitwall — formats de télémétrie")
+                    putExtra(Intent.EXTRA_TEXT, engine.formatLog.export() + "\n" + engine.torqueProbe.report().joinToString("\n"))
+                }
+                context.startActivity(Intent.createChooser(send, "Exporter"))
+            }) { Text("Exporter") }
             OutlinedButton(onClick = { engine.torqueProbe.reset(); lines = engine.torqueProbe.report() }) { Text("Remettre à zéro") }
         }
     }
