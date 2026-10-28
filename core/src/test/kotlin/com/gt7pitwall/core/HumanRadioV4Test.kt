@@ -149,7 +149,9 @@ class HumanRadioV4Test {
         assertTrue(gaps.words("attends", 1_350))
         // Une alerte critique ne se coupe jamais ; le mode suit le matériel.
         assertFalse(DuplexPolicy.interruptible(EngineerMessage("Box, box !", Priority.CRITICAL, MessageCategory.ALERT)))
-        assertEquals(DuplexMode.FULL, DuplexPolicy.mode(VoiceRoute.REMOTE, phoneSpeaker = true), "Discord : flux du pilote séparé")
+        // Issue #45 : sur Discord, pas d'interruption pendant la parole sans choix explicite du pilote (écho du casque PS5).
+        assertEquals(DuplexMode.OFF, DuplexPolicy.mode(VoiceRoute.REMOTE, phoneSpeaker = true), "Discord : interruption désactivée par défaut")
+        assertEquals(DuplexMode.FULL, DuplexPolicy.mode(VoiceRoute.REMOTE, phoneSpeaker = true, remoteDuplexOptIn = true), "Discord : sur choix du pilote")
         assertEquals(DuplexMode.GAPS, DuplexPolicy.mode(VoiceRoute.PHONE, phoneSpeaker = true), "haut-parleur : entre les phrases")
         assertEquals(DuplexMode.FULL, DuplexPolicy.mode(VoiceRoute.PHONE, phoneSpeaker = false), "écouteurs")
     }
@@ -273,7 +275,7 @@ class HumanRadioV4Test {
             override fun stop() {}
         }
         val out = RoutedVoiceOutput(phone, remote) { 0L }
-        assertEquals(DuplexMode.FULL, DuplexPolicy.mode(out.route, phoneSpeaker = true))
+        assertEquals(DuplexMode.OFF, DuplexPolicy.mode(out.route, phoneSpeaker = true))
         live = false
         out.speak(EngineerMessage("Carburant critique.", Priority.CRITICAL, MessageCategory.ALERT, timestampMs = 0))
         assertEquals(listOf("Carburant critique."), phoneSaid, "rien n'est perdu pendant la reconnexion")

@@ -30,6 +30,7 @@ import com.gt7pitwall.core.radio.CommandSource
 import com.gt7pitwall.core.radio.CommandGate
 import com.gt7pitwall.core.radio.DriverCommandParser
 import com.gt7pitwall.core.radio.DriverQuery
+import com.gt7pitwall.core.radio.EchoFilter
 import com.gt7pitwall.core.session.LapRecord
 import com.gt7pitwall.core.session.PitAssessment
 import com.gt7pitwall.core.session.SessionEvent
@@ -812,6 +813,8 @@ class RaceController(
             noStopYet = ledger.stopCount == 0 && ledger.changes.isEmpty(),
             position = engineer.driverPosition,
             finalPosition = engineer.measured.finalPosition ?: engineer.currentPosition?.takeIf { sessionFinished },
+            recentEngineer = if (echoSensitive) recentEngineer() else emptyList(),
+            gt7TotalLaps = snapshot.packet?.totalLaps?.takeIf { it > 0 && telemetryLive() },
         )
     }
 
@@ -843,6 +846,7 @@ class RaceController(
                 is Vetting.Redirect -> "redirigée vers ${commandName(v.command)}"
                 is Vetting.Confirm -> "confirmation demandée : ${v.question}"
                 is Vetting.Discuss -> "rien modifié (${v.mode.name.lowercase()}) : ${v.reply}"
+                is Vetting.Ignore -> "rien modifié, pas de réponse parlée : ${v.reason}"
             },
             details = mapOf("origine" to source.name.lowercase()),
         )
@@ -868,6 +872,7 @@ class RaceController(
                 v.intention?.let(::noteIntention)
                 deliver(listOf(EngineerMessage(v.reply, Priority.HIGH, MessageCategory.ANSWER)))
             }
+            is Vetting.Ignore -> listOf(EngineerMessage("🎙 Rien modifié (${v.reason})", Priority.INFO, MessageCategory.DRIVER))
         }
     }
 
@@ -3563,6 +3568,9 @@ class RaceController(
         const val AI_CONVERSATION_MS = 45_000L
         const val TELEMETRY_LIVE_MS = 3_000L
         const val MAX_INTENTIONS = 3
+        /** Fenêtre d'écho : la phrase est dite (quelques secondes), passe par Discord et peut revenir par le casque. */
+        const val ECHO_WINDOW_MS = 10_000L
+        const val MAX_SPOKEN = 20
         const val MAX_NOTES = 30
         const val MAX_OBSERVATIONS = 6
         const val OBSERVATION_LAPS = 5
@@ -4259,6 +4267,63 @@ class RaceController(
     /** Filtre de niveau, anti-répétition et tri : les messages critiques passent en premier. */
     private fun deliver(messages: List<EngineerMessage>): List<EngineerMessage> {
         radio.level = engineer.radioLevel
-        return radio.apply(messages)
+        return radio.apply(messages).also { out ->
+            // Ce que l'ingénieur va dire : son écho éventuel dans le micro du pilote sera reconnu (issue #45).
+            out.filter { it.category != MessageCategory.DRIVER && it.text.isNotBlank() }.forEach { noteSpoken(it.text) }
+        }
     }
+
+    /**
+     * La voix de l'ingénieur devient audible (téléphone ou Discord) : la fenêtre d'écho repart de ce moment, une phrase
+     * mise en attente par la radio pouvant sortir bien après sa remise.
+     */
+    fun noteSpoken(text: String) {
+        if (text.isBlank()) return
+        synchronized(spoken) {
+            spoken.addLast(clock() to text)
+            while (spoken.size > MAX_SPOKEN) spoken.removeFirst()
+        }
+    }
+
+    /** Phrases de l'ingénieur récentes (heure de remise à la voix, texte). */
+    private val spoken = ArrayDeque<Pair<Long, String>>()
+
+    /** Ce que l'ingénieur a dit depuis moins de [ECHO_WINDOW_MS] : synthèse, envoi Discord et retour par le casque compris. */
+    fun recentEngineer(nowMs: Long = clock()): List<String> = synchronized(spoken) {
+        // Durée de la phrase (~350 ms par mot) en plus : une longue réponse peut encore résonner à la fin.
+        spoken.filter { (at, text) -> nowMs - at <= ECHO_WINDOW_MS + text.split(' ').size * 350L }.map { it.second }.distinct()
+    }
+
+    /**
+     * Phrase du pilote qui n'est que l'écho de l'ingénieur (course du 28/10 : « dix second » après « Tu es P10 sur 14 »).
+     * Écartée sans réponse parlée, pour ne pas relancer la boucle ; une réponse attendue (« oui », « medium », « la C »)
+     * n'est jamais écartée. Null : la phrase est traitée normalement.
+     */
+    fun echoOfEngineer(text: String): List<EngineerMessage>? {
+        if (!echoSensitive || awaitingAnswer || pendingConfirmation != null) return null
+        val recent = recentEngineer()
+        if (recent.isEmpty() || !EchoFilter.isEcho(text, recent)) return null
+        // Commande de course à moitié reprise de l'ingénieur (« arrêt fait » après « arrêt prévu… ») : elle n'est pas
+        // écartée en silence, le garde demandera « Tu confirmes… ? ». Un écho complet, lui, est écarté.
+        val cmd = DriverCommandParser.parse(text)
+        if (cmd != null && CommandGate.sensitive(cmd) && EchoFilter.echoShare(text, recent) < 1.0) return null
+        echoIgnored++
+        journal.record(
+            JournalType.DECISION, JournalSource.ENGINE, "« ${text.trim()} » écarté : écho probable de l'ingénieur",
+            decision = "rien modifié, pas de réponse parlée",
+            details = mapOf("part_ecoute" to "%.0f %%".format(java.util.Locale.FRANCE, EchoFilter.echoShare(text, recent) * 100)),
+        )
+        return listOf(EngineerMessage("🎙 Écho de l'ingénieur ignoré : « ${text.trim()} »", Priority.INFO, MessageCategory.DRIVER))
+    }
+
+    /**
+     * La phrase en cours de traitement a commencé pendant la voix de l'ingénieur ou juste après : seule une telle phrase
+     * est comparée à ce qu'il vient de dire. Une réponse dite après la fin de sa phrase n'est jamais prise pour un écho.
+     */
+    @Volatile
+    var echoSensitive: Boolean = false
+
+    /** Phrases écartées comme écho depuis le lancement (diagnostic). */
+    var echoIgnored = 0
+        private set
 }

@@ -75,6 +75,24 @@ class RadioConversation(
         onThinking: (EngineerMessage) -> Unit = {},
         /** Faux : phrase de la conversation continue sans « Radio » devant (bruit possible) : modifications à confirmer. */
         addressed: Boolean = true,
+        /** Phrase commencée pendant la voix de l'ingénieur ou juste après : comparée à ce qu'il vient de dire (#45). */
+        nearEngineer: Boolean = false,
+    ): List<EngineerMessage> {
+        mutex.withLock { race.echoSensitive = nearEngineer }
+        try {
+            return heard(text, freeText, model, onThinking, addressed, nearEngineer)
+        } finally {
+            mutex.withLock { race.echoSensitive = false }
+        }
+    }
+
+    private suspend fun heard(
+        text: String,
+        freeText: String?,
+        model: LanguageModel?,
+        onThinking: (EngineerMessage) -> Unit,
+        addressed: Boolean,
+        nearEngineer: Boolean,
     ): List<EngineerMessage> {
         val source = if (addressed) CommandSource.VOICE else CommandSource.CONVERSATION
         val heardFree = freeText?.takeIf { it.isNotBlank() } ?: text
@@ -82,8 +100,10 @@ class RadioConversation(
         // « Non attends, finalement on reste en piste » : la déclaration précédente est retirée, la suite est traitée seule.
         (DialogueActs.classify(heardFree) as? DialogueActs.Act.Correction)?.let { c ->
             mutex.withLock { race.raceMemory.retractLast(clock()) }
-            return onUtterance(c.rest, c.rest, model, onThinking, addressed)
+            return heard(c.rest, c.rest, model, onThinking, addressed, nearEngineer)
         }
+        // Écho de l'ingénieur dans le micro du pilote (issue #45) : écarté sans réponse parlée, avant toute analyse.
+        mutex.withLock { race.echoOfEngineer(heardFree) ?: if (text != heardFree) race.echoOfEngineer(text) else null }?.let { return it }
         // Réponse à une question en attente (« Tu as monté quelle gomme ? » → « medium ») : au moteur, sans détour.
         // Course du 26/10 : « medium » était écarté comme bout de phrase et la gomme n'était jamais enregistrée.
         if (mutex.withLock { race.answersPendingQuestion(heardFree) || race.answersPendingQuestion(text) }) {

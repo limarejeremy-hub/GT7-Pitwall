@@ -25,6 +25,8 @@ class RaceControllerTest {
         s.driveLaps(2)
 
         s.say("course de 30 minutes")
+
+        s.say("oui") // issue #45 : règlement dicté → confirmation
         assertEquals(30, store.rules.durationMin)
         assertEquals(30, s.controller.rules.durationMin)
         assertTrue(s.texts.any { it.startsWith("Noté : course de 30 minutes") })
@@ -34,12 +36,15 @@ class RaceControllerTest {
         assertEquals(1, planAnnouncements())
 
         s.say("deux arrêts obligatoires")
+        s.say("oui") // issue #45 : règlement dicté → confirmation
         assertEquals(2, store.rules.mandatoryStops)
         assertEquals(2, s.controller.plan!!.stops.size)
         // Les deux arrêts carburant comptent déjà pour l'obligation : mêmes tours d'arrêt, pas de nouvelle annonce.
         assertEquals(1, planAnnouncements())
 
         s.say("trois arrêts obligatoires")
+
+        s.say("oui") // issue #45 : règlement dicté → confirmation
         assertEquals(3, s.controller.plan!!.stops.size)
         // En course, le changement de plan tient en une phrase : prochain arrêt, sans réciter toute la course.
         val update = s.texts.lastOrNull { it.startsWith("Nouveau plan") } ?: error(s.texts.takeLast(6).toString())
@@ -47,11 +52,13 @@ class RaceControllerTest {
         assertTrue("Course" !in update, update)
         assertEquals(2, planAnnouncements())
         s.say("deux arrêts obligatoires")
+        s.say("oui") // issue #45 : règlement dicté → confirmation
         assertEquals(3, planAnnouncements())
 
         // La consommation mesurée en course vient de GT7 : le multiplicateur ne doit pas la multiplier.
         val perLapBefore = s.controller.plan!!.perLap!!
         s.say("consommation fois trois")
+        s.say("oui") // issue #45 : règlement dicté → confirmation
         assertEquals(3, store.rules.fuelMultiplier)
         assertEquals(perLapBefore, s.controller.plan!!.perLap!!, 0.001f)
         assertEquals(DataSource.MEASURED, s.controller.plan!!.fuelSource)
@@ -59,6 +66,7 @@ class RaceControllerTest {
 
         // Même règle répétée : confirmée, mais pas de plan réannoncé.
         s.say("deux arrêts obligatoires")
+        s.say("oui") // issue #45 : règlement dicté → confirmation
         assertEquals(3, planAnnouncements())
 
         s.say("quelle stratégie")
@@ -71,6 +79,7 @@ class RaceControllerTest {
         val viaVoice = RaceSim(RaceController(storage = FakeStorage()))
         viaVoice.start()
         viaVoice.say("arrêt obligatoire")
+        viaVoice.say("oui") // issue #45 : règlement dicté → confirmation
         val viaButton = RaceSim(RaceController(storage = FakeStorage()))
         viaButton.start()
         viaButton.said += viaButton.controller.command(DriverCommand.SetMandatoryStops(1))

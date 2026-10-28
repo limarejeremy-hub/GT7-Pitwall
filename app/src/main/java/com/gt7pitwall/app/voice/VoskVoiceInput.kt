@@ -102,6 +102,9 @@ class VoskVoiceInput(
 
     private val voiceActivity = VoiceActivity()
     private val interrupts = InterruptDetector()
+
+    /** Une fausse interruption a déjà été notée pour la phrase en cours de l'ingénieur. */
+    private var rejectionNoted = false
     /** Sans flux séparé, la fin d'une phrase résonne encore un instant dans le micro. */
     private val gapInterrupts = InterruptDetector(echoGuardMs = GAP_ECHO_GUARD_MS)
     private var gapJob: Job? = null
@@ -117,6 +120,15 @@ class VoskVoiceInput(
     /** Début et fin de la dernière phrase du pilote (horloge monotone), pour la mesure de latence. */
     @Volatile
     var lastSpeechStartMs: Long? = null
+
+    /** Fin de la dernière phrase de l'ingénieur (horloge monotone). */
+    private var lastEngineerEndMs = Long.MIN_VALUE / 2
+
+    /** La phrase du pilote a commencé pendant la voix de l'ingénieur ou juste après : un écho reste possible (#45). */
+    private fun nearEngineer(): Boolean {
+        val start = lastSpeechStartMs ?: SystemClock.elapsedRealtime()
+        return speaking.value || bargedIn || start - lastEngineerEndMs <= ECHO_TAIL_MS
+    }
         private set
 
     @Volatile
@@ -767,7 +779,17 @@ class VoskVoiceInput(
         val detector = if (mode == DuplexMode.GAPS) gapInterrupts else interrupts
         if (voiceActivity.accept(buffer, n)) detector.voice(now)
         val text = if (rec.acceptWaveForm(buffer, n)) textOf(rec.result) else partialOf(rec.partialResult)
-        if (text.isBlank() || !detector.words(text, now)) return
+        if (text.isBlank()) return
+        val rejectedBefore = detector.rejected
+        if (!detector.words(text, now)) {
+            // Fausse interruption refusée (écho probable, issue #45) : notée une fois par phrase, sans aucun son gardé.
+            if (detector.rejected > rejectedBefore && !rejectionNoted) {
+                rejectionNoted = true
+                log("interruption refusée", text, "écho probable de l'ingénieur")
+                _events.tryEmit(VoiceInputEvent.Diagnostic("FAUSSE_INTERRUPTION refusée (écho probable) : « ${text.take(60)} »"))
+            }
+            return
+        }
         rec.reset()
         voiceActivity.reset()
         withContext(Dispatchers.Main) { onBargeIn(text, mode) }
@@ -792,6 +814,7 @@ class VoskVoiceInput(
         if (audioJob == null) return
         val now = SystemClock.elapsedRealtime()
         interrupts.engineer(speaking, engineerMessage()?.text, now)
+        if (speaking) rejectionNoted = false else lastEngineerEndMs = now
         if (speaking) voiceActivity.reset() else resetRecognizer = true
         // Le temps où l'ingénieur parle ne compte pas dans la fenêtre de conversation.
         conversation.engineerSpeaking(speaking, now)
@@ -969,11 +992,11 @@ class VoskVoiceInput(
             }
             val first = conversation.addressedByWake
             conversation.utterance(heard, SystemClock.elapsedRealtime())
-            _events.tryEmit(VoiceInputEvent.Utterance(command, free, addressed = addressed && first, recognizer = recognizer))
+            _events.tryEmit(VoiceInputEvent.Utterance(command, free, nearEngineer = nearEngineer(), addressed = addressed && first, recognizer = recognizer))
             keepListeningIfSilent()
             return
         }
-        _events.tryEmit(VoiceInputEvent.Utterance(command, free, addressed = addressed, recognizer = recognizer))
+        _events.tryEmit(VoiceInputEvent.Utterance(command, free, nearEngineer = nearEngineer(), addressed = addressed, recognizer = recognizer))
     }
 
     /** Fenêtre d'écoute Vosk sans mot de réveil (conversation ouverte, après un échec de Google, ou sans Google). */
@@ -1031,7 +1054,7 @@ class VoskVoiceInput(
                     return
                 }
                 conversation.utterance(rest, SystemClock.elapsedRealtime())
-                _events.tryEmit(VoiceInputEvent.Utterance(rest, free, addressed = true))
+                _events.tryEmit(VoiceInputEvent.Utterance(rest, free, nearEngineer = nearEngineer(), addressed = true))
                 keepListeningIfSilent()
             } else {
                 // « Radio » redit alors que la conversation est déjà ouverte : le pilote doit savoir qu'il est entendu
@@ -1072,7 +1095,7 @@ class VoskVoiceInput(
             log("Vosk", freeText ?: text, voskReason() ?: "écoute Vosk après « $wakeWord »")
             fallback.voskHandledRequest()
             refreshFallbackInfo()
-            _events.tryEmit(VoiceInputEvent.Utterance(norm, free))
+            _events.tryEmit(VoiceInputEvent.Utterance(norm, free, nearEngineer = nearEngineer()))
         }
     }
 
@@ -1091,6 +1114,8 @@ class VoskVoiceInput(
         }
 
     private companion object {
+        /** Après la fin de la voix de l'ingénieur, sa fin de phrase peut encore revenir par Discord (issue #45). */
+        const val ECHO_TAIL_MS = 2_000L
         const val SAMPLE_RATE = 16_000f
         const val AWAKE_MS = 8_000L
         const val RESUME_DELAY_MS = 400L

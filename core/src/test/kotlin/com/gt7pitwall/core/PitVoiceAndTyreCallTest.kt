@@ -114,6 +114,7 @@ class PitVoiceAndTyreCallTest {
         val s = RaceSim(c, totalLaps = 15, perLap = 2f)
         s.start()
         s.say("les pneus tiennent huit tours")
+        s.say("oui") // issue #45 : règlement dicté → confirmation
         assertEquals(8, c.rules.tyreStintLaps)
         val stop = c.plan!!.stops.single()
         assertTrue(stop.changeTyres && !stop.forFuel && stop.endOfLap <= 8, stop.toString())
@@ -141,6 +142,7 @@ class PitVoiceAndTyreCallTest {
         val s = RaceSim(c, totalLaps = 15, perLap = 2f)
         s.start()
         s.say("les pneus tiennent huit tours")
+        s.say("oui") // issue #45 : règlement dicté → confirmation
         val stop = c.plan!!.stops.single()
         while (s.lap < stop.endOfLap) s.driveLaps(1)
         s.pitStop(fuel = 0f)

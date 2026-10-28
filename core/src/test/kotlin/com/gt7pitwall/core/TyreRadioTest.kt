@@ -101,6 +101,7 @@ class TyreRadioTest {
     fun declaredTyreLifeIsAnsweredAsDeclared() {
         val (c, sim) = live()
         sim.say("les pneus tiennent dix tours")
+        sim.say("oui") // issue #45 : règlement dicté → confirmation
         val life = ask(RadioConversation(c), "il me reste combien de tours avec ces gommes").single().text
         assertTrue(life.startsWith("Tu m'as dit qu'ils tiennent 10 tours (déclaré)"), life)
     }
