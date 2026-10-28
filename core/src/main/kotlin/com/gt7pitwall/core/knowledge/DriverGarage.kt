@@ -15,6 +15,8 @@ import com.gt7pitwall.core.sport.SportNames
 enum class CarEvidence(val label: String) {
     LIVE("Confirmée par la PS5"),
     LIVE_UNNAMED("Code GT7 reçu, catalogue à actualiser"),
+    /** Code reçu plus tôt, PS5 muette depuis (menus, garage) : jamais présenté comme une confirmation en direct. */
+    LAST_SEEN("Dernière voiture détectée (PS5 sans données en ce moment)"),
     THIS_WEEK("Dernière voiture utilisée cette semaine"),
     FIXED_EVENT("Voiture annoncée pour l'épreuve"),
     EARLIER("Déjà utilisée sur ce circuit"),
@@ -61,14 +63,17 @@ object DriverGarage {
                 (trackId != null || s.context.rules.trackId == edition.trackId)
         }
         val nowCode = telemetryCarCode?.takeIf { it > 0 && telemetryConnected }
-        val thisWeekCode = currentEvent.maxByOrNull { it.startedAtMs }?.context?.carCode
-        val fixed = if (nowCode == null && thisWeekCode == null) fixedOneMakeCar(edition, db) else null
-        val earlierCode = if (nowCode == null && thisWeekCode == null && fixed == null &&
+        // Dernière voiture détectée par GT7 : plus récente que n'importe quelle archive (issue #40).
+        val lastSeenCode = telemetryCarCode?.takeIf { it > 0 && !telemetryConnected }
+        val thisWeekCode = if (lastSeenCode == null) currentEvent.maxByOrNull { it.startedAtMs }?.context?.carCode else null
+        val fixed = if (nowCode == null && lastSeenCode == null && thisWeekCode == null) fixedOneMakeCar(edition, db) else null
+        val earlierCode = if (nowCode == null && lastSeenCode == null && thisWeekCode == null && fixed == null &&
             trackId != null) matching.maxByOrNull { it.startedAtMs }?.context?.carCode else null
 
-        val code = nowCode ?: thisWeekCode ?: fixed?.id ?: earlierCode
+        val code = nowCode ?: lastSeenCode ?: thisWeekCode ?: fixed?.id ?: earlierCode
         val evidence = when {
             nowCode != null -> if (db.car(nowCode) == null) CarEvidence.LIVE_UNNAMED else CarEvidence.LIVE
+            lastSeenCode != null -> CarEvidence.LAST_SEEN
             thisWeekCode != null -> CarEvidence.THIS_WEEK
             fixed != null -> CarEvidence.FIXED_EVENT
             earlierCode != null -> CarEvidence.EARLIER

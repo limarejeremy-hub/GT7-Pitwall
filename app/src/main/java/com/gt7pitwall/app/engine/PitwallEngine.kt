@@ -80,6 +80,8 @@ data class PitwallUiState(
     val raining: Boolean = false,
     /** Nom de la voiture d'après le code GT7 (base communautaire). */
     val carName: String? = null,
+    /** Voiture changée dans GT7 depuis la session suivie : plan et historique recalculés au départ (issue #40). */
+    val carChangePending: Boolean = false,
     /** Voiture confirmée par la PS5 ou dernière connue avec provenance, sans hypothèse déguisée. */
     val garageCar: GarageCar = GarageCar(null, null, com.gt7pitwall.core.knowledge.CarEvidence.UNKNOWN),
     val course: Course? = null,
@@ -277,6 +279,9 @@ class PitwallEngine(
      * Diagnostic des champs 0x84 / 0x86 (outils de développement) : observe seulement, rien n'est transmis à la
      * stratégie ni annoncé à la radio.
      */
+    /** Changements de voiture détectés (Atelier). */
+    fun carTransitions(): List<com.gt7pitwall.core.telemetry.CarIdentity.Transition> = race.carIdentity.transitions
+
     val positionProbe = PositionProbe()
 
     /** Validation des champs expérimentaux (0x154 couple moteur ?, 0x140, 0x94) : observe seulement. */
@@ -643,9 +648,11 @@ class PitwallEngine(
         lastPublishMs = now
         val snap = race.snapshot
         // Voiture absente de la base (nouvelle voiture du jeu) : la base est relue sans attendre.
-        snap.packet?.carCode?.takeIf { it > 0 && race.carName == null }?.let { onUnknownCar() }
+        race.displayCarCode?.takeIf { race.carName == null }?.let { onUnknownCar() }
         _rules.value = race.rules
-        val currentCarCode = snap.packet?.carCode?.takeIf { it > 0 }
+        // Voiture lue dans tous les paquets, menus compris (issue #40) : plus celle de la session déjà suivie.
+        val currentCarCode = race.displayCarCode
+        val carPending = race.carChangePending
         val editionId = race.edition?.id
         val profileId = race.profile.id
         val trackId = race.rules.trackId
@@ -661,7 +668,9 @@ class PitwallEngine(
                 telemetryCarCode = currentCarCode,
                 // A valid car packet may already arrive in the lobby/loading screen,
                 // before the on-track flag required by the driving coach becomes true.
-                telemetryConnected = currentCarCode != null && now - lastCarPacketAtMs <= 2_000L,
+                // « Confirmée par la PS5 » seulement si GT7 envoie encore CETTE voiture ; sinon « dernière voiture détectée ».
+                telemetryConnected = race.carIdentity.current?.let { race.carIdentity.live(now) }
+                    ?: (currentCarCode != null && now - lastCarPacketAtMs <= 2_000L),
                 profile = race.profile,
                 trackId = trackId,
                 edition = race.edition,
@@ -714,15 +723,17 @@ class PitwallEngine(
             garageCar = garage,
             course = race.course,
             trackCandidates = race.trackCandidates,
-            plan = race.plan,
-            memory = race.memoryRecord,
+            // Changement de voiture en attente : plan et mémoire de l'ancienne voiture ne sont pas montrés.
+            plan = if (carPending) null else race.plan,
+            memory = if (carPending) null else race.memoryRecord,
+            carChangePending = carPending,
             stops = race.ledger.stopList,
             pendingStop = race.ledger.pending,
             tyresUsed = race.tyresUsed,
             missingTyres = race.missingTyres,
             learning = runCatching { race.learningReport() }.getOrElse { listOf("Diagnostic indisponible : ${it.javaClass.simpleName}") },
             drivingReport = race.lastDrivingReport?.lines.orEmpty(),
-            preRaceBrief = if (force || snap.packet?.currentLap == 0) race.victoryBriefing() else _state.value.preRaceBrief,
+            preRaceBrief = if (force || snap.packet?.currentLap == 0 || carPending != _state.value.carChangePending) race.victoryBriefing() else _state.value.preRaceBrief,
             sessionIdentity = race.sessionIdentityText,
             raceFinished = race.raceFinished,
             cornerMarks = corners.first,

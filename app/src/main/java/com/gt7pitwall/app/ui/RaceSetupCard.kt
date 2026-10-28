@@ -108,10 +108,11 @@ fun RaceSetupCard(
             val p = state.snapshot.packet
             Text(
                 when {
-                    p == null -> "Voiture : en attente de télémétrie"
                     state.carName != null -> "Voiture : ${state.carName}"
+                    state.garageCar.code != null -> "Voiture : code ${state.garageCar.code} (absent de la base)"
+                    p == null -> "Voiture : en attente de télémétrie"
                     else -> "Voiture : code ${p.carCode} (absent de la base)"
-                },
+                } + if (state.carChangePending) " — nouvelle voiture, historique et plan recalculés au départ" else "",
                 fontWeight = FontWeight.Bold,
             )
 

@@ -321,7 +321,20 @@ class RaceController(
 
     val snapshot: SessionSnapshot get() = tracker.snapshot
     val course: Course? get() = rules.trackId?.let(database::course)
-    val carName: String? get() = snapshot.packet?.let { database.car(it.carCode)?.fullName }
+    /** Voiture lue dans 0x124 sur tous les paquets, menus compris (issue #40). */
+    val carIdentity = com.gt7pitwall.core.telemetry.CarIdentity()
+
+    /** Voiture à afficher : la dernière détectée par GT7, sinon celle de la session en cours. */
+    val displayCarCode: Int? get() = carIdentity.current ?: snapshot.packet?.carCode?.takeIf { it > 0 }
+
+    /**
+     * Voiture changée depuis la session suivie (changement au garage, GT7 dans les menus) : la session, son historique et
+     * son plan concernent encore l'ancienne voiture. Rien de tout cela n'est présenté pour la nouvelle.
+     */
+    val carChangePending: Boolean
+        get() = carIdentity.current.let { c -> c != null && snapshot.packet?.carCode?.let { it > 0 && it != c } == true }
+
+    val carName: String? get() = displayCarCode?.let { database.car(it)?.fullName }
     /** Mémoire voiture × circuit de l'épreuve active ; écartée si elle a été prise sous une autre version de GT7. */
     val memoryRecord: CarTrackRecord?
         get() = snapshot.packet?.let { p -> rules.trackId?.let { memory[CarTrackRecord.key(p.carCode, it, profile.id.memoryScope)] } }
@@ -356,7 +369,10 @@ class RaceController(
     // ------------------------------------------------------------------ Entrées
 
     fun onPacket(p: TelemetryPacket): List<EngineerMessage> {
-        lastPacketMs = clock()
+        val packetMs = clock()
+        lastPacketMs = packetMs
+        // Avant tout filtre : la voiture se lit aussi dans les menus (tour négatif) et sur une télémétrie figée.
+        carIdentity.onPacket(p, packetMs)?.let(::journalCarChange)
         // Données figées (course réelle du 21/10 : après l'arrivée, puis au menu, GT7 renvoie le même instantané pendant
         // des minutes, vitesse 79,6 puis 178 km/h, position immobile) ou tour négatif (menus) : la voiture ne roule pas.
         // Rien n'est suivi ni annoncé, aucune session ne commence.
@@ -1595,6 +1611,10 @@ class RaceController(
             else -> "Briefing ${profile.id.label} : règlement confirmé."
         }
         if (rules.trackId == null) out += "Circuit non identifié : je ne peux pas utiliser ton historique."
+        if (carChangePending) {
+            out += "Nouvelle voiture détectée (${carName ?: "code ${carIdentity.current}"}) : historique, consommation et plan seront recalculés au départ."
+            return out
+        }
         val h = history
         val learned = historyModel.fuelPerLap?.takeIf { it.confidence != Confidence.INSUFFICIENT }
         out += if (h.comparable == 0) {
@@ -1634,7 +1654,8 @@ class RaceController(
             add("ALERTE : GT7 annonce ${p.totalLaps} tours, mais la course ${profile.id.series.label} de la semaine en prévoit ${ed.laps.value}. Règlement incompatible : ne pas calculer les arrêts sur cette fiche.")
         }
         if (p != null) {
-            add("Voiture : " + (database.car(p.carCode)?.fullName ?: "code ${p.carCode}, absent de la base") + ".")
+            val code = displayCarCode ?: p.carCode
+            add("Voiture : " + (database.car(code)?.fullName ?: "code $code, absent de la base") + ".")
             if (p.currentLap == 0 && p.preRacePosition > 0 && p.preRaceCarCount > 0) {
                 add("Matchmaking provisoire : P${p.preRacePosition} sur ${p.preRaceCarCount} ; la grille définitive n'est pas encore confirmée.")
             }
@@ -1773,6 +1794,20 @@ class RaceController(
             }
             else -> {}
         }
+    }
+
+    private fun journalCarChange(t: com.gt7pitwall.core.telemetry.CarIdentity.Transition) {
+        fun name(code: Int?) = code?.let { database.car(it)?.fullName ?: "code $it" } ?: "aucune"
+        journal.record(
+            JournalType.SESSION, JournalSource.TELEMETRY,
+            if (t.from == null) "Voiture détectée : ${name(t.to)}" else "Changement de voiture : ${name(t.from)} → ${name(t.to)}",
+            details = buildMap {
+                t.from?.let { put("voiture_precedente", it.toString()) }
+                put("voiture", t.to.toString())
+                put("format_udp", t.format.label)
+                put("etat", t.state)
+            },
+        )
     }
 
     private fun journalPositions(changes: List<PositionTracker.Change>) {

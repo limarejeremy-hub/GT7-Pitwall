@@ -159,6 +159,7 @@ private fun RaceHero(state: PitwallUiState, modifier: Modifier, onOpen: () -> Un
                             maxLines = 2, lineHeight = 16.sp, overflow = TextOverflow.Ellipsis)
                         Hint(state.garageCar.evidence.label,
                             if (state.garageCar.liveConfirmed) PitColors.Green else muted)
+                        if (state.carChangePending) Hint("Nouvelle voiture : plan au départ", PitColors.Yellow)
                     }
                 }
             }
