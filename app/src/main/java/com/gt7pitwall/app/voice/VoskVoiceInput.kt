@@ -120,6 +120,7 @@ class VoskVoiceInput(
     /** Début et fin de la dernière phrase du pilote (horloge monotone), pour la mesure de latence. */
     @Volatile
     var lastSpeechStartMs: Long? = null
+        private set
 
     /** Fin de la dernière phrase de l'ingénieur (horloge monotone). */
     private var lastEngineerEndMs = Long.MIN_VALUE / 2
@@ -129,7 +130,6 @@ class VoskVoiceInput(
         val start = lastSpeechStartMs ?: SystemClock.elapsedRealtime()
         return speaking.value || bargedIn || start - lastEngineerEndMs <= ECHO_TAIL_MS
     }
-        private set
 
     @Volatile
     var lastSpeechEndMs: Long? = null
