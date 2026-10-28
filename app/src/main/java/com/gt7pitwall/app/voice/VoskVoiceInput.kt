@@ -122,13 +122,22 @@ class VoskVoiceInput(
     var lastSpeechStartMs: Long? = null
         private set
 
-    /** Fin de la dernière phrase de l'ingénieur (horloge monotone). */
-    private var lastEngineerEndMs = Long.MIN_VALUE / 2
+    /** Début et fin de la dernière phrase de l'ingénieur (horloge monotone). */
+    private var lastEngineerStartMs: Long? = null
+    private var lastEngineerEndMs: Long? = null
 
-    /** La phrase du pilote a commencé pendant la voix de l'ingénieur ou juste après : un écho reste possible (#45). */
+    /** Début de phrase déjà utilisé pour une phrase remise : jamais réutilisé pour la suivante (revue PR #46). */
+    private var consumedStartMs: Long? = null
+
+    /**
+     * La phrase du pilote a commencé pendant la voix de l'ingénieur ou juste après : un écho reste possible (#45).
+     * Seul le début de la phrase en cours compte ; voir [com.gt7pitwall.core.radio.EchoTiming].
+     */
     private fun nearEngineer(): Boolean {
-        val start = lastSpeechStartMs ?: SystemClock.elapsedRealtime()
-        return speaking.value || bargedIn || start - lastEngineerEndMs <= ECHO_TAIL_MS
+        val now = SystemClock.elapsedRealtime()
+        val start = lastSpeechStartMs?.takeIf { it != consumedStartMs }
+        consumedStartMs = lastSpeechStartMs
+        return com.gt7pitwall.core.radio.EchoTiming.near(now, start, speaking.value, bargedIn, lastEngineerStartMs, lastEngineerEndMs)
     }
 
     @Volatile
@@ -814,7 +823,12 @@ class VoskVoiceInput(
         if (audioJob == null) return
         val now = SystemClock.elapsedRealtime()
         interrupts.engineer(speaking, engineerMessage()?.text, now)
-        if (speaking) rejectionNoted = false else lastEngineerEndMs = now
+        if (speaking) {
+            rejectionNoted = false
+            lastEngineerStartMs = now
+        } else {
+            lastEngineerEndMs = now
+        }
         if (speaking) voiceActivity.reset() else resetRecognizer = true
         // Le temps où l'ingénieur parle ne compte pas dans la fenêtre de conversation.
         conversation.engineerSpeaking(speaking, now)
@@ -1114,8 +1128,6 @@ class VoskVoiceInput(
         }
 
     private companion object {
-        /** Après la fin de la voix de l'ingénieur, sa fin de phrase peut encore revenir par Discord (issue #45). */
-        const val ECHO_TAIL_MS = 2_000L
         const val SAMPLE_RATE = 16_000f
         const val AWAKE_MS = 8_000L
         const val RESUME_DELAY_MS = 400L
