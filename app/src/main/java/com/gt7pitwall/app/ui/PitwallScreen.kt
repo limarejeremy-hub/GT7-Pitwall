@@ -214,6 +214,7 @@ fun PitwallScreen(
         )
         if (devTools) BenchCard(bench)
         if (devTools) PositionProbeCard(engine)
+        ControllerRadioProbeCard(engine)
         if (devTools) GapHunterCard(engine)
         DiscordCard(
             discord = discord,
@@ -1210,6 +1211,82 @@ private fun BenchCard(bench: SherpaBench) {
                     DiagLine(if (a.voskFree) "Vosk (libre)" else "Vosk (radio)", a.vosk?.let { "« $it »${w(a.voskWer)}" } ?: "rien au même moment")
                 }
             }
+        }
+    }
+}
+
+/**
+ * Sonde de la touche radio DualSense (issue #38, phase 1) : interrupteur désactivé par défaut, repère « j'appuie
+ * maintenant », résumé prudent et journal exportable. Elle ne pilote jamais la radio.
+ */
+@Composable
+private fun ControllerRadioProbeCard(engine: PitwallEngine) {
+    val probe = engine.controllerProbe
+    val context = LocalContext.current
+    var on by remember { mutableStateOf(probe.enabled) }
+    var lines by remember { mutableStateOf(probe.summary()) }
+    // Résumé rafraîchi toutes les secondes pendant la sonde.
+    androidx.compose.runtime.LaunchedEffect(on) {
+        while (on) {
+            lines = probe.summary()
+            kotlinx.coroutines.delay(1_000)
+        }
+        lines = probe.summary()
+    }
+    PitCard("Sonde touche radio DualSense (expérimental)") {
+        Text(
+            "Observe les bits de phares envoyés par GT7 (0x8E) pour savoir si une touche de la manette y laisse une trace. " +
+                "Rien n'est déclenché : la radio reste « Radio » à la voix. Aucun son enregistré.",
+            style = MaterialTheme.typography.bodySmall, color = PitColors.Muted,
+        )
+        Text(
+            "Essai hors ligne uniquement, voiture à l'arrêt : un appel de phares en ligne peut gêner les autres pilotes.",
+            style = MaterialTheme.typography.bodySmall, color = PitColors.Yellow,
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Sonde active", modifier = Modifier.weight(1f))
+            Switch(checked = on, onCheckedChange = { probe.setEnabled(it, System.currentTimeMillis()); on = it })
+        }
+        val now = { System.currentTimeMillis() }
+        Text("Mode de jeu (déclaré, Pitwall ne le détecte pas) : ${probe.currentMode.label}", style = MaterialTheme.typography.bodySmall)
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            com.gt7pitwall.core.telemetry.ControllerRadioProbe.Mode.entries.drop(1).forEach { m ->
+                OutlinedButton(onClick = { probe.declareMode(m, now()); lines = probe.summary() }, enabled = on, modifier = Modifier.weight(1f)) {
+                    Text(m.label, style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        }
+        Text("Série en cours : ${probe.currentSeries?.label ?: "aucune"}", style = MaterialTheme.typography.bodySmall)
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf(
+                com.gt7pitwall.core.telemetry.ControllerRadioProbe.SeriesKind.CONTROL,
+                com.gt7pitwall.core.telemetry.ControllerRadioProbe.SeriesKind.SHORT_PRESSES,
+                com.gt7pitwall.core.telemetry.ControllerRadioProbe.SeriesKind.HOLDS,
+                // Phares allumés en continu avant de commencer : un appui doit donner une coupure brève (#41).
+                com.gt7pitwall.core.telemetry.ControllerRadioProbe.SeriesKind.DIPS,
+            ).forEach { k ->
+                OutlinedButton(onClick = { probe.startSeries(k, now()); lines = probe.summary() }, enabled = on, modifier = Modifier.weight(1f)) {
+                    Text(k.label, style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        }
+        lines.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall) }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = { probe.mark(System.currentTimeMillis()); lines = probe.summary() }, enabled = on, modifier = Modifier.weight(1f)) {
+                Text("J'appuie maintenant")
+            }
+            OutlinedButton(
+                onClick = {
+                    val send = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_SUBJECT, "GT7 Pitwall — sonde touche radio DualSense")
+                        putExtra(Intent.EXTRA_TEXT, probe.export())
+                    }
+                    context.startActivity(Intent.createChooser(send, "Exporter le journal"))
+                },
+                modifier = Modifier.weight(1f),
+            ) { Text("Exporter") }
+            OutlinedButton(onClick = { probe.reset(); lines = probe.summary() }, modifier = Modifier.weight(1f)) { Text("Effacer") }
         }
     }
 }
