@@ -1262,6 +1262,8 @@ private fun ControllerRadioProbeCard(engine: PitwallEngine) {
                 com.gt7pitwall.core.telemetry.ControllerRadioProbe.SeriesKind.CONTROL,
                 com.gt7pitwall.core.telemetry.ControllerRadioProbe.SeriesKind.SHORT_PRESSES,
                 com.gt7pitwall.core.telemetry.ControllerRadioProbe.SeriesKind.HOLDS,
+                // Phares allumés en continu avant de commencer : un appui doit donner une coupure brève (#41).
+                com.gt7pitwall.core.telemetry.ControllerRadioProbe.SeriesKind.DIPS,
             ).forEach { k ->
                 OutlinedButton(onClick = { probe.startSeries(k, now()); lines = probe.summary() }, enabled = on, modifier = Modifier.weight(1f)) {
                     Text(k.label, style = MaterialTheme.typography.labelSmall)

@@ -19,6 +19,11 @@ import kotlin.math.roundToInt
  * appui. Chaque repère est apparié à **un seul** épisode, fermé et mesurable, qui commence dans les [MARK_BEFORE_MS] qui
  * suivent ; un épisode commencé avant le repère n'est jamais rattaché (même horloge : le repère précède forcément l'effet).
  * Tout repère ambigu rend la série « non concluante » ; « concordance » n'est jamais écrit sur un signal perturbé.
+ *
+ * Essai du 28/10 (#41) : pleins phares souvent allumés longtemps (jusqu'à ~228 s), 6 montées sans repère, verdict non
+ * concluant. La sonde suit donc aussi les **coupures brèves** (polarité [Polarity.OFF]) : feux allumés qui s'éteignent
+ * puis se rallument en au plus [DIP_MAX_MS]. Avec les phares allumés en continu, un appel de phares pourrait apparaître
+ * comme une coupure plutôt qu'une montée. Mêmes règles : repère avant l'effet, appariement un pour un, témoin propre.
  */
 class ControllerRadioProbe(private val maxEvents: Int = 2_000) {
     /** Bits de 0x8E suivis : phares (7, 8, 9), frein à main (6), bits non documentés (12 à 15). */
@@ -54,10 +59,21 @@ class ControllerRadioProbe(private val maxEvents: Int = 2_000) {
         CONTROL("témoin sans appui", false),
         SHORT_PRESSES("appels brefs", true),
         HOLDS("maintiens d'environ 1 s", true),
+        /** Pleins phares allumés en continu avant la série : chaque appui devrait donner une coupure brève. */
+        DIPS("coupures brèves, phares allumés", true),
         FREE("libre", true),
     }
 
-    data class Episode(val bit: Bit, val startMs: Long, val endMs: Long?, val packets: Int, val kind: Kind, val series: Int?)
+    /** ON : épisode allumé (montée → descente). OFF : épisode éteint (descente → montée), dont les coupures brèves. */
+    enum class Polarity(val label: String) { ON("allumage"), OFF("coupure") }
+
+    data class Episode(
+        val bit: Bit, val startMs: Long, val endMs: Long?, val packets: Int, val kind: Kind, val series: Int?,
+        val polarity: Polarity = Polarity.ON,
+    ) {
+        /** Coupure brève candidate : éteint puis rallumé en au plus [DIP_MAX_MS], mesurable. */
+        val isDip: Boolean get() = polarity == Polarity.OFF && endMs != null && kind in DIP_KINDS && endMs - startMs <= DIP_MAX_MS
+    }
 
     data class Event(val timeMs: Long, val text: String)
 
@@ -102,6 +118,7 @@ class ControllerRadioProbe(private val maxEvents: Int = 2_000) {
     private val transitions = HashMap<Bit, Int>()
     private val episodes = ArrayList<Episode>()
     private val open = HashMap<Bit, Open>()
+    private val openOff = HashMap<Bit, Open>()
     private val series = ArrayList<Series>()
     private val events = ArrayList<Event>()
     private var mode = Mode.UNSPECIFIED
@@ -131,7 +148,7 @@ class ControllerRadioProbe(private val maxEvents: Int = 2_000) {
         if (!enabled || m == mode) return
         mode = m
         contextChangeMs = nowMs
-        open.values.forEach { it.disturbed = true }
+        (open.values + openOff.values).forEach { it.disturbed = true }
         log(nowMs, "mode déclaré : ${m.label}")
     }
 
@@ -150,7 +167,7 @@ class ControllerRadioProbe(private val maxEvents: Int = 2_000) {
         series.lastOrNull()?.let { if (it.endMs == null) it.endMs = nowMs }
         series += Series(series.size + 1, kind, mode, nowMs)
         contextChangeMs = nowMs
-        open.values.forEach { it.disturbed = true }
+        (open.values + openOff.values).forEach { it.disturbed = true }
         log(nowMs, "série ${series.size} : ${kind.label} (${mode.label})")
     }
 
@@ -171,13 +188,13 @@ class ControllerRadioProbe(private val maxEvents: Int = 2_000) {
         if (gap) {
             gaps++
             log(nowMs, "coupure du flux : ${nowMs - lastMs} ms sans paquet")
-            open.values.forEach { it.disturbed = true }
+            (open.values + openOff.values).forEach { it.disturbed = true }
         } else if (lastMs > 0 && intervals.size < MAX_INTERVALS) {
             intervals += (nowMs - lastMs).toInt()
         }
         if (lastCar != 0 && p.carCode != lastCar) {
             log(nowMs, "changement de voiture : $lastCar → ${p.carCode}")
-            open.values.forEach { it.disturbed = true }
+            (open.values + openOff.values).forEach { it.disturbed = true }
         }
         lastCar = p.carCode
         packets++
@@ -192,6 +209,7 @@ class ControllerRadioProbe(private val maxEvents: Int = 2_000) {
                 val on = p.flags and b.mask != 0
                 initial[b] = on
                 if (on) open[b] = Open(nowMs, 1, disturbed = false, unknownStart = true, series = current)
+                else openOff[b] = Open(nowMs, 1, disturbed = false, unknownStart = true, series = current)
             }
             log(nowMs, "état initial : " + Bit.entries.filter { initial[it] == true }.joinToString { it.label }.ifEmpty { "aucun bit suivi allumé" } +
                 " (format ${p.format.label}, ${state(p)})")
@@ -201,20 +219,19 @@ class ControllerRadioProbe(private val maxEvents: Int = 2_000) {
             val was = prev and b.mask != 0
             val now = p.flags and b.mask != 0
             if (was == now) {
-                if (now) open[b]?.let { it.packets++; if (disturbed) it.disturbed = true }
+                (if (now) open[b] else openOff[b])?.let { it.packets++; if (disturbed) it.disturbed = true }
                 continue
             }
             transitions[b] = (transitions[b] ?: 0) + 1
             log(nowMs, "${b.label} ${if (now) "allumé" else "éteint"} (format ${p.format.label}, ${state(p)}, ${p.speedKmh.roundToInt()} km/h)")
-            if (now) {
-                val settling = nowMs - contextChangeMs < SETTLE_MS
-                open[b] = Open(nowMs, 1, disturbed || gap || settling, unknownStart = false, series = current)
-            } else {
-                open.remove(b)?.let { o ->
-                    val kind = if (o.disturbed || o.unknownStart || disturbed) Kind.UNMEASURABLE else classify(o.packets, nowMs - o.start)
-                    add(Episode(b, o.start, nowMs, o.packets, kind, o.series))
-                }
+            val settling = nowMs - contextChangeMs < SETTLE_MS
+            val closing = if (now) openOff.remove(b) else open.remove(b)
+            closing?.let { o ->
+                val kind = if (o.disturbed || o.unknownStart || disturbed) Kind.UNMEASURABLE else classify(o.packets, nowMs - o.start)
+                add(Episode(b, o.start, nowMs, o.packets, kind, o.series, if (now) Polarity.OFF else Polarity.ON))
             }
+            val opened = Open(nowMs, 1, disturbed || gap || settling, unknownStart = false, series = current)
+            if (now) open[b] = opened else openOff[b] = opened
         }
     }
 
@@ -233,6 +250,8 @@ class ControllerRadioProbe(private val maxEvents: Int = 2_000) {
     private fun closeAll(kind: Kind) {
         open.forEach { (b, o) -> add(Episode(b, o.start, null, o.packets, if (o.disturbed || o.unknownStart) Kind.UNMEASURABLE else kind, o.series)) }
         open.clear()
+        openOff.forEach { (b, o) -> add(Episode(b, o.start, null, o.packets, Kind.UNMEASURABLE, o.series, Polarity.OFF)) }
+        openOff.clear()
     }
 
     private fun state(p: TelemetryPacket) = when {
@@ -252,16 +271,19 @@ class ControllerRadioProbe(private val maxEvents: Int = 2_000) {
     fun episodes(): List<Episode> = episodes + open.map { (b, o) ->
         // Encore allumé : « permanent » (y compris s'il l'était déjà au départ), sauf si le flux a été perturbé.
         Episode(b, o.start, null, o.packets, if (o.disturbed) Kind.UNMEASURABLE else Kind.PERMANENT, o.series)
-    }
+    } + openOff.map { (b, o) -> Episode(b, o.start, null, o.packets, if (o.disturbed) Kind.UNMEASURABLE else Kind.PERMANENT, o.series, Polarity.OFF) }
 
     /** Le repère précède l'effet : l'allumage commence entre le repère et [MARK_BEFORE_MS] après. */
     private fun inWindow(start: Long, mark: Long) = start - mark in 0..MARK_BEFORE_MS
 
     @Synchronized
-    fun seriesReports(b: Bit = Bit.HIGH_BEAM): List<SeriesReport> {
-        val all = episodes().filter { it.bit == b && it.startMs > firstMs }
+    fun seriesReports(b: Bit = Bit.HIGH_BEAM, polarity: Polarity = Polarity.ON): List<SeriesReport> {
+        val all = episodes().filter { it.bit == b && it.polarity == polarity && it.startMs > firstMs }
         return series.map { s ->
-            val eps = all.filter { it.series == s.index }.sortedBy { it.startMs }
+            val inSeries = all.filter { it.series == s.index }.sortedBy { it.startMs }
+            // Coupures : seules les brèves comptent ; une longue période éteinte est l'état normal, pas un appui.
+            val eps = if (polarity == Polarity.ON) inSeries
+                else inSeries.filter { e -> e.isDip || (e.kind == Kind.UNMEASURABLE && e.endMs != null && e.endMs - e.startMs <= DIP_MAX_MS) }
             val measurable = eps.filter { it.kind.measurable && it.endMs != null }
             val notMeasurable = eps.filter { !(it.kind.measurable && it.endMs != null) }
             // Appariement chronologique un repère ↔ un épisode distinct.
@@ -281,12 +303,13 @@ class ControllerRadioProbe(private val maxEvents: Int = 2_000) {
             val unpairedRises = measurable.size - paired
             val concordant = s.kind.expectsPresses && s.marks.size >= MIN_MARKS && unpairedMarks == 0 && unpairedRises == 0 &&
                 ambiguous == 0 && notMeasurable.isEmpty()
+            val what = if (polarity == Polarity.ON) "montée" else "coupure brève"
             val verdict = when {
                 !s.kind.expectsPresses ->
-                    if (eps.isEmpty()) "témoin propre : aucune montée sans appui" else "témoin : ${eps.size} montée(s) sans appui — le bit bouge sans la touche"
+                    if (eps.isEmpty()) "témoin propre : aucune $what sans appui" else "témoin : ${eps.size} $what(s) sans appui — le bit bouge sans la touche"
                 s.marks.isEmpty() -> "aucun repère : aucune attribution possible"
-                concordant -> "concordance sur cette série seulement (${s.marks.size} repères, ${paired} montées appariées)"
-                else -> "non concluant : $paired/${s.marks.size} repères appariés, $unpairedRises montée(s) sans repère, " +
+                concordant -> "concordance sur cette série seulement (${s.marks.size} repères, $paired $what(s) appariée(s))"
+                else -> "non concluant : $paired/${s.marks.size} repères appariés, $unpairedRises $what(s) sans repère, " +
                     "${notMeasurable.size} épisode(s) non mesurable(s), $ambiguous repère(s) ambigu(s)" +
                     (if (s.marks.size < MIN_MARKS) ", moins de $MIN_MARKS repères" else "")
             }
@@ -302,18 +325,19 @@ class ControllerRadioProbe(private val maxEvents: Int = 2_000) {
      * une série d'appuis concorde, qu'aucune série d'appuis n'est non concluante et que chaque témoin est propre.
      */
     @Synchronized
-    fun verdict(b: Bit): String {
+    fun verdict(b: Bit, polarity: Polarity = Polarity.ON): String {
         val tr = transitions[b] ?: 0
         if (tr == 0) return if (initial[b] == true) "${b.label} : allumé en permanence, aucune transition (indétectable)" else "${b.label} : jamais changé (indétectable)"
-        val reports = seriesReports(b)
+        val reports = seriesReports(b, polarity)
+        val name = if (polarity == Polarity.ON) b.label else "${b.label} (coupures brèves)"
         val presses = reports.filter { it.kind.expectsPresses && it.marks > 0 }
-        if (presses.isEmpty()) return "${b.label} : $tr transitions sans aucun repère du pilote — aucune attribution possible"
+        if (presses.isEmpty()) return "$name : $tr transitions sans aucun repère du pilote — aucune attribution possible"
         val dirtyControl = reports.filter { !it.kind.expectsPresses && it.rises > 0 }
         val inconclusive = presses.filter { !it.concordant }
         return when {
-            dirtyControl.isNotEmpty() -> "${b.label} : non concluant — le témoin montre des montées sans appui (feux automatiques ou autre)"
-            inconclusive.isNotEmpty() -> "${b.label} : non concluant — ${inconclusive.size} série(s) d'appuis sans correspondance nette"
-            else -> "${b.label} : concordance sur cet essai seulement (${presses.size} série(s), mode ${presses.map { it.mode.label }.distinct().joinToString()}), à refaire en Sport"
+            dirtyControl.isNotEmpty() -> "$name : non concluant — le témoin montre des changements sans appui (feux automatiques ou autre)"
+            inconclusive.isNotEmpty() -> "$name : non concluant — ${inconclusive.size} série(s) d'appuis sans correspondance nette"
+            else -> "$name : concordance sur cet essai seulement (${presses.size} série(s), mode ${presses.map { it.mode.label }.distinct().joinToString()}), à refaire en Sport"
         }
     }
 
@@ -328,17 +352,23 @@ class ControllerRadioProbe(private val maxEvents: Int = 2_000) {
             (p95?.let { ", écart entre paquets reçus au 95e centile : $it ms (régularité du flux, pas une latence de bout en bout)" } ?: "") + "."
         out += "Formats : " + formatCounts.entries.joinToString { "${it.key.label} ${it.value}" } + " ; mode déclaré : ${mode.label}."
         for (b in listOf(Bit.HIGH_BEAM, Bit.LOW_BEAM, Bit.LIGHTS, Bit.HANDBRAKE)) {
-            val eps = episodes().filter { it.bit == b }
+            val eps = episodes().filter { it.bit == b && it.polarity == Polarity.ON }
+            val dips = episodes().count { it.bit == b && it.isDip }
             val counts = Kind.entries.mapNotNull { k -> eps.count { it.kind == k }.takeIf { it > 0 }?.let { "$it ${k.label}" } }
             out += "${b.label.replaceFirstChar { it.uppercase() }} : ${transitions[b] ?: 0} transitions" +
-                (if (counts.isNotEmpty()) " — ${counts.joinToString(", ")}" else "") + "."
+                (if (counts.isNotEmpty()) " — ${counts.joinToString(", ")}" else "") +
+                (if (dips > 0) " ; $dips coupure(s) brève(s) (éteint puis rallumé en ${DIP_MAX_MS} ms au plus)" else "") + "."
         }
         Bit.entries.filter { it.name.startsWith("BIT") && (transitions[it] ?: 0) > 0 }.forEach { out += "${it.label} : ${transitions[it]} transitions." }
         seriesReports(Bit.HIGH_BEAM).forEach { r ->
             out += "Série ${r.index} (${r.kind.label}, ${r.mode.label}) : ${r.marks} repères, ${r.rises} montées, ${r.paired} appariées, " +
                 "${r.releases} relâchements mesurés, ${r.unmeasurable} non mesurables — ${r.verdict}."
         }
+        seriesReports(Bit.HIGH_BEAM, Polarity.OFF).filter { it.rises > 0 || it.kind == SeriesKind.DIPS }.forEach { r ->
+            out += "Série ${r.index}, coupures brèves : ${r.marks} repères, ${r.rises} coupures, ${r.paired} appariées — ${r.verdict}."
+        }
         out += verdict(Bit.HIGH_BEAM)
+        if (series.any { it.kind == SeriesKind.DIPS } || episodes().any { it.bit == Bit.HIGH_BEAM && it.isDip }) out += verdict(Bit.HIGH_BEAM, Polarity.OFF)
         return out
     }
 
@@ -349,9 +379,9 @@ class ControllerRadioProbe(private val maxEvents: Int = 2_000) {
         summary().forEach { appendLine("# $it") }
         appendLine("t_ms;evenement")
         events.forEach { appendLine("${it.timeMs - firstMs};${it.text.replace(';', ',')}") }
-        appendLine("t_debut_ms;bit;paquets;duree_ms;type;mesurable;serie")
+        appendLine("t_debut_ms;bit;polarite;paquets;duree_ms;type;mesurable;serie")
         episodes().forEach { e ->
-            appendLine("${e.startMs - firstMs};${e.bit.name};${e.packets};${e.endMs?.let { it - e.startMs } ?: ""};${e.kind.name};" +
+            appendLine("${e.startMs - firstMs};${e.bit.name};${e.polarity.name};${e.packets};${e.endMs?.let { it - e.startMs } ?: ""};${e.kind.name};" +
                 "${if (e.kind.measurable && e.endMs != null) "oui" else "non"};${e.series ?: ""}")
         }
         appendLine("serie;type;mode;t_debut_ms;reperes_ms")
@@ -361,7 +391,7 @@ class ControllerRadioProbe(private val maxEvents: Int = 2_000) {
     @Synchronized
     fun reset() {
         firstMs = 0; lastMs = 0; lastFlags = null; lastCar = 0; packets = 0; gaps = 0
-        formatCounts = HashMap(); intervals.clear(); initial.clear(); transitions.clear(); episodes.clear(); open.clear()
+        formatCounts = HashMap(); intervals.clear(); initial.clear(); transitions.clear(); episodes.clear(); open.clear(); openOff.clear()
         series.clear(); events.clear(); mode = Mode.UNSPECIFIED; profile = null; contextChangeMs = Long.MIN_VALUE / 2
     }
 
@@ -376,5 +406,11 @@ class ControllerRadioProbe(private val maxEvents: Int = 2_000) {
         /** Délai après un changement de mode ou de série pendant lequel un allumage n'est pas mesurable. */
         const val SETTLE_MS = 1_000L
         const val MAX_INTERVALS = 20_000
+        val DIP_KINDS = setOf(Kind.PULSE, Kind.SHORT, Kind.HOLD)
+        /**
+         * Durée maximale d'une coupure brève. Au-delà, c'est l'état éteint normal : des appels brefs espacés de 1,8 s
+         * laissent les phares éteints 1,7 s entre deux appuis, ce qui n'est pas une coupure.
+         */
+        const val DIP_MAX_MS = 1_200L
     }
 }

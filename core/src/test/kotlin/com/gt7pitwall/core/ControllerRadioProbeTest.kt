@@ -39,7 +39,7 @@ class ControllerRadioProbeTest {
     }
 
     private fun feed(): Feed = Feed(ControllerRadioProbe().also { it.setEnabled(true, 0) })
-    private fun kinds(f: Feed, b: Bit = Bit.HIGH_BEAM) = f.probe.episodes().filter { it.bit == b }.map { it.kind }
+    private fun kinds(f: Feed, b: Bit = Bit.HIGH_BEAM) = f.probe.episodes().filter { it.bit == b && it.polarity == ControllerRadioProbe.Polarity.ON }.map { it.kind }
     private fun verdict(f: Feed) = f.probe.verdict(Bit.HIGH_BEAM)
 
     @Test
@@ -193,5 +193,56 @@ class ControllerRadioProbeTest {
         assertTrue(log.contains("coupure du flux") && log.contains("changement de voiture : 3607 → 3474"), log)
         assertTrue(log.contains("pas une détection du mode") && log.contains("pas une latence de bout en bout"), log)
         assertFalse(log.contains("192.168"), "aucune adresse réseau")
+    }
+
+    // ---------------------------------------------------------------- #41 : coupures brèves (phares allumés en continu)
+
+    private val off = ControllerRadioProbe.Polarity.OFF
+
+    /** Repère, 0,8 s, puis les phares s'éteignent [frames] paquets et se rallument, puis 1 s allumés. */
+    private fun Feed.dip(frames: Int) {
+        probe.mark(t); send(base or high, 50); send(base, frames); send(base or high, 60)
+    }
+
+    @Test
+    fun shortDipsWithHighBeamOnAreMeasuredAndPaired() {
+        val f = feed()
+        f.probe.declareMode(Mode.OFFLINE, f.t)
+        f.send(base, 60); f.send(base or high, 120)
+        f.probe.startSeries(SeriesKind.CONTROL, f.t); f.send(base or high, 600) // témoin : phares allumés, sans appui
+        f.probe.startSeries(SeriesKind.DIPS, f.t); f.send(base or high, 100)
+        repeat(5) { f.dip(3) }
+        val r = f.probe.seriesReports(Bit.HIGH_BEAM, off)
+        assertEquals("témoin propre : aucune coupure brève sans appui", r[0].verdict)
+        assertTrue(r[1].concordant, r[1].verdict)
+        assertEquals(5, f.probe.episodes().count { it.isDip })
+        val v = f.probe.verdict(Bit.HIGH_BEAM, off)
+        assertTrue(v.startsWith("pleins phares (coupures brèves) : concordance sur cet essai seulement"), v)
+        assertTrue(f.probe.summary().any { "coupure(s) brève(s)" in it })
+        assertTrue(f.probe.export().contains(";HIGH_BEAM;OFF;"))
+    }
+
+    @Test
+    fun longOffPeriodsBetweenPressesAreNotDips() {
+        val f = feed()
+        f.send(base, 30)
+        f.probe.startSeries(SeriesKind.SHORT_PRESSES, f.t); f.send(base, 100)
+        repeat(5) { f.press(base or high, 2, base) }
+        assertEquals(0, f.probe.episodes().count { it.isDip })
+        assertEquals(0, f.probe.seriesReports(Bit.HIGH_BEAM, off).single().rises)
+    }
+
+    @Test
+    fun anUnmarkedDipMakesTheDipSeriesInconclusive() {
+        // Cas du 28/10 transposé : un changement sans repère (feux automatiques, autre touche) interdit la concordance.
+        val f = feed()
+        f.send(base or high, 60)
+        f.probe.startSeries(SeriesKind.DIPS, f.t); f.send(base or high, 100)
+        repeat(5) { f.dip(3) }
+        f.send(base, 4); f.send(base or high, 200)
+        val r = f.probe.seriesReports(Bit.HIGH_BEAM, off).single()
+        assertFalse(r.concordant)
+        assertEquals(1, r.unpairedRises)
+        assertTrue(f.probe.verdict(Bit.HIGH_BEAM, off).contains("non concluant"))
     }
 }

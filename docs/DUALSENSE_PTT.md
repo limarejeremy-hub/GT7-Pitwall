@@ -130,3 +130,26 @@ hors ligne, voiture **à l'arrêt**, Fold en main : tu ne conduis pas pendant ce
 
 - Essai PS5 du protocole ci-dessus. Sans lui, la phase 2 ne démarre pas.
 - Vérifier le comportement en PSVR2 (même télémétrie attendue, à confirmer).
+
+## Essai PS5 du 28/10 et coupures brèves (issue #41, P2)
+
+**Résultat rapporté** : 47 341 paquets en 790 s, 6 repères, 12 montées des pleins phares, 5 repères appariés, 6 montées
+sans repère. Les états pleins phares sont souvent longs ou permanents (jusqu'à ~228 s). **Verdict : non concluant.**
+Ce sont des bits d'état des feux, pas des touches brutes. Aucun micro n'est activé, aucune fonction PTT n'est annoncée.
+
+**Ajout** : la sonde suit aussi la polarité inverse. Avec les pleins phares allumés en continu, un appel de phares peut
+donner une **coupure brève** (éteint puis rallumé en 1,2 s au plus) plutôt qu'une montée.
+- Une période éteinte plus longue est l'état normal, jamais un appui.
+- Mêmes règles que pour les montées : repère avant l'effet, appariement un pour un, épisodes perturbés non mesurables, témoin propre, au moins 5 repères.
+- Nouvelle série « coupures brèves, phares allumés ». L'export ajoute la colonne `polarite` (ON/OFF).
+
+**Protocole hors ligne reproductible (à faire)** :
+1. Course hors ligne, voiture à l'arrêt ou en ligne droite. Couper les feux automatiques si le jeu le permet. Noter l'heure GT7 (jour ou nuit).
+2. Sonde activée, mode « hors ligne », série **témoin** de 20 s sans toucher.
+3. Série **appels brefs** : 5 repères, chacun suivi d'un appui bref environ 1 s plus tard.
+4. Allumer les pleins phares en continu, puis série **témoin** de 20 s (phares allumés, sans appui).
+5. Série **coupures brèves** : 5 repères, chacun suivi d'un appui bref.
+6. Exporter. Phase 2 (PTT) seulement si l'une des séries concorde **et** que les témoins sont propres, sur deux essais distincts.
+
+Tests JVM ajoutés : `shortDipsWithHighBeamOnAreMeasuredAndPaired`, `longOffPeriodsBetweenPressesAreNotDips`,
+`anUnmarkedDipMakesTheDipSeriesInconclusive`. **PS5 : non testé.**
