@@ -98,6 +98,8 @@ class RaceSim(
     private var lapTicks = 0
     /** Températures des pneus envoyées dans chaque paquet (AVG, AVD, ARG, ARD, °C). */
     var tyreTemps = floatArrayOf(82f, 84f, 78f, 79f)
+    /** Chaque paquet en clair, avant d'être donné au contrôleur (enregistrement d'une trace dans les tests). */
+    var tap: ((ByteArray) -> Unit)? = null
     val said = mutableListOf<EngineerMessage>()
     val texts: List<String> get() = said.map { it.text }
     val lastAnswer: String get() = said.last { it.category == com.gt7pitwall.core.engineer.MessageCategory.ANSWER }.text
@@ -109,6 +111,7 @@ class RaceSim(
             lastLapMs = lastLapMs, bestLapMs = bestLapMs, carCode = carCode, packetId = ++id, flags = flags,
             posX = r * cos(theta), posZ = r * sin(theta), tyreTemps = tyreTemps,
         )
+        tap?.invoke(plain)
         val p: TelemetryPacket = TelemetryParser.parseDecrypted(plain)!!
         said += controller.onPacket(p)
     }

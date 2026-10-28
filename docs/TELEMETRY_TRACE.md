@@ -23,12 +23,21 @@ n'existait.** Celle-ci l'enregistre, seulement sur demande.
 - Pertes réseau GT7 (trous dans les numéros de paquet), échantillons perdus par Pitwall, silences de plus de 2 s.
 - Délai réception → écriture sur disque (p95, p99). Ce n'est **pas** la latence de la radio : le log du 28/10 donnait environ 149 ms pour une réponse locale et environ 3,8 s pour Gemini Nano, à ne pas mélanger.
 
+## Relecture (révisée après la revue de la PR #44)
+- **En flux** : un seul échantillon en mémoire à la fois. Une trace de 4 h à 20 Hz (288 000 échantillons) dépasse 100 Mo une fois décompressée ; elle n'est plus chargée d'un bloc.
+- **Horloge virtuelle** : avant chaque paquet, l'horloge du contrôleur de relecture prend l'heure enregistrée de ce paquet, en partant de l'heure inscrite dans le nom du fichier. Les calculs qui dépendent du temps (reconnaissance de la voiture, journal, identifiant de session) voient le rythme réel de la course, même si la relecture va plus vite.
+- Test de cohérence : une course simulée de 6 tours, calculée en direct puis rejouée, donne les mêmes tours (numéro, chrono, carburant), la même consommation, le même identifiant de session et le même journal, heures comprises.
+- Limite restante : l'heure des messages radio (`EngineerMessage.timestampMs`) reste celle du téléphone. Elle ne sert qu'à la diffusion vocale, jamais à un calcul, et la relecture n'annonce rien.
+
 ## Format du fichier `.gt7trace`
 gzip de : `GT7PWTR1`, puis pour chaque échantillon les millisecondes depuis le début (Int), la longueur (Short) et les
 octets du paquet. Une fin tronquée (téléphone coupé) garde les échantillons complets.
 
 ## Statut
-- Tests JVM : `TelemetryTraceTest` (6).
+- Tests JVM : `TelemetryTraceTest` (9), dont 3 ajoutés après la revue :
+  - trace de 4 h à 20 Hz relue en flux, avec moins de 32 Mo retenus ;
+  - 1 h à 60 Hz (216 000 paquets) rejouée dans un contrôleur, à l'heure enregistrée ;
+  - cohérence entre le direct et la relecture.
   - Décimation 60 → 20 Hz et relecture exacte.
   - Format C conservé entier.
   - Pertes, silences et trames illisibles.

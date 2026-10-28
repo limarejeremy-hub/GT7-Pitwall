@@ -95,7 +95,7 @@ class TelemetryRecorder(
         queue.clear()
         counting.reset(sink)
         val o = DataOutputStream(GZIPOutputStream(counting, 8_192))
-        o.write(MAGIC)
+        TelemetryTrace.writeHeader(o)
         out = o
         startMs = clock()
         writer = Thread({ drain(o) }, "telemetry-trace").apply { isDaemon = true; start() }
@@ -132,9 +132,7 @@ class TelemetryRecorder(
                 if (s == null) {
                     if (out !== o) break else continue
                 }
-                o.writeInt((s.atMs - startMs).toInt())
-                o.writeShort(s.plain.size)
-                o.write(s.plain)
+                TelemetryTrace.writeFrame(o, (s.atMs - startMs).toInt(), s.plain)
                 delays[(clock() - s.atMs).coerceIn(0, 1_000).toInt()]++
                 if (counting.count > maxBytes && !stopping) {
                     stopping = true
@@ -215,14 +213,29 @@ class TelemetryRecorder(
     }
 }
 
-/** Relecture d'une trace : échantillons dans l'ordre, sans rien interpréter. */
+/**
+ * Lecture et relecture d'une trace, **en flux** (revue PR #44) : un seul échantillon en mémoire à la fois. Une trace de
+ * 4 h à 20 Hz fait ~288 000 échantillons, soit plus de 100 Mo une fois décompressée : la charger d'un bloc pourrait
+ * saturer la mémoire du Fold.
+ */
 object TelemetryTrace {
     class Frame(val atMs: Int, val plain: ByteArray)
 
-    /** Lit toute la trace ; une fin tronquée (arrêt brutal du téléphone) garde les échantillons complets. */
-    fun read(input: InputStream): List<Frame> {
-        val frames = mutableListOf<Frame>()
-        DataInputStream(GZIPInputStream(input)).use { d ->
+    fun writeHeader(out: java.io.DataOutput) = out.write(TelemetryRecorder.MAGIC)
+
+    fun writeFrame(out: java.io.DataOutput, atMs: Int, plain: ByteArray) {
+        out.writeInt(atMs)
+        out.writeShort(plain.size)
+        out.write(plain)
+    }
+
+    /**
+     * Parcourt la trace échantillon par échantillon ; renvoie le nombre lu. Une fin tronquée (téléphone coupé) garde
+     * les échantillons complets. [block] renvoie false pour arrêter la lecture.
+     */
+    fun stream(input: InputStream, block: (Frame) -> Boolean): Int {
+        var n = 0
+        DataInputStream(GZIPInputStream(input, 16 * 1024).buffered(16 * 1024)).use { d ->
             val magic = ByteArray(TelemetryRecorder.MAGIC.size)
             d.readFully(magic)
             require(magic.contentEquals(TelemetryRecorder.MAGIC)) { "pas une trace GT7 Pitwall" }
@@ -230,16 +243,25 @@ object TelemetryTrace {
                 while (true) {
                     val at = d.readInt()
                     val len = d.readUnsignedShort()
-                    if (len !in GT7Crypto.PACKET_SIZE_A..1_024) break
+                    if (len !in GT7Crypto.PACKET_SIZE_A..MAX_FRAME) break
                     val b = ByteArray(len)
                     d.readFully(b)
-                    frames += Frame(at, b)
+                    n++
+                    if (!block(Frame(at, b))) break
                 }
             } catch (_: EOFException) {
             } catch (_: java.util.zip.ZipException) {
             }
         }
-        return frames
+        return n
+    }
+
+    /** Lit toute la trace en mémoire : réservé aux petites traces (tests, diagnostic). La relecture passe par [replay]. */
+    fun read(input: InputStream): List<Frame> = mutableListOf<Frame>().also { l -> stream(input) { l += it; true } }
+
+    /** Horloge virtuelle de relecture : l'heure enregistrée de chaque échantillon, pas l'heure du téléphone. */
+    class VirtualClock(var nowMs: Long = 0L) {
+        fun now(): Long = nowMs
     }
 
     data class Replay(val frames: Int, val decoded: Int, val formats: Map<String, Int>, val durationMs: Int, val gapsOver500Ms: Int) {
@@ -252,24 +274,38 @@ object TelemetryTrace {
     }
 
     /**
-     * Rejoue la trace hors course : chaque paquet est décodé puis donné à [onPacket] (un RaceController neuf, par
-     * exemple), avec l'heure enregistrée. Jamais pendant une course : l'appelant le vérifie.
+     * Rejoue la trace hors course, en flux : avant chaque paquet, [clock] prend l'heure enregistrée ([startMs] + écart),
+     * puis le paquet décodé est donné à [onPacket]. Un contrôleur construit avec `clock = clock::now` voit donc le même
+     * rythme qu'en course, même si la relecture va plus vite. Jamais pendant une course : l'appelant le vérifie.
      */
-    fun replay(frames: List<Frame>, onPacket: (TelemetryPacket, Int) -> Unit = { _, _ -> }): Replay {
+    fun replay(
+        input: InputStream,
+        clock: VirtualClock = VirtualClock(),
+        startMs: Long = clock.nowMs,
+        onPacket: (TelemetryPacket) -> Unit = {},
+    ): Replay {
         var decoded = 0
         var gaps = 0
+        var last: Int? = null
         val formats = sortedMapOf<String, Int>()
-        frames.forEachIndexed { i, f ->
-            if (i > 0 && f.atMs - frames[i - 1].atMs > 500) gaps++
-            val p = TelemetryParser.parseDecrypted(f.plain) ?: return@forEachIndexed
-            decoded++
-            formats.merge(p.format.label, 1, Int::plus)
-            onPacket(p, f.atMs)
+        val n = stream(input) { f ->
+            last?.let { if (f.atMs - it > 500) gaps++ }
+            last = f.atMs
+            clock.nowMs = startMs + f.atMs
+            TelemetryParser.parseDecrypted(f.plain)?.let { p ->
+                decoded++
+                formats.merge(p.format.label, 1, Int::plus)
+                onPacket(p)
+            }
+            true
         }
-        return Replay(frames.size, decoded, formats, frames.lastOrNull()?.atMs ?: 0, gaps)
+        return Replay(n, decoded, formats, last ?: 0, gaps)
     }
 
     /** Taille par heure annoncée à partir d'une trace (Mo/h), pour la doc et l'Atelier. */
     fun mbPerHour(bytes: Long, durationMs: Long): Double? =
         if (durationMs < 60_000) null else (bytes / 1_048_576.0 * 3_600_000 / durationMs * 10).roundToInt() / 10.0
+
+    /** Taille maximale d'un échantillon relu (les formats GT7 connus font au plus 368 octets). */
+    const val MAX_FRAME = 1_024
 }
