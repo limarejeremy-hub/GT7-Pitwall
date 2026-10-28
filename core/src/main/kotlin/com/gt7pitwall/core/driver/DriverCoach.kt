@@ -131,6 +131,27 @@ class DriverCoach(
         )
     }
     private val recorder = LapRecorder()
+
+    /** Motricité en sortie de virage, à commande comparable (issue #35) : alimentée par les tours propres mesurés. */
+    val traction = com.gt7pitwall.core.tyres.TractionMonitor()
+
+    /** Relais en cours (premier tour, tours écartés, pluie déclarée), fourni par la course. */
+    data class TractionContext(val stintStartLap: Int, val excludedLaps: Set<Int>, val raining: Boolean)
+
+    /**
+     * Fourni par la course. La motricité est évaluée ici, **avant** le conseil du tour : ingestion → calcul → arbitrage
+     * → radio, jamais un conseil fondé sur le constat du tour précédent (revue PR #37, P0-B).
+     */
+    var tractionContext: () -> TractionContext? = { null }
+
+    /** Freinages des tours propres mesurés (croisement n°2), bornés aux 30 derniers. */
+    private val brakingLaps = ArrayDeque<com.gt7pitwall.core.tyres.BrakingMonitor.Lap>()
+
+    /** Efficacité de freinage à pression égale, relais en cours. */
+    fun braking(): com.gt7pitwall.core.tyres.BrakingMonitor.Report {
+        val tc = tractionContext() ?: return com.gt7pitwall.core.tyres.BrakingMonitor.Report(com.gt7pitwall.core.tyres.BrakingMonitor.Level.INSUFFICIENT, listOf("relais inconnu"))
+        return com.gt7pitwall.core.tyres.BrakingMonitor.compare(brakingLaps.toList(), tc.stintStartLap, tc.excludedLaps, tc.raining)
+    }
     private val finished = HashMap<Int, List<LapSample>>()
     private var lastLap = -1
     private var pitThisLap = false
@@ -166,6 +187,8 @@ class DriverCoach(
         incompatibleNoted = false
         lastLap = -1
         recorder.invalidate()
+        traction.reset()
+        brakingLaps.clear()
         rejectedCount.clear()
         lapsSeen = 0
         lastNoAdvice = null
@@ -230,6 +253,27 @@ class DriverCoach(
         val map = prof.map ?: return emptyList()
         val passes = CornerMeasure.passes(map, lap.lapNumber, samples, ctx.wheelBaseM, continuation)
         sessionPasses += passes
+        // Sorties de virage (de la vitesse minimale à la fin de la zone) pour la motricité ; sorties de piste écartées.
+        runCatching {
+            // Comme les passages : la sortie du dernier virage se prolonge au-delà de la ligne (début du tour suivant).
+            val lastTick = samples.lastOrNull()?.tick ?: 0
+            val next = TrackProjection.project(map, continuation.map { it.copy(tick = it.tick + lastTick + 1) })
+                .map { it?.copy(m = it.m + map.lengthM) }
+            val placed = (TrackProjection.project(map, samples) + next).filterNotNull()
+            val exits = passes.filter { it.offTrack != true }.mapNotNull { pass ->
+                val c = map.corners.firstOrNull { it.number == pass.corner } ?: return@mapNotNull null
+                pass.corner to placed.filter { it.m >= pass.minAtM && it.m <= c.zoneEndM && it.s.offTrack != true }.map { it.s }
+            }.toMap()
+            traction.addLap(lap.lapNumber, exits)
+            // Freinages : du début de la zone du virage jusqu'à sa vitesse minimale.
+            val entries = passes.filter { it.offTrack != true }.mapNotNull { pass ->
+                val c = map.corners.firstOrNull { it.number == pass.corner } ?: return@mapNotNull null
+                pass.corner to placed.filter { it.m >= c.zoneStartM && it.m <= pass.minAtM && it.s.offTrack != true }.map { it.s }
+            }.toMap()
+            brakingLaps.addLast(com.gt7pitwall.core.tyres.BrakingMonitor.lap(lap.lapNumber, entries))
+            while (brakingLaps.size > 30) brakingLaps.removeFirst()
+            tractionContext()?.let { tc -> traction.evaluate(tc.stintStartLap, tc.excludedLaps, tc.raining) }
+        }
         return advise(lap.lapNumber, ctx, prof)
     }
 
@@ -301,6 +345,14 @@ class DriverCoach(
             ?: return noAdvice(
                 if (usable.values.none { it.size >= CornerCoach.RECENT }) "pas encore trois passages comparables par virage" else "aucune perte nette et répétée dans un virage",
             )
+        // Arbitrage (issue #36-D4) : un patinage que la motricité mesurée attribue aux pneus (même geste, plus de glisse
+        // en fin de relais) n'est pas reproché au pilote.
+        val t = traction.last
+        if (f.issue == CornerIssue.WHEELSPIN && t.level >= com.gt7pitwall.core.tyres.TractionMonitor.Level.DEGRADATION_SUSPECTED &&
+            (f.corner in t.flaggedCorners || t.level == com.gt7pitwall.core.tyres.TractionMonitor.Level.DEGRADATION_REPEATED)
+        ) {
+            return noAdvice("patinage au virage ${f.corner} mesuré comme une perte de motricité à commande égale (pneus probables), pas un défaut de pilotage")
+        }
         val text = CornerCoach.advice(f, ctx.race) ?: return noAdvice("perte au virage ${f.corner} sans cause mesurable")
         lastNoAdvice = null
         lastAdviceLap = lap

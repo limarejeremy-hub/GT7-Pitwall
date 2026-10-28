@@ -26,6 +26,10 @@ class CornerSim(
         val cornerSpeedDelta: Float = 0f,
         /** Mètres de plus avant de remettre les gaz après le virage. */
         val throttleDelayM: Float = 0f,
+        /** Glissement ajouté aux roues arrière en réaccélération (0,2 = 1,2 au lieu de 1,0). */
+        val exitSpin: Float = 0f,
+        /** Accélération obtenue en sortie (1 = normale) : moins de motricité, moins d'accélération. */
+        val exitAccel: Float = 1f,
     )
 
     private val straight = 600f
@@ -87,7 +91,9 @@ class CornerSim(
             }
             if (m in start..end + st.throttleDelayM) return vc
             val after = m - end - st.throttleDelayM
-            if (after in 0f..2000f) return minOf(vMax, sqrt(vc * vc + 2 * accel * after))
+            // Moindre motricité sur les 150 premiers mètres de la sortie seulement.
+            val effective = minOf(after, 150f) * st.exitAccel + maxOf(after - 150f, 0f)
+            if (after in 0f..2000f) return minOf(vMax, sqrt(vc * vc + 2 * accel * effective))
             return null
         }
         val a = corner(c1Start, c1End, v1, styles[0])
@@ -113,12 +119,28 @@ class CornerSim(
         else -> 0f
     }
 
+    /** Glissement arrière : patinage en réaccélération, dans les 150 m qui suivent un virage au style concerné. */
+    private fun rearSlip(m: Float, throttle: Int): Float {
+        if (throttle < 255) return 1f
+        val st = lastStyles
+        val s1 = st.getOrNull(0) ?: return 1f
+        val s2 = st.getOrNull(1) ?: return 1f
+        return when {
+            m in c1End..c1End + 150f -> 1f + s1.exitSpin
+            m < 150f -> 1f + s2.exitSpin
+            else -> 1f
+        }
+    }
+
     private fun send(v: Float, throttle: Int, brake: Int) {
         val (x, z) = position(s)
+        val radius = 0.33f
+        val rear = rearSlip(s % length, throttle)
         val plain = TestPackets.plain(
             lap = lap, totalLaps = totalLaps, fuel = fuel, capacity = 100f, speedMps = v,
             lastLapMs = lastLapMs, bestLapMs = bestLapMs, carCode = carCode, packetId = ++id,
             posX = x, posZ = z, brake = brake, throttle = throttle, yawRate = v * curvature(s % length),
+            wheelRps = floatArrayOf(v / radius, v / radius, v * rear / radius, v * rear / radius), tyreRadius = radius,
         )
         val p = TelemetryParser.parseDecrypted(plain)!!
         if (keepPackets) packets += p

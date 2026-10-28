@@ -42,7 +42,8 @@ object CarTrackMemory {
         scope: String = CarTrackRecord.LEGACY_SCOPE,
         gameVersion: String? = null,
     ): CarTrackRecord {
-        val timed = laps.filter { !it.refuelled && (it.timeMs ?: 0) > 0 }.map { it.timeMs!! }
+        // Une sortie de piste mesurée ne fait jamais un meilleur tour de référence (issue #36-D6).
+        val timed = laps.filter { !it.refuelled && (it.timeMs ?: 0) > 0 && (it.offTrackEvents ?: 0) == 0 }.map { it.timeMs!! }
         val best = (timed + listOfNotNull(old?.bestLapMs)).minOrNull()
         val typical = best?.let { b -> timed.filter { it <= b * 1.07 }.takeIf { it.isNotEmpty() }?.average()?.toInt() }
             ?: old?.typicalLapMs

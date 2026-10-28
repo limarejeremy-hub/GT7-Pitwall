@@ -17,9 +17,26 @@ object TyreOrDriving {
     enum class Verdict(val label: String) {
         UNKNOWN("pas assez de passages comparables"),
         STABLE("rythme stable dans les virages"),
-        TYRES("baisse répartie sur la plupart des virages : pneus probables"),
+        /** Une perte répartie ne prouve pas les pneus (carburant, trafic, trajectoire) : « possibles », à recouper. */
+        TYRES("baisse répartie sur la plupart des virages : pneus possibles"),
         DRIVING("perte concentrée sur peu de virages : pilotage probable"),
         MIXED("baisse partagée : pneus et pilotage possibles"),
+    }
+
+    /**
+     * Recoupe avec la motricité mesurée à commande égale (revue PR #37, attribution des pertes) : une perte répartie
+     * devient « pneus probables » seulement si la motricité baisse aussi ; si elle est mesurée stable, les pneus ne sont
+     * pas démontrés.
+     */
+    fun crossCheck(r: Report, traction: TractionMonitor.Report): Report {
+        if (r.verdict != Verdict.TYRES) return r
+        return when (traction.level) {
+            TractionMonitor.Level.DEGRADATION_SUSPECTED, TractionMonitor.Level.DEGRADATION_REPEATED ->
+                r.copy(evidence = r.evidence + "motricité en baisse mesurée en sortie de virage : pneus probables")
+            TractionMonitor.Level.STABLE ->
+                r.copy(verdict = Verdict.MIXED, evidence = r.evidence + "motricité mesurée stable à commande égale : pneus non démontrés (carburant, trafic, trajectoire possibles)")
+            TractionMonitor.Level.INSUFFICIENT -> r
+        }
     }
 
     data class Report(
@@ -43,7 +60,8 @@ object TyreOrDriving {
      * changement de pneus) ; [label] : libellé affiché d'un virage (« T5 »).
      */
     fun analyze(passes: List<CornerPass>, stintStartLap: Int, label: (Int) -> String = { "V$it" }): Report {
-        val stint = passes.filter { it.lap > stintStartLap } // premier tour du relais (pneus froids) écarté
+        // Premier tour du relais (pneus froids) et sorties de piste mesurées écartés.
+        val stint = passes.filter { it.lap > stintStartLap && it.offTrack != true }
         val laps = stint.map { it.lap }.distinct().sorted()
         if (laps.size < MIN_LAPS) return Report(Verdict.UNKNOWN)
         val early = laps.take(2).toSet()

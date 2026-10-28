@@ -107,6 +107,10 @@ data class PitwallUiState(
     val cornerNumbering: String = "",
     /** Baisse de rythme du relais : pneus ou pilotage, lue virage par virage (jamais d'usure en %). */
     val tyreOrDriving: String = "",
+    /** Motricité à commande comparable en sortie de virage (issue #35) : niveau, virages, écarts mesurés. */
+    val traction: String = "",
+    /** Freinage à pression égale, équilibre en virage, stress thermique (croisements n°2 à 4, non validés sur PS5). */
+    val handling: List<String> = emptyList(),
     /** Arrivée franchie (la télémétrie continue mais la course est finie : « Course terminée — 5/5 »). */
     val raceFinished: Boolean = false,
     /** Épreuve reconnue par la télémétrie pour la session en cours (null : rien à dire). */
@@ -183,6 +187,13 @@ class PitwallEngine(
     val rules: StateFlow<RaceRules> = _rules.asStateFlow()
 
     val connection: StateFlow<ConnectionStatus> = client.status
+
+    /** Journal passif des formats demandés et reçus (revue PR #37) : automatique, se lit après la session. */
+    val formatLog = com.gt7pitwall.core.telemetry.FormatLog()
+
+    init {
+        scope.launch { client.status.collect { formatLog.onStatus(it, race.profile.id.label, System.currentTimeMillis()) } }
+    }
 
     private val _state = MutableStateFlow(PitwallUiState(localCareer = PitwallLocalCareer.fromSessions(race.archivedSessions)))
     val state: StateFlow<PitwallUiState> = _state.asStateFlow()
@@ -267,6 +278,9 @@ class PitwallEngine(
      * stratégie ni annoncé à la radio.
      */
     val positionProbe = PositionProbe()
+
+    /** Validation des champs expérimentaux (0x154 couple moteur ?, 0x140, 0x94) : observe seulement. */
+    val torqueProbe = com.gt7pitwall.core.telemetry.TorqueProbe()
     private val _probe = MutableStateFlow(positionProbe.summary())
     val probe: StateFlow<PositionProbe.Summary> = _probe.asStateFlow()
     private var lastProbeMs = 0L
@@ -580,6 +594,8 @@ class PitwallEngine(
         if (p.carCode > 0) lastCarPacketAtMs = now
         runCatching {
             positionProbe.onPacket(p, now)
+            torqueProbe.onPacket(p)
+            formatLog.onPacket(now)
             if (now - lastProbeMs >= PROBE_REFRESH_MS) {
                 lastProbeMs = now
                 refreshProbe()
@@ -647,6 +663,8 @@ class PitwallEngine(
         // Virages : recalculés au plus toutes les 2 s (passages ajoutés à la fin de chaque tour).
         val cornersDue = force || now - lastCornerMs >= 2_000L
         val tyreOrDriving = if (cornersDue) race.tyreOrDriving().text else _state.value.tyreOrDriving
+        val traction = if (cornersDue) runCatching { race.tractionReport() }.getOrDefault("") else _state.value.traction
+        val handling = if (cornersDue) race.handlingReport() else _state.value.handling
         val corners = if (cornersDue) {
             lastCornerMs = now
             val labels = race.cornerLabels()
@@ -702,6 +720,8 @@ class PitwallEngine(
             cornerReport = corners.second,
             cornerNumbering = corners.third,
             tyreOrDriving = tyreOrDriving,
+            traction = traction,
+            handling = handling,
             tyreAgeLaps = race.ledger.tyreAge((race.snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)),
             askTyreChange = race.ledger.awaitingTyreChangeAnswer,
             profile = race.profile,

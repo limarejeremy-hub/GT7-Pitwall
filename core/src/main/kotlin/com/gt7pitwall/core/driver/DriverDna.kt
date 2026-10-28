@@ -43,7 +43,7 @@ data class DriverProfile(
         val merged = passes.toMutableMap()
         for ((c, list) in add.groupBy { it.corner }) {
             val all = merged[c].orEmpty() + list
-            val best = all.filter { it.offTrack != true }.sortedBy { it.timeMs }.take(CornerCoach.MIN_REFERENCE)
+            val best = CornerCoach.reference(all)
             val last = all.takeLast(MAX_PASSES)
             merged[c] = (best.filter { it !in last } + last)
         }

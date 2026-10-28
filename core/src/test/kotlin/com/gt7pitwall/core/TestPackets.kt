@@ -29,6 +29,9 @@ object TestPackets {
         throttle: Int = 0,
         /** Vitesse de lacet (rad/s, axe Y de GT7). */
         yawRate: Float = 0f,
+        /** Rotation des 4 roues (rad/s, 0xA4..) et rayon commun des pneus (m, 0xB4..) ; absents par défaut. */
+        wheelRps: FloatArray? = null,
+        tyreRadius: Float = 0f,
     ): ByteArray {
         val b = ByteBuffer.allocate(size).order(ByteOrder.LITTLE_ENDIAN)
         b.putInt(0x00, GT7Crypto.MAGIC)
@@ -48,6 +51,8 @@ object TestPackets {
         b.putInt(0x7C, lastLapMs)
         b.putShort(0x8E, flags.toShort())
         b.putInt(0x124, carCode)
+        wheelRps?.forEachIndexed { i, w -> b.putFloat(0xA4 + 4 * i, w) }
+        if (tyreRadius > 0f) for (i in 0 until 4) b.putFloat(0xB4 + 4 * i, tyreRadius)
         return b.array()
     }
 

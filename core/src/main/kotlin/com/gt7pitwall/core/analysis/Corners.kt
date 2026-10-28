@@ -27,8 +27,30 @@ data class LapSample(
     val frontSlip: Float?,
     val rearSlip: Float?,
     val tcs: Boolean,
-    /** Deux roues ou plus hors asphalte et hors vibreur (format C), sinon null. */
+    /**
+     * Deux roues ou plus sur une surface connue hors piste (herbe, terre, sable, neige ; format C). Faux : surfaces
+     * connues, sur la piste. null : pas de surface (formats A, B, ~) ou codes inconnus sous deux roues ou plus.
+     */
     val offTrack: Boolean?,
+    /** Surface sous chaque roue (format C), conservée telle quelle : un vibreur sous une seule roue reste visible. */
+    val surfaces: com.gt7pitwall.core.telemetry.TyreSurfaces? = null,
+    /** Glissement de chaque roue (FL, FR, RL, RR), null sous 20 km/h. */
+    val slips: com.gt7pitwall.core.telemetry.Wheels? = null,
+    val gear: Int = 0,
+    val rpm: Float = 0f,
+    /** Accélération longitudinale obtenue (m/s²), d'après la vitesse des paquets successifs ; null au premier paquet. */
+    val longAccel: Float? = null,
+    /** Température des quatre pneus (°C). */
+    val tyreTemps: com.gt7pitwall.core.telemetry.Wheels? = null,
+    /** Contrôle de stabilité (ASM) actif : la voiture est corrigée, ce n'est pas une sortie de virage comparable. */
+    val asm: Boolean = false,
+    /** Couple moteur normalisé (0x154, formats ~ et C, **expérimental**), null ailleurs. */
+    val engineTorque: Float? = null,
+    /**
+     * Frein réellement appliqué (0x13D, formats ~ et C, 0..255), d'après la communauté : après l'ABS, distinct de la
+     * pédale ([brake], 0x92). Nul en replay selon les mesures publiées. Expérimental.
+     */
+    val brakeApplied: Int? = null,
 )
 
 /**
@@ -70,9 +92,10 @@ class LapRecorder {
             return
         }
         tick += dId
+        val accel = (p.speedMps - prev.speedMps) * 60f / dId
         last = p
         distanceM += step
-        samples += sample(p)
+        samples += sample(p, accel)
     }
 
     /** Distance parcourue depuis la ligne (m). */
@@ -85,13 +108,21 @@ class LapRecorder {
     /** Le tour terminé, s'il a été suivi en entier. */
     fun finish(): List<LapSample>? = if (valid && samples.size > MIN_SAMPLES) samples.toList() else null
 
-    private fun sample(p: TelemetryPacket): LapSample {
+    private fun sample(p: TelemetryPacket, longAccel: Float? = null): LapSample {
         val slip = p.wheelSlip
         val angle = listOfNotNull(p.frontWheelAngleLeftRad, p.frontWheelAngleRightRad).takeIf { it.isNotEmpty() }?.average()?.toFloat()
+        val off = p.surfaces?.let { s ->
+            when {
+                s.wheelsOff >= 2 -> true
+                s.unknownWheels + s.wheelsOff >= 2 -> null // surface incertaine : ni sortie ni piste confirmée
+                else -> false
+            }
+        }
         return LapSample(
             tick, p.positionX, p.positionZ, p.speedMps, p.throttle, p.brake, p.angularVelocityY,
             angle, slip?.let { minOf(it.fl, it.fr) }, slip?.let { maxOf(it.rl, it.rr) }, p.isTcsActive,
-            p.surfaces?.let { it.wheelsOff >= 2 },
+            off, p.surfaces, slip, p.currentGear, p.engineRpm, longAccel?.takeIf { it.isFinite() }, p.tyreTemps, p.isAsmActive,
+            p.engineTorqueNorm, p.brakeFiltered,
         )
     }
 
@@ -306,6 +337,10 @@ data class CornerPass(
      */
     val rotationRatio: Float?,
     val offTrack: Boolean?,
+    /** Part de la zone avec au moins une roue sur un vibreur (format C) ; null sans surface. */
+    val kerbShare: Float? = null,
+    /** Part de la zone où la surface d'au moins une roue est inconnue ou absente. */
+    val surfaceUnknownShare: Float = 1f,
 )
 
 object CornerMeasure {
@@ -314,6 +349,8 @@ object CornerMeasure {
     const val MAX_GAP_M = 20f
     const val LOCK_SLIP = 0.85f
     const val SPIN_SLIP = 1.15f
+    /** Au-delà de 10 % de la zone sans surface lisible, l'absence de sortie n'est pas prouvée. */
+    const val MAX_UNKNOWN_SHARE = 0.1f
 
     /**
      * Mesures de chaque virage d'un tour complet ; un virage dont la zone n'est pas couverte en entier (trajectoire
@@ -384,7 +421,15 @@ object CornerMeasure {
             }
             if (r.size >= 10) r.sorted()[r.size / 2] else null
         }
-        val off = zone.mapNotNull { it.s.offTrack }.let { o -> if (o.isEmpty()) null else consecutive(zone) { it.s.offTrack == true } >= 15 }
+        // Sortie confirmée seulement sur des surfaces connues ; zone trop souvent sans surface lisible : inconnu, jamais « propre ».
+        val unknownShare = zone.count { it.s.surfaces == null || it.s.surfaces.unknownWheels > 0 }.toFloat() / zone.size
+        val off = when {
+            zone.none { it.s.surfaces != null } -> null
+            consecutive(zone) { it.s.offTrack == true } >= 15 -> true
+            unknownShare > MAX_UNKNOWN_SHARE -> null
+            else -> false
+        }
+        val kerb = if (zone.none { it.s.surfaces != null }) null else zone.count { (it.s.surfaces?.kerbWheels ?: 0) > 0 }.toFloat() / zone.size
         return CornerPass(
             corner = c.number,
             lap = lap,
@@ -403,6 +448,8 @@ object CornerMeasure {
             apexLateralM = minP.lateral,
             rotationRatio = rotation,
             offTrack = off,
+            kerbShare = kerb,
+            surfaceUnknownShare = unknownShare,
         )
     }
 

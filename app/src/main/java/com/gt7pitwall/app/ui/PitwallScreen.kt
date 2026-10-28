@@ -214,6 +214,7 @@ fun PitwallScreen(
         )
         if (devTools) BenchCard(bench)
         if (devTools) PositionProbeCard(engine)
+        ExperimentalFieldsCard(engine)
         if (devTools) GapHunterCard(engine)
         DiscordCard(
             discord = discord,
@@ -1361,6 +1362,42 @@ private fun CornerReportCard(state: PitwallUiState) {
             Text("Pneus ou pilotage ? ${state.tyreOrDriving}", style = MaterialTheme.typography.bodySmall)
             Text("Comparaison début/fin du relais sur les mêmes virages. GT7 ne transmet pas l'usure : aucun pourcentage.",
                 style = MaterialTheme.typography.bodySmall, color = PitColors.Muted)
+        }
+        if (state.traction.isNotEmpty()) {
+            Text("Motricité en sortie : ${state.traction}", style = MaterialTheme.typography.bodySmall)
+            Text("Même virage, même tranche d'accélérateur, rapport et vitesse ; vibreurs exclus (format C). Mesure de motricité, pas d'usure en %.",
+                style = MaterialTheme.typography.bodySmall, color = PitColors.Muted)
+        }
+        state.handling.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall) }
+    }
+}
+
+/**
+ * Champs GT7 expérimentaux (0x154, 0x140, 0x94) : ce que la PS5 envoie réellement, comparé aux affirmations de la
+ * communauté. Rien n'est utilisé pour décider tant que ce n'est pas validé.
+ */
+@Composable
+private fun ExperimentalFieldsCard(engine: PitwallEngine) {
+    var lines by remember { mutableStateOf(engine.torqueProbe.report()) }
+    PitCard("Champs GT7 expérimentaux") {
+        Text("Couple moteur (0x154) et autres champs non documentés : observés pour validation, jamais utilisés pour décider.",
+            style = MaterialTheme.typography.bodySmall, color = PitColors.Muted)
+        lines.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall) }
+        Text("Formats reçus par épreuve (journal automatique) :", style = MaterialTheme.typography.labelMedium, color = PitColors.Muted)
+        var formats by remember { mutableStateOf(engine.formatLog.summary()) }
+        formats.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall) }
+        val context = LocalContext.current
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { lines = engine.torqueProbe.report(); formats = engine.formatLog.summary() }) { Text("Actualiser") }
+            OutlinedButton(onClick = {
+                val send = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_SUBJECT, "GT7 Pitwall — formats de télémétrie")
+                    putExtra(Intent.EXTRA_TEXT, engine.formatLog.export() + "\n" + engine.torqueProbe.report().joinToString("\n"))
+                }
+                context.startActivity(Intent.createChooser(send, "Exporter"))
+            }) { Text("Exporter") }
+            OutlinedButton(onClick = { engine.torqueProbe.reset(); lines = engine.torqueProbe.report() }) { Text("Remettre à zéro") }
         }
     }
 }
