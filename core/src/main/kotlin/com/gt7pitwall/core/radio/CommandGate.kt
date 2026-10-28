@@ -37,7 +37,7 @@ object StatementGuard {
     )
 
     private val QUESTION_START = Regex(
-        "^(et |mais |alors |bon |ok |donc |dis moi |dis )?(est ce que|est ce qu'|est ce|quand|combien|comment|pourquoi|quel|quelle|quels|" +
+        "^(et |mais |alors |bon |ok |donc |dis moi |dis )?(est ce que|est ce qu'|est ce|c'est normal|c est normal|normal que|quand|combien|comment|pourquoi|quel|quelle|quels|" +
             "quelles|qu'est|que dois|que faut|ou est|ou en|dois je|doit on|faut il|y a t il|est il|tu crois|tu penses|tu sais|" +
             "tu trouves|on fait quoi|on doit|on devrait|je dois|je devrais|ca vaut|vaut il|c'est mieux|il vaut mieux)( |$)",
     )
@@ -251,6 +251,11 @@ object CommandGate {
                 // « Il pleut » : un fait. « Il va pleuvoir », « il pleut pas », « s'il pleut » : rien ne change.
                 StatementGuard.Mode.DONE -> Vetting.Execute(command)
                 StatementGuard.Mode.UNCERTAIN -> Vetting.Confirm(command, confirmation(command))
+                // « C'est normal que je glisse, il pleut ? » (Fuji, 28/10) : une question, jamais une piste mouillée déclarée.
+                StatementGuard.Mode.QUESTION -> Vetting.Discuss(
+                    mode,
+                    "GT7 ne me transmet pas la météo : je ne change rien. Si la piste est mouillée, dis simplement « il pleut ».",
+                )
                 else -> Vetting.Discuss(mode, "D'accord, je ne change pas la météo.")
             }
             else -> when (mode) {
