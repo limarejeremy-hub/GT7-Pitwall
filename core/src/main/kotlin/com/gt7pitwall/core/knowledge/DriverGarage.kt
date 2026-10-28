@@ -16,7 +16,11 @@ enum class CarEvidence(val label: String) {
     LIVE("Confirmée par la PS5"),
     LIVE_UNNAMED("Code GT7 reçu, catalogue à actualiser"),
     /** Code reçu plus tôt, PS5 muette depuis (menus, garage) : jamais présenté comme une confirmation en direct. */
-    LAST_SEEN("Dernière voiture détectée (PS5 sans données en ce moment)"),
+    /**
+     * Retour PS5 du 28/10 (#40) : la nouvelle voiture apparaît juste avant le départ, pas au garage. Tant qu'aucune trace
+     * ne montre GT7 envoyer le code au garage, Pitwall ne prétend pas la voir à ce moment-là.
+     */
+    LAST_SEEN("Dernière voiture détectée — une voiture choisie au garage n'apparaît qu'au chargement de la course"),
     THIS_WEEK("Dernière voiture utilisée cette semaine"),
     FIXED_EVENT("Voiture annoncée pour l'épreuve"),
     EARLIER("Déjà utilisée sur ce circuit"),
