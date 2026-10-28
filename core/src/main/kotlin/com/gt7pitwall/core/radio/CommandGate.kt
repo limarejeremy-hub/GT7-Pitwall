@@ -192,6 +192,10 @@ object CommandGate {
             }
             return Vetting.Execute(command)
         }
+        // Revue PR #46 : un « oui » qui confirme une modification doit venir du pilote, jamais de la phrase de l'ingénieur.
+        if (command == DriverCommand.Yes && ctx.recentEngineer.any { "oui" in EchoFilter.tokens(it) }) {
+            return Vetting.Ignore("« oui » entendu dans la phrase de l'ingénieur")
+        }
         if (!sensitive(command)) return Vetting.Execute(command)
         // Issue #45 (28/10) : « deux minutes » entendu dans « Tour 3 : 2 minutes 9 secondes » est devenu une course de
         // 2 minutes. Une phrase qui répète l'ingénieur n'est jamais un ordre.

@@ -22,6 +22,15 @@ object EchoFilter {
     )
     private val FILLERS = setOf("euh", "heu", "hum", "hmm", "mmh", "bah", "ben", "hein", "unk")
 
+    /** Petits mots présents partout (« de », « la », « tu »…) : ils ne prouvent rien et ne sont pas comparés. */
+    private val FUNCTION_WORDS = setOf(
+        "de", "du", "des", "le", "la", "les", "l", "un", "une", "et", "a", "au", "aux", "en", "je", "j", "tu", "il", "on",
+        "es", "est", "sur", "que", "qu", "qui", "ce", "ca", "d", "ma", "mon", "mes", "ta", "ton", "tes", "pour", "par", "y",
+    )
+
+    /** Mots qui ouvrent une question : l'ingénieur annonce, il ne questionne pas le pilote de cette façon. */
+    private val QUESTION = Regex("^(combien|quel|quelle|quels|quelles|ou|quand|comment|pourquoi|est ce|c'est quoi|qu'est)( |$)")
+
     /** Mots comparables d'une phrase : minuscules sans accents, nombres et rangs en chiffres, « P10 » → « 10 ». */
     fun tokens(text: String): List<String> =
         DriverCommandParser.normalize(text).replace("[unk]", " ")
@@ -65,7 +74,7 @@ object EchoFilter {
 
     /** Part des mots entendus qui ressemblent à un mot de l'une des phrases de l'ingénieur (0 à 1). */
     fun echoShare(heard: String, engineer: Collection<String>): Double {
-        val h = tokens(heard)
+        val h = tokens(heard).filter { it !in FUNCTION_WORDS }
         if (h.isEmpty()) return 0.0
         val e = engineer.flatMap(::tokens).toSet()
         if (e.isEmpty()) return 0.0
@@ -73,13 +82,71 @@ object EchoFilter {
     }
 
     /** Écho probable : au moins la moitié des mots entendus viennent de ce que l'ingénieur vient de dire. */
-    fun isEcho(heard: String, engineer: Collection<String>): Boolean = echoShare(heard, engineer) >= ECHO_SHARE
+    fun isEcho(heard: String, engineer: Collection<String>): Boolean {
+        // Une question du pilote (« combien de tours ? ») n'est jamais l'écho d'une annonce.
+        val n = DriverCommandParser.normalize(heard)
+        if (n.trimEnd().endsWith("?") || QUESTION.containsMatchIn(n.replace("[unk]", "").trim())) return false
+        return echoShare(heard, engineer) >= ECHO_SHARE
+    }
 
     /** Mots entendus qui ne viennent pas de l'ingénieur. */
     fun foreign(heard: String, engineer: Collection<String>): List<String> {
         val e = engineer.flatMap(::tokens).toSet()
-        return tokens(heard).filter { w -> e.none { similar(w, it) } }
+        return tokens(heard).filter { w -> w !in FUNCTION_WORDS && e.none { similar(w, it) } }
     }
 
     const val ECHO_SHARE = 0.5
+}
+
+/**
+ * Une phrase du pilote peut-elle être l'écho de l'ingénieur ? Revue de la PR #46 : le calcul utilisait le début d'une
+ * phrase précédente (« ancien début à 8 s, fin de l'ingénieur à 10 s, nouvelle demande à 30 s » passait pour un écho).
+ * Seul le début de la phrase EN COURS compte ; sans début connu (Google, secours), l'heure de remise sert de repère.
+ * Horloge monotone, en millisecondes.
+ */
+object EchoTiming {
+    /** Un début de phrase plus ancien n'appartient pas à la phrase reçue maintenant. */
+    const val MAX_PHRASE_MS = 12_000L
+
+    /** Après la fin de la voix de l'ingénieur, sa fin de phrase peut encore revenir par Discord. */
+    const val ECHO_TAIL_MS = 2_000L
+
+    /** Sans début connu : temps de reconnaissance ajouté à la traîne d'écho. */
+    const val RECOGNITION_MS = 3_000L
+
+    fun near(
+        nowMs: Long,
+        phraseStartMs: Long?,
+        engineerSpeaking: Boolean,
+        bargedIn: Boolean,
+        engineerStartMs: Long?,
+        engineerEndMs: Long?,
+    ): Boolean {
+        if (engineerSpeaking || bargedIn) return true
+        val start = engineerStartMs ?: return false
+        val end = engineerEndMs?.takeIf { it >= start } ?: return false
+        val phrase = phraseStartMs?.takeIf { it <= nowMs && nowMs - it <= MAX_PHRASE_MS }
+        return if (phrase != null) {
+            phrase >= start && phrase <= end + ECHO_TAIL_MS
+        } else {
+            nowMs - end in 0..(ECHO_TAIL_MS + RECOGNITION_MS)
+        }
+    }
+}
+
+/** Code d'état de la radio pour le journal (issue #45) : distinguer une fermeture normale d'une panne. */
+object RadioStatusCode {
+    fun of(diagnostic: String): String {
+        val t = DriverCommandParser.normalize(diagnostic)
+        return when {
+            t.startsWith("fausse_interruption") -> "FAUSSE_INTERRUPTION"
+            "demarrage impossible" in t -> "ECOUTE_INDISPONIBLE"
+            // L'action de la surveillance d'abord : une écoute relancée pour un micro muet reste une relance.
+            "relancee" in t -> "ECOUTE_RELANCEE"
+            "micro repris" in t -> "MICRO_REPRIS"
+            "reprise" in t -> "ECOUTE_REPRISE"
+            "muet" in t || "que des zeros" in t || "aucun son" in t -> "MICRO_MUET"
+            else -> "ECOUTE_SURVEILLANCE"
+        }
+    }
 }

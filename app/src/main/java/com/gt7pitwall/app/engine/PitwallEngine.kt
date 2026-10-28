@@ -223,6 +223,11 @@ class PitwallEngine(
     private var pendingLatency: Pair<com.gt7pitwall.core.radio.LatencyTrace, Set<EngineerMessage>>? = null
 
     /** Premier son réellement émis pour un message (synthèse du Fold ou salon Discord). */
+    /** État de la radio au journal (code stable, texte lisible), sans aucun son. */
+    fun journalRadio(code: String, text: String) {
+        runCatching { race.journal.record(JournalType.RADIO, JournalSource.SYSTEM, text, details = mapOf("code" to code)) }
+    }
+
     fun onAudible(message: EngineerMessage, atMs: Long) {
         // Fenêtre d'écho à partir du premier son réellement émis (issue #45).
         if (message.category != MessageCategory.DRIVER) race.noteSpoken(message.text)
@@ -447,7 +452,11 @@ class PitwallEngine(
             }
             is VoiceInputEvent.Notice -> deliver(EngineerMessage(event.text, Priority.HIGH, MessageCategory.ANSWER))
             // Surveillance de l'écoute : consigné et affiché, jamais dit (aucun son enregistré).
-            is VoiceInputEvent.Diagnostic -> deliver(EngineerMessage("🎙 ${event.text}", Priority.INFO, MessageCategory.DRIVER))
+            is VoiceInputEvent.Diagnostic -> {
+                // Issue #45 : chaque état de l'écoute au journal avec un code (micro muet, écoute indisponible…).
+                journalRadio(com.gt7pitwall.core.radio.RadioStatusCode.of(event.text), event.text)
+                deliver(EngineerMessage("🎙 ${event.text}", Priority.INFO, MessageCategory.DRIVER))
+            }
             is VoiceInputEvent.BargeIn -> {
                 // Le pilote coupe l'ingénieur : la voix s'arrête, la réponse en préparation ne sera pas dite.
                 voice.stop()
