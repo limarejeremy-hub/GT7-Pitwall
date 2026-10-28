@@ -103,6 +103,7 @@ object RaceJson {
                 JSONObject().put("lap", l.lap).put("timeMs", l.timeMs ?: 0).put("fuelUsed", l.fuelUsed?.toDouble() ?: -1.0)
                     .put("refuelled", l.refuelled).put("fuelAfter", l.fuelAfter?.toDouble() ?: -1.0)
                     .put("tyreAge", l.tyreAge ?: -1).put("tyreCompound", l.tyreCompound?.name ?: "").put("tyreCertain", l.tyreCertain)
+                    .put("tyreSource", l.tyreSource?.code ?: "")
                     .put("tcs", l.tcsShare?.toDouble() ?: -1.0).put("lockups", l.lockups ?: -1).put("wheelspins", l.wheelspins ?: -1)
                     .put("frontEvents", l.frontEvents ?: -1).put("rearEvents", l.rearEvents ?: -1)
                     .put("wheelTemps", l.wheelTemps?.let { w -> JSONArray(w.map { it.toDouble() }) } ?: JSONArray())
@@ -173,6 +174,7 @@ object RaceJson {
                     tyreAge = l.optInt("tyreAge", -1).takeIf { it >= 0 },
                     tyreCompound = TyreCompound.parseCodes(l.optString("tyreCompound", "")).firstOrNull(),
                     tyreCertain = l.optBoolean("tyreCertain", true),
+                    tyreSource = TyreSource.of(l.optString("tyreSource", "")),
                     tyreAgeCertain = l.optBoolean("tyreAgeCertain", l.optBoolean("tyreCertain", true)),
                     pitLane = l.optBoolean("pitLane", false),
                     kerbShare = floatOrNull(l, "kerbShare"),

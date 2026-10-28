@@ -349,16 +349,17 @@ private fun EventProfileSection(
             modifier = Modifier.weight(2f),
         )
     }
+    // Même statut que l'archive (essai du 28/10 : « confirmé » à l'écran, `confirmed=false` dans le JSON).
     if (profile.confirmed) {
         Text(
-            "Règlement confirmé" + (profile.eventDate?.let { " le $it" } ?: "") + ".",
-            color = PitColors.Green,
+            state.ruleStatus,
+            color = if (state.ruleStatus.startsWith("Règlement confirmé")) PitColors.Green else PitColors.Yellow,
             style = MaterialTheme.typography.bodySmall,
         )
     } else {
         Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
             Text(
-                "Règlement non confirmé : vérifie-le ci-dessous.",
+                state.ruleStatus.ifEmpty { "Règlement non confirmé : vérifie-le ci-dessous." },
                 Modifier.weight(1f),
                 color = PitColors.Yellow,
                 style = MaterialTheme.typography.bodySmall,
