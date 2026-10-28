@@ -72,6 +72,11 @@ class SettingsStore(context: Context) {
         get() = prefs.getBoolean("barge_in", true)
         set(value) = prefs.edit().putBoolean("barge_in", value).apply()
 
+    /** Diagnostic de la voix envoyée au salon Discord (issue #48) : compteurs seulement, aucun son. Désactivé par défaut. */
+    var audioDiagnostics: Boolean
+        get() = prefs.getBoolean("audio_diagnostics", false)
+        set(value) = prefs.edit().putBoolean("audio_diagnostics", value).apply()
+
     var discordMicInput: Boolean
         get() = prefs.getBoolean(KEY_DISCORD_MIC, true)
         set(value) = prefs.edit().putBoolean(KEY_DISCORD_MIC, value).apply()

@@ -70,22 +70,7 @@ object OpusFrames {
     }
 
     /** Durée d'une trame Opus d'après son octet TOC (RFC 6716), en 1/10 de ms ; pour vérifier les 20 ms attendues. */
-    fun frameDurationTenthMs(packet: ByteArray): Int? {
-        if (packet.isEmpty()) return null
-        val toc = packet[0].toInt() and 0xFF
-        val config = toc shr 3
-        val single = when {
-            config < 12 -> intArrayOf(100, 200, 400, 600)[config and 3]
-            config < 16 -> intArrayOf(100, 200)[config and 1]
-            else -> intArrayOf(25, 50, 100, 200)[config and 3]
-        }
-        val count = when (toc and 3) {
-            0 -> 1
-            1, 2 -> 2
-            else -> if (packet.size > 1) packet[1].toInt() and 0x3F else return null
-        }
-        return single * count
-    }
+    fun frameDurationTenthMs(packet: ByteArray): Int? = com.gt7pitwall.core.radio.OpusToc.durationTenthMs(packet)
 
     private const val TIMEOUT_US = 10_000L
     private const val MAX_ENCODE_MS = 15_000L
