@@ -2,4 +2,6 @@
 <paths>
     <!-- Exports de diagnostic (Gap Hunter), écrits dans le cache de l'application uniquement. -->
     <cache-path name="exports" path="exports/" />
+    <!-- Traces télémétriques enregistrées à la demande du pilote (#41 P1). -->
+    <files-path name="traces" path="traces/" />
 </paths>

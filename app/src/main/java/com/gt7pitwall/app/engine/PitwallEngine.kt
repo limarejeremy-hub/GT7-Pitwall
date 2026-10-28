@@ -289,8 +289,93 @@ class PitwallEngine(
 
     fun setGapHunter(on: Boolean) {
         gapHunter.setEnabled(on)
-        client.rawTap = if (on) TelemetryClient.RawTap(gapHunter::onFrame) else null
+        updateRawTap()
         refreshGap()
+    }
+
+    /** Un seul branchement sur les paquets déchiffrés : Gap Hunter et trace télémétrique, chacun s'il est actif. */
+    private fun updateRawTap() {
+        client.rawTap = if (!gapHunter.enabled && !recorder.running) null else TelemetryClient.RawTap { plain, size, nowMs ->
+            if (gapHunter.enabled) gapHunter.onFrame(plain, size, nowMs)
+            if (recorder.running) recorder.onFrame(plain, nowMs)
+        }
+    }
+
+    // ------------------------------------------------------------------ Trace télémétrique réelle (#41 P1)
+
+    /** Enregistrement sur demande du pilote, coupé à chaque lancement de Pitwall. Paquets GT7 seulement, aucun son. */
+    val recorder = com.gt7pitwall.core.telemetry.TelemetryRecorder()
+    private val _trace = MutableStateFlow<List<String>>(emptyList())
+    val trace: StateFlow<List<String>> = _trace.asStateFlow()
+    private var traceTicker: kotlinx.coroutines.Job? = null
+
+    fun traceFiles(dir: java.io.File): List<java.io.File> =
+        dir.listFiles { f -> f.name.endsWith(TRACE_EXT) }?.sortedByDescending { it.lastModified() }.orEmpty()
+
+    fun startTrace(dir: java.io.File, hz: Int) {
+        scope.launch(Dispatchers.IO) {
+            runCatching {
+                dir.mkdirs()
+                // Au plus [MAX_TRACES] traces sur le téléphone : les plus anciennes partent.
+                traceFiles(dir).drop(MAX_TRACES - 1).forEach { it.delete() }
+                val name = "gt7-pitwall-trace-" + java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.ROOT).format(java.util.Date()) + TRACE_EXT
+                recorder.start(java.io.FileOutputStream(java.io.File(dir, name)).buffered(64 * 1024), hz)
+                updateRawTap()
+                traceTicker?.cancel()
+                traceTicker = scope.launch {
+                    while (true) {
+                        _trace.value = recorder.stats().lines
+                        if (!recorder.running) {
+                            updateRawTap()
+                            break
+                        }
+                        kotlinx.coroutines.delay(1_000)
+                    }
+                }
+            }.onFailure { _trace.value = listOf("Enregistrement impossible : ${it.javaClass.simpleName}") }
+        }
+    }
+
+    fun stopTrace() {
+        scope.launch(Dispatchers.IO) {
+            recorder.stop()
+            updateRawTap()
+            _trace.value = recorder.stats().lines
+        }
+    }
+
+    /**
+     * Rejoue une trace hors course dans un contrôleur neuf (sans archive ni journal persistant) : jamais pendant que
+     * GT7 envoie des données, pour ne pas disputer le processeur à la course.
+     */
+    fun replayTrace(file: java.io.File) {
+        if (System.currentTimeMillis() - lastCarPacketAtMs < 10_000L) {
+            _trace.value = listOf("Relecture refusée : GT7 envoie des données. Rejoue la trace hors course.")
+            return
+        }
+        scope.launch(Dispatchers.Default) {
+            _trace.value = listOf("Relecture de ${file.name}…")
+            val lines = runCatching {
+                // Revue PR #44 : relecture en flux (un échantillon en mémoire à la fois) et horloge virtuelle = heure
+                // enregistrée de chaque paquet, partie de l'heure de début inscrite dans le nom du fichier.
+                val start = runCatching {
+                    java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.ROOT)
+                        .parse(file.name.removePrefix("gt7-pitwall-trace-").removeSuffix(TRACE_EXT))!!.time
+                }.getOrDefault(file.lastModified())
+                val clock = com.gt7pitwall.core.telemetry.TelemetryTrace.VirtualClock(start)
+                val offline = RaceController(database, clock = clock::now)
+                offline.engineer.quietRace = true
+                val r = file.inputStream().buffered(64 * 1024).use {
+                    com.gt7pitwall.core.telemetry.TelemetryTrace.replay(it, clock) { p -> offline.onPacket(p) }
+                }
+                val laps = offline.snapshot.laps
+                r.lines + listOf(
+                    "Tours rejoués : ${laps.size}" + (laps.mapNotNull { it.timeMs }.minOrNull()?.let { ", meilleur ${com.gt7pitwall.core.engineer.FrenchFormat.lapTime(it)}" } ?: "") + ".",
+                    "Fichier : ${file.length() / 1024} Ko. Rien n'a été archivé ni annoncé pendant la relecture.",
+                )
+            }.getOrElse { listOf("Relecture impossible : ${it.message ?: it.javaClass.simpleName}") }
+            _trace.value = lines
+        }
     }
 
     fun refreshGap() {
@@ -335,6 +420,7 @@ class PitwallEngine(
 
     @Synchronized
     fun stop() {
+        if (recorder.running) stopTrace()
         client.stop()
         collectJob?.cancel()
         collectJob = null
@@ -825,6 +911,8 @@ class PitwallEngine(
     }
 
     private companion object {
+        const val TRACE_EXT = ".gt7trace"
+        const val MAX_TRACES = 5
         /** Au-delà, un petit signal discret dit que la réponse arrive (jamais une phrase « je réfléchis »). */
         const val THINKING_TONE_MS = 1_500L
         const val UI_REFRESH_MS = 50L
