@@ -1176,6 +1176,9 @@ class RaceController(
     private var sessionIdentitySettled = false
     /** Circuit reconnu par la télémétrie dans cette session (pas celui d'un profil enregistré). */
     private var sessionTrackEvidence: Int? = null
+
+    /** D'où vient [sessionTrackEvidence] (issue #51) : seule une mesure peut faire une épreuve « reconnue ». */
+    private var sessionTrackSource: TrackEvidence? = null
     private var ambiguityAnnounced = false
 
     /** Une ligne pour l'écran : ce que Pitwall sait de l'épreuve en cours, sans rien deviner. */
@@ -1210,7 +1213,10 @@ class RaceController(
         if (active.kind != SessionKind.RACE || p.totalLaps <= 0) return
         val st = schedule ?: return
         val today = java.time.Instant.ofEpochMilli(clock()).atZone(com.gt7pitwall.core.sport.GtPlanetFeed.PARIS).toLocalDate()
-        val result = SessionMatcher.match(st.editions, p.totalLaps, sessionTrackEvidence, today, database.carGroup(p.carCode))
+        val result = SessionMatcher.match(
+            st.editions, p.totalLaps, sessionTrackEvidence, today, database.carGroup(p.carCode),
+            trackMeasured = sessionTrackSource == TrackEvidence.GEOMETRY_MEASURED,
+        )
         // Course personnalisée : même nombre de tours ou même catégorie par hasard ; il faut l'épreuve reconnue.
         val decided = if (result is SessionMatcher.Result.Match && active.mode == SessionMode.CUSTOM &&
             result.confidence != SessionMatcher.Confidence.RECOGNIZED
@@ -1230,7 +1236,12 @@ class RaceController(
                 val target = ProfileId(result.series, SessionKind.RACE, autoMode(active, result.series))
                 journal.record(
                     JournalType.DECISION, JournalSource.ENGINE, "Épreuve ${result.confidence.label} : ${target.label}",
-                    decision = if (target == active) "épreuve active confirmée" else "règlement de la semaine appliqué",
+                    // Issue #51 : « probable » ne s'écrit jamais « confirmée » ; une épreuve choisie n'est pas une épreuve détectée.
+                    decision = when {
+                        target != active -> "règlement de la semaine appliqué (${result.confidence.label})"
+                        recognized -> "épreuve choisie reconnue : tours et circuit mesuré concordent"
+                        else -> "épreuve choisie compatible, non prouvée"
+                    },
                     details = mapOf(
                         "preuves" to result.evidence.joinToString(", "),
                         "certitude" to result.confidence.name,
@@ -1246,7 +1257,7 @@ class RaceController(
                     }
                     recognized && !recognizedAnnounced -> {
                         recognizedAnnounced = true
-                        out += sportMessage("${result.series.label} confirmée : tours et circuit concordent.", result)
+                        out += sportMessage("${result.series.label} reconnue : tours et circuit mesuré concordent.", result)
                     }
                 }
             }
@@ -1445,6 +1456,7 @@ class RaceController(
         sessionIdentity = SessionMatcher.Result.Unknown
         sessionIdentitySettled = false
         sessionTrackEvidence = null
+        sessionTrackSource = null
         ambiguityAnnounced = false
         pendingSeriesChoice = null
         recognizedAnnounced = false
@@ -1884,7 +1896,11 @@ class RaceController(
             }
             is SessionEvent.PitVisitEnded -> journal.record(
                 JournalType.PIT, JournalSource.TELEMETRY,
-                "Passage au stand détecté (tour ${e.visit.lap})" +
+                // Issue #51 (SUGO, 28/10) : box annoncé fin T7, passage constaté T8 (le compteur passe dans la voie des
+                // stands). C'est le même arrêt : on le dit, jamais « arrêt raté ».
+                (plan?.stops?.firstOrNull { it.endOfLap == e.visit.lap - 1 }
+                    ?.let { "Arrêt prévu fin du tour ${it.endOfLap}, constaté au tour ${e.visit.lap} (compteur passé dans la voie des stands)" }
+                    ?: "Passage au stand détecté (tour ${e.visit.lap})") +
                     (if (e.visit.refuelAmount > 0f) " : +%.1f de carburant".format(e.visit.refuelAmount) else "") +
                     ", immobile %.1f s".format(e.visit.stoppedSeconds),
                 lap = e.visit.lap,
@@ -4188,6 +4204,7 @@ class RaceController(
                     ),
                 )
                 sessionTrackEvidence = v.course
+                sessionTrackSource = TrackEvidence.GEOMETRY_MEASURED
                 geometryLocked = true
                 trackCandidates = emptyList()
                 if (previous != v.course) {
@@ -4217,6 +4234,24 @@ class RaceController(
             )
             com.gt7pitwall.core.knowledge.TrackGeometryRecognizer.Verdict.Pending -> Unit
         }
+    }
+
+    /**
+     * Circuit retenu d'après la longueur du tour (avec ou sans fiche) : circuit de travail PROBABLE, jamais une preuve
+     * indépendante pour reconnaître l'épreuve (issue #51). La géométrie mesurée, si elle conclut, le remplace.
+     */
+    private fun adoptProbableTrack(c: Course, dist: Float, why: String, out: MutableList<EngineerMessage>) {
+        if (sessionTrackSource != TrackEvidence.GEOMETRY_MEASURED) {
+            sessionTrackEvidence = c.id
+            sessionTrackSource = TrackEvidence.LAP_LENGTH_COMPATIBLE
+        }
+        applyRules(rules.copy(trackId = c.id))
+        journal.record(
+            JournalType.DECISION, JournalSource.ENGINE, "Circuit probable : ${c.label}",
+            decision = "circuit de travail, non prouvé par la géométrie",
+            details = mapOf("preuve" to why, "source" to TrackEvidence.LAP_LENGTH_COMPATIBLE.name, "longueur_mesuree_m" to dist.roundToInt().toString()),
+        )
+        out += EngineerMessage("Circuit probable : ${c.label}.", Priority.NORMAL, MessageCategory.RADIO)
     }
 
     /** Circuit reconnu par la géométrie pour cette session : la reconnaissance s'arrête là (issue #47). */
@@ -4285,33 +4320,31 @@ class RaceController(
             // Épreuve Sport dont le circuit publié manque à la base (SUGO à sa sortie, le 15/10) : la longueur seule
             // désignerait à tort un circuit voisin (Laguna Seca, 3 602 m, pour SUGO, 3 586 m). Le circuit est appris sous
             // son nom publié, avec la longueur mesurée.
+            // Issue #51 : le nom publié par la fiche est une ATTENTE (SCHEDULE_EXPECTED), jamais une observation. Il ne
+            // devient le circuit de travail que si la longueur mesurée du tour le permet, et seulement comme circuit
+            // probable (LAP_LENGTH_COMPATIBLE) : seule la géométrie mesurée peut le reconnaître.
             val published = edition?.takeIf { profile.id.series != Series.OTHER }?.trackName?.value
+            val byLength = database.coursesMatching(dist)
             if (published != null) {
                 val named = com.gt7pitwall.core.sport.ScheduleBuilder.matchTrack(published, database)
-                val byLength = database.coursesMatching(dist)
-                val pick = when {
-                    named.size == 1 -> named[0]
-                    named.size > 1 -> named.filter { n -> byLength.any { it.id == n.id } }.singleOrNull()
-                    else -> null
-                }
+                val pick = named.filter { n -> byLength.any { it.id == n.id } }.singleOrNull()
                 if (pick != null) {
-                    sessionTrackEvidence = pick.id
-                    applyRules(rules.copy(trackId = pick.id))
-                    out += EngineerMessage("Circuit reconnu : ${pick.label}.", Priority.NORMAL, MessageCategory.RADIO)
+                    adoptProbableTrack(pick, dist, "longueur du tour compatible avec la fiche ($published)", out)
                     continue
                 }
                 if (named.isEmpty()) {
                     out += learnTrack(published, dist)
                     continue
                 }
+                journal.record(
+                    JournalType.DECISION, JournalSource.ENGINE, "Circuit publié $published non retenu : longueur du tour incompatible",
+                    decision = "aucun circuit appliqué d'après la fiche",
+                    details = mapOf("longueur_mesuree_m" to dist.roundToInt().toString(), "source" to TrackEvidence.SCHEDULE_EXPECTED.name),
+                )
             }
-            val found = database.coursesMatching(dist)
+            val found = byLength
             when {
-                found.size == 1 -> {
-                    sessionTrackEvidence = found[0].id
-                    applyRules(rules.copy(trackId = found[0].id))
-                    out += EngineerMessage("Circuit reconnu : ${found[0].label}.", Priority.NORMAL, MessageCategory.RADIO)
-                }
+                found.size == 1 -> adoptProbableTrack(found[0], dist, "longueur du tour", out)
                 found.isNotEmpty() -> {
                     trackCandidates = found
                     if (!candidatesAnnounced) {

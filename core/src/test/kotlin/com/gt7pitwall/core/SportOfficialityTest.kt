@@ -70,18 +70,16 @@ class SportOfficialityTest {
         // Une seule preuve (6 tours) : une course personnalisée reste personnalisée.
         assertEquals(SessionMode.CUSTOM, c.profile.id.mode)
         s.driveLaps(1)
-        // Tours et circuit concordent : règlement de la B appliqué, mais type « Sport reconnu », pas officiel.
-        assertEquals(ProfileId(Series.DAILY_B, SessionKind.RACE, SessionMode.SPORT_IDENTIFIED), c.profile.id)
-        assertEquals(1, c.rules.mandatoryStops)
-        assertEquals("Course Sport B reconnue (6 tours, circuit)", c.sessionIdentityText)
+        // Issue #51 : tours + longueur du tour ne prouvent pas le circuit (seul le tracé mesuré le fait). La B n'est que
+        // probable : une course personnalisée reste personnalisée, son règlement n'est pas imposé.
+        assertEquals(SessionMode.CUSTOM, c.profile.id.mode)
+        assertTrue(s.texts.none { "Sport B reconnue" in it }, s.texts.toString())
         s.driveLaps(6)
-        // Annonce différée par le régulateur radio (jamais en plein virage) : dite dans les secondes qui suivent.
-        assertTrue(s.texts.any { it.startsWith("Course Sport B reconnue. 6 tours. Gomme course mediums imposée.") }, s.texts.toString())
         // Jamais affirmée officielle.
         assertFalse(s.texts.any { t -> Regex("(sport officiel|course officielle|officielle reconnue)").containsMatchIn(t.lowercase()) }, s.texts.toString())
         val record = store.sessions.single()
         assertEquals(SessionOutcome.FINISHED, record.outcome)
-        assertEquals(SessionMode.SPORT_IDENTIFIED, record.context.profile.id.mode)
+        assertEquals(SessionMode.CUSTOM, record.context.profile.id.mode)
         val career = PitwallLocalCareer.fromSessions(store.sessions)
         assertEquals(0, career.verifiedSportRaces, "un salon privé identique ne compte jamais comme course Sport officielle")
         assertEquals(1, career.completedSessions)

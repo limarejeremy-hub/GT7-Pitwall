@@ -245,7 +245,9 @@ class SportScheduleTest {
         s.start()
         s.driveLaps(2)
         c.applySchedule(schedule(today = monday.plusDays(1)))
-        assertEquals(462, c.rules.trackId) // pas en pleine course
+        // Pas en pleine course : la nouvelle semaine (152) n'est pas appliquée. Le circuit de la fiche (Spa, 462) n'est plus
+        // réappliqué d'après son seul nom : le tour simulé (3 km) est incompatible avec Spa (issue #51).
+        assertTrue(c.rules.trackId != 152, "${c.rules.trackId}")
         // Les autres épreuves sont déjà à jour.
         c.endSession()
         assertEquals(152, c.rules.trackId)
