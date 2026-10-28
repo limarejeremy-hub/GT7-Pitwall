@@ -382,10 +382,18 @@ class PitwallEngine(
         scope.launch(Dispatchers.Default) {
             _trace.value = listOf("Relecture de ${file.name}…")
             val lines = runCatching {
-                val frames = file.inputStream().buffered().use { com.gt7pitwall.core.telemetry.TelemetryTrace.read(it) }
-                val offline = RaceController(database)
+                // Revue PR #44 : relecture en flux (un échantillon en mémoire à la fois) et horloge virtuelle = heure
+                // enregistrée de chaque paquet, partie de l'heure de début inscrite dans le nom du fichier.
+                val start = runCatching {
+                    java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.ROOT)
+                        .parse(file.name.removePrefix("gt7-pitwall-trace-").removeSuffix(TRACE_EXT))!!.time
+                }.getOrDefault(file.lastModified())
+                val clock = com.gt7pitwall.core.telemetry.TelemetryTrace.VirtualClock(start)
+                val offline = RaceController(database, clock = clock::now)
                 offline.engineer.quietRace = true
-                val r = com.gt7pitwall.core.telemetry.TelemetryTrace.replay(frames) { p, _ -> offline.onPacket(p) }
+                val r = file.inputStream().buffered(64 * 1024).use {
+                    com.gt7pitwall.core.telemetry.TelemetryTrace.replay(it, clock) { p -> offline.onPacket(p) }
+                }
                 val laps = offline.snapshot.laps
                 r.lines + listOf(
                     "Tours rejoués : ${laps.size}" + (laps.mapNotNull { it.timeMs }.minOrNull()?.let { ", meilleur ${com.gt7pitwall.core.engineer.FrenchFormat.lapTime(it)}" } ?: "") + ".",
