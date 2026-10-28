@@ -223,7 +223,14 @@ class PitwallEngine(
     private var pendingLatency: Pair<com.gt7pitwall.core.radio.LatencyTrace, Set<EngineerMessage>>? = null
 
     /** Premier son réellement émis pour un message (synthèse du Fold ou salon Discord). */
+    /** État de la radio au journal (code stable, texte lisible), sans aucun son. */
+    fun journalRadio(code: String, text: String) {
+        runCatching { race.journal.record(JournalType.RADIO, JournalSource.SYSTEM, text, details = mapOf("code" to code)) }
+    }
+
     fun onAudible(message: EngineerMessage, atMs: Long) {
+        // Fenêtre d'écho à partir du premier son réellement émis (issue #45).
+        if (message.category != MessageCategory.DRIVER) race.noteSpoken(message.text)
         val (trace, answers) = pendingLatency ?: return
         if (answers.none { it === message }) return
         pendingLatency = null
@@ -427,12 +434,29 @@ class PitwallEngine(
             // Statuts affichés seulement, jamais dits : un bip signale l'écoute, un double bip la fin de la conversation.
             VoiceInputEvent.Wake -> deliver(EngineerMessage("🎙 Conversation ouverte", Priority.INFO, MessageCategory.DRIVER))
             VoiceInputEvent.Listening -> deliver(EngineerMessage("🎙 À l'écoute", Priority.INFO, MessageCategory.DRIVER))
-            is VoiceInputEvent.ConversationClosed -> deliver(
-                EngineerMessage(if (event.byDriver) "🎙 Conversation terminée" else "🎙 Conversation refermée (silence)", Priority.INFO, MessageCategory.DRIVER),
-            )
+            is VoiceInputEvent.ConversationClosed -> {
+                // Issue #45 : état précis au journal, pour distinguer une fermeture normale d'une panne de la radio.
+                val route = (voice as? com.gt7pitwall.core.radio.RoutedVoiceOutput)?.route?.name ?: "PHONE"
+                race.journal.record(
+                    JournalType.RADIO, JournalSource.SYSTEM,
+                    if (event.byDriver) "Conversation fermée par le pilote" else "Conversation refermée (silence)",
+                    details = mapOf(
+                        "code" to if (event.byDriver) "FERMEE_PILOTE" else "FERMEE_SILENCE",
+                        "voie" to route,
+                        "echos_ignores" to race.echoIgnored.toString(),
+                    ),
+                )
+                deliver(
+                    EngineerMessage(if (event.byDriver) "🎙 Conversation terminée" else "🎙 Conversation refermée (silence)", Priority.INFO, MessageCategory.DRIVER),
+                )
+            }
             is VoiceInputEvent.Notice -> deliver(EngineerMessage(event.text, Priority.HIGH, MessageCategory.ANSWER))
             // Surveillance de l'écoute : consigné et affiché, jamais dit (aucun son enregistré).
-            is VoiceInputEvent.Diagnostic -> deliver(EngineerMessage("🎙 ${event.text}", Priority.INFO, MessageCategory.DRIVER))
+            is VoiceInputEvent.Diagnostic -> {
+                // Issue #45 : chaque état de l'écoute au journal avec un code (micro muet, écoute indisponible…).
+                journalRadio(com.gt7pitwall.core.radio.RadioStatusCode.of(event.text), event.text)
+                deliver(EngineerMessage("🎙 ${event.text}", Priority.INFO, MessageCategory.DRIVER))
+            }
             is VoiceInputEvent.BargeIn -> {
                 // Le pilote coupe l'ingénieur : la voix s'arrête, la réponse en préparation ne sera pas dite.
                 voice.stop()
@@ -464,7 +488,7 @@ class PitwallEngine(
                         // Commandes et questions simples : analyseur (immédiat, testé). Questions ouvertes : IA. Fragments : ignorés.
                         // Phrase de la conversation continue sans « radio » devant : modifications de course à confirmer.
                         val before = conversation.lastTrace
-                        val messages = conversation.onUtterance(event.text, event.freeText, languageModel, ::deliver, addressed = event.addressed)
+                        val messages = conversation.onUtterance(event.text, event.freeText, languageModel, ::deliver, addressed = event.addressed, nearEngineer = event.nearEngineer)
                         val answeredAt = android.os.SystemClock.elapsedRealtime()
                         mutex.withLock { publish(force = true) }
                         val aiTrace = conversation.lastTrace?.takeIf { it !== before }

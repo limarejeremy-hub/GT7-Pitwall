@@ -10,8 +10,8 @@ import kotlin.math.sqrt
  */
 enum class DuplexMode(val label: String) {
     /**
-     * Écoute pendant la parole. Discord : la voix du pilote arrive dans un flux séparé de celle du bot, l'ingénieur ne
-     * s'entend pas. Fold avec casque ou écouteurs : la voix ne sort pas du haut-parleur.
+     * Écoute pendant la parole. Fold avec casque ou écouteurs : la voix ne sort pas du haut-parleur. Discord : seulement
+     * sur choix du pilote (issue #45 : le micro du casque PS5 renvoyait la voix du bot).
      */
     FULL("interruption pendant la parole"),
 
@@ -28,8 +28,17 @@ object DuplexPolicy {
      * [speakerDuplexOptIn] : le pilote a activé, à ses risques, l'écoute pendant la parole sur haut-parleur (annulation
      * d'écho du téléphone, [echoCanceller]) — expérimental.
      */
-    fun mode(route: VoiceRoute, phoneSpeaker: Boolean, echoCanceller: Boolean = false, speakerDuplexOptIn: Boolean = false): DuplexMode = when {
-        route == VoiceRoute.REMOTE -> DuplexMode.FULL
+    fun mode(
+        route: VoiceRoute,
+        phoneSpeaker: Boolean,
+        echoCanceller: Boolean = false,
+        speakerDuplexOptIn: Boolean = false,
+        remoteDuplexOptIn: Boolean = false,
+    ): DuplexMode = when {
+        // Issue #45 (course du 28/10) : sur Discord, la voix du bot revenait dans le flux du pilote (casque PS5) et
+        // coupait l'ingénieur 26 fois. L'interruption pendant la parole n'y est plus active que sur choix explicite du
+        // pilote, une fois le chemin audio vérifié sans écho ; sinon on attend la fin de la phrase (mot « Radio » en secours).
+        route == VoiceRoute.REMOTE -> if (remoteDuplexOptIn) DuplexMode.FULL else DuplexMode.OFF
         !phoneSpeaker -> DuplexMode.FULL
         speakerDuplexOptIn && echoCanceller && route == VoiceRoute.PHONE -> DuplexMode.FULL
         else -> DuplexMode.GAPS
@@ -104,11 +113,11 @@ class VoiceActivity(
 class InterruptDetector(private val echoGuardMs: Long = 0L, private val voiceWindowMs: Long = 1_500L) {
     private var lastVoiceMs: Long? = null
     private var guardUntil = 0L
-    private var engineerWords: Set<String> = emptySet()
+    private var engineerText: String = ""
 
     /** L'ingénieur commence ou finit une phrase ([text] : ce qu'il dit, pour reconnaître son écho). */
     fun engineer(speaking: Boolean, text: String?, nowMs: Long) {
-        engineerWords = if (speaking) words(text.orEmpty()).toSet() else engineerWords
+        if (speaking) engineerText = text.orEmpty()
         if (!speaking) guardUntil = nowMs + echoGuardMs
     }
 
@@ -124,12 +133,21 @@ class InterruptDetector(private val echoGuardMs: Long = 0L, private val voiceWin
         if (nowMs - voice > voiceWindowMs || nowMs < guardUntil) return false
         val heard = words(text)
         if (heard.isEmpty()) return false
-        // Écho : tout ce qui est entendu fait partie de la phrase de l'ingénieur.
-        if (heard.all { it in engineerWords }) return false
-        val t = " " + heard.joinToString(" ") + " "
+        // Écho (issue #45) : on ne garde que les mots qui ne ressemblent à rien de ce que dit l'ingénieur, même mal
+        // reconnu (« dix second » pour « P10 sur 14 », « deux minutes neuf » pour « 2 minutes 9 secondes »).
+        val engineer = listOf(engineerText)
+        if (EchoFilter.isEcho(text, engineer)) {
+            rejected++
+            return false
+        }
+        val foreign = EchoFilter.foreign(text, engineer)
+        val t = " " + foreign.joinToString(" ") + " "
         val keyword = KEYWORDS.any { Regex(it).containsMatchIn(t) }
-        val sentence = heard.count { it.length >= 3 && it !in FILLERS } >= 2
-        if (!keyword && !sentence) return false
+        val sentence = foreign.count { it.length >= 3 && it !in FILLERS } >= 2
+        if (!keyword && !sentence) {
+            rejected++
+            return false
+        }
         lastVoiceMs = null
         return true
     }
@@ -137,8 +155,12 @@ class InterruptDetector(private val echoGuardMs: Long = 0L, private val voiceWin
     fun reset() {
         lastVoiceMs = null
         guardUntil = 0L
-        engineerWords = emptySet()
+        engineerText = ""
     }
+
+    /** Interruptions refusées (écho ou mots insuffisants), pour le diagnostic : aucun son n'est gardé. */
+    var rejected = 0
+        private set
 
     companion object {
         val KEYWORDS = listOf(

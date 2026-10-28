@@ -246,8 +246,7 @@ class VoiceSafetyTest {
     fun clearCommandsStillWorkWithoutConfirmation() {
         val (c, _) = liveRace()
         val clear = listOf(
-            "arrêt fait", "j'ai fait le plein", "je suis passé aux stands", "je me suis arrêté", "course de 12 tours",
-            "2 arrêts obligatoires", "consommation fois 2", "usure fois 3", "les pneus tiennent 8 tours", "je suis cinquième",
+            "arrêt fait", "j'ai fait le plein", "je suis passé aux stands", "je me suis arrêté", "je suis cinquième",
             "j'ai doublé", "je me suis fait doubler", "il pleut", "piste sèche", "j'ai mis les durs", "silence", "tu peux parler",
         )
         for (s in clear) {
@@ -255,7 +254,14 @@ class VoiceSafetyTest {
             val v = c.vet(cmd, s)
             assertTrue(v is Vetting.Execute, "$s → $v")
         }
+        // Issue #45 : un règlement dicté à la voix attend toujours le « oui » du pilote.
+        for (s in listOf("course de 12 tours", "2 arrêts obligatoires", "consommation fois 2", "usure fois 3", "les pneus tiennent 8 tours")) {
+            val v = c.vet(DriverCommandParser.parse(s)!!, s)
+            assertTrue(v is Vetting.Confirm, "$s → $v")
+        }
         say(c, "course de 12 tours")
+        assertEquals(null, c.rules.totalLaps?.takeIf { it == 12 })
+        say(c, "oui")
         assertEquals(12, c.rules.totalLaps)
         // Pneus de départ : déclarés avant la course, sans télémétrie.
         val idle = RaceController()

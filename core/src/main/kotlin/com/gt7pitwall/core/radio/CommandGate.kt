@@ -121,6 +121,13 @@ data class GateContext(
     val position: Int? = null,
     /** Course finie : classement final (mesuré par GT7 ou dernière place connue). Plus aucune position n'est déclarable. */
     val finalPosition: Int? = null,
+    /**
+     * Ce que l'ingénieur vient de dire (quelques secondes) : une phrase qui le répète est son écho dans le micro du
+     * pilote (issue #45), jamais un ordre.
+     */
+    val recentEngineer: List<String> = emptyList(),
+    /** Nombre de tours annoncé par GT7 (0x76), si la télémétrie le donne : une course en tours n'a pas de durée. */
+    val gt7TotalLaps: Int? = null,
 )
 
 /** Décision avant d'appliquer une commande vocale. */
@@ -136,6 +143,12 @@ sealed interface Vetting {
 
     /** Rien n'est modifié : intention, hypothèse, adversaire, négation… [intention] alimente la stratégie. */
     data class Discuss(val mode: StatementGuard.Mode, val reply: String, val intention: String? = null) : Vetting
+
+    /**
+     * Phrase écartée sans réponse parlée (écho de l'ingénieur, bout de chrono) : seulement notée à l'écran et au journal,
+     * pour ne pas relancer la boucle d'écho (issue #45).
+     */
+    data class Ignore(val reason: String) : Vetting
 }
 
 /**
@@ -144,10 +157,16 @@ sealed interface Vetting {
  * (questions, radio, « répète ») passent. Une commande proposée par Gemini n'est jamais appliquée sans « oui ».
  */
 object CommandGate {
+    /** Chrono : des minutes suivies d'un nombre ou de secondes (« 2 minutes 9 », « deux minutes neuf secondes »). */
+    private val LAP_TIME = Regex(
+        "minutes? (et )?(\\d+|un|une|deux|trois|quatre|cinq|six|sept|huit|neuf|dix|onze|douze|treize|quatorze|quinze|seize|" +
+            "vingt|trente|quarante|cinquante)( |$)|secondes?",
+    )
+
     /** Une commande de radio est une phrase courte (« silence », « radio essentielle », « tu peux parler »). */
     private const val RADIO_COMMAND_MAX_WORDS = 4
 
-    private fun sensitive(c: DriverCommand) = when (c) {
+    fun sensitive(c: DriverCommand) = when (c) {
         DriverCommand.DeclareStop, is DriverCommand.StopAndTyres, DriverCommand.CancelStop, DriverCommand.CancelPlannedStop, is DriverCommand.Tyres,
         DriverCommand.TyresChanged, is DriverCommand.TyresKept, is DriverCommand.Rule, is DriverCommand.ReportPosition, DriverCommand.ReportLast,
         DriverCommand.Overtook, DriverCommand.Overtaken, is DriverCommand.SeveralPlaces, DriverCommand.Rain, DriverCommand.Dry,
@@ -158,12 +177,6 @@ object CommandGate {
     /** Formulation explicite d'un arrêt fait (« j'ai fait », « arrêt fait », « je suis passé »…). */
     private val EXPLICIT_STOP = Regex(
         "(^|\\s)(j'ai|jai|je suis|je me suis|je sors|je sort|on a|c'est fait|arret fait|arrets faits|plein fait|stop fait|ravitaille)($|\\s)",
-    )
-
-    /** Règlement dicté en tête de phrase (« course de 12 tours », « 2 arrêts obligatoires »). */
-    private val DIRECT_RULE = Regex(
-        "^(la |une |les |le |l')?(course|consommation|essence|carburant|usure|pneus?|gommes?|arrets?|\\d+|un|une|deux|trois|quatre|cinq|six|pas d'arret|" +
-            "aucun arret|relais)( |$)",
     )
 
     fun vet(command: DriverCommand, text: String, source: CommandSource, ctx: GateContext): Vetting {
@@ -179,7 +192,25 @@ object CommandGate {
             }
             return Vetting.Execute(command)
         }
+        // Revue PR #46 : un « oui » qui confirme une modification doit venir du pilote, jamais de la phrase de l'ingénieur.
+        if (command == DriverCommand.Yes && ctx.recentEngineer.any { "oui" in EchoFilter.tokens(it) }) {
+            return Vetting.Ignore("« oui » entendu dans la phrase de l'ingénieur")
+        }
         if (!sensitive(command)) return Vetting.Execute(command)
+        // Issue #45 (28/10) : « deux minutes » entendu dans « Tour 3 : 2 minutes 9 secondes » est devenu une course de
+        // 2 minutes. Une phrase qui répète l'ingénieur n'est jamais un ordre.
+        // Tout ce qui est entendu vient de l'ingénieur : écarté. Écho partiel : la règle plus bas demande un « oui ».
+        if (ctx.recentEngineer.isNotEmpty() && EchoFilter.echoShare(text, ctx.recentEngineer) >= 1.0) {
+            return Vetting.Ignore("écho probable de l'ingénieur")
+        }
+        if (command is DriverCommand.SetDuration) {
+            val n = DriverCommandParser.normalize(text)
+            // « 2 minutes 9 », « deux minutes neuf secondes » : un chrono, pas une durée de course.
+            if (LAP_TIME.containsMatchIn(n)) return Vetting.Ignore("chrono entendu, pas une durée de course")
+            ctx.gt7TotalLaps?.takeIf { it > 0 }?.let { laps ->
+                return Vetting.Discuss(StatementGuard.mode(text), "GT7 annonce une course de $laps tours : je ne la passe pas en durée.")
+            }
+        }
         // Course réelle du 21/10 : arrivée P1 mesurée, puis « douzième » mal reconnu devenait « Tu es P12, je le note ? ».
         if (ctx.finalPosition != null && (command is DriverCommand.ReportPosition || command == DriverCommand.ReportLast ||
                 command == DriverCommand.Overtook || command == DriverCommand.Overtaken || command is DriverCommand.SeveralPlaces)
@@ -239,6 +270,9 @@ object CommandGate {
         if ((source == CommandSource.GEMINI || source == CommandSource.CONVERSATION) && v is Vetting.Execute) {
             return Vetting.Confirm(command, confirmation(command))
         }
+        // Phrase commencée pendant la voix de l'ingénieur : une modification de course n'est jamais appliquée sans
+        // « oui », le micro pouvant avoir entendu un bout de sa phrase.
+        if (ctx.recentEngineer.isNotEmpty() && v is Vetting.Execute) return Vetting.Confirm(command, confirmation(command))
         return v
     }
 
@@ -324,8 +358,9 @@ object CommandGate {
         StatementGuard.Mode.NEGATED,
         -> Vetting.Discuss(mode, "Je ne change pas le règlement. Pour le modifier, dicte-le, par exemple « course de 12 tours ».")
         StatementGuard.Mode.UNCERTAIN -> Vetting.Confirm(command, confirmation(command))
-        StatementGuard.Mode.DONE ->
-            if (!garbled && DIRECT_RULE.containsMatchIn(t)) Vetting.Execute(command) else Vetting.Confirm(command, confirmation(command))
+        // Issue #45 : un règlement dicté à la voix n'est plus appliqué sans « oui » (durée, tours, multiplicateurs,
+        // arrêts obligatoires, relais pneus). Un nombre en tête de phrase (« deux minutes… ») suffisait à l'appliquer.
+        StatementGuard.Mode.DONE -> Vetting.Confirm(command, confirmation(command))
     }
 
     private fun position(command: DriverCommand, mode: StatementGuard.Mode): Vetting = when (mode) {
