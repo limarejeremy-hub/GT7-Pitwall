@@ -416,6 +416,7 @@ fun PitwallScreen(
                                 RadioCard(radio, engine::command)
                                 voiceRadioCard()
                                 BlackBoxMeasureCard(engine)
+                                TelemetryTraceCard(engine)
                                 CarImageDiagnosticCard()
                                 CarChangesCard(engine)
                                 DatabaseCoverageCard(engine)
@@ -439,6 +440,7 @@ fun PitwallScreen(
                             voiceRadioCard()
                             LapHistoryCard(state.snapshot.laps)
                             BlackBoxMeasureCard(engine)
+                            TelemetryTraceCard(engine)
                             CarImageDiagnosticCard()
                             CarChangesCard(engine)
                             DatabaseCoverageCard(engine)
@@ -1545,6 +1547,55 @@ private fun BlackBoxMeasureCard(engine: PitwallEngine) {
             engine.setBlackBoxMeasure(it)
         }
         report.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall, color = PitColors.Muted) }
+    }
+}
+
+/**
+ * Trace télémétrique réelle (#41 P1) : enregistrement sur demande, borné, exportable et rejouable hors course. Coupé à
+ * chaque lancement de Pitwall ; paquets GT7 seulement (aucun son, aucune adresse).
+ */
+@Composable
+private fun TelemetryTraceCard(engine: PitwallEngine) {
+    val context = LocalContext.current
+    val lines by engine.trace.collectAsStateWithLifecycle()
+    val dir = remember { java.io.File(context.filesDir, "traces") }
+    var on by remember { mutableStateOf(engine.recorder.running) }
+    var hz by remember { mutableStateOf(20) }
+    var files by remember { mutableStateOf(engine.traceFiles(dir)) }
+    androidx.compose.runtime.LaunchedEffect(lines) { on = engine.recorder.running; files = engine.traceFiles(dir) }
+    PitCard("Trace télémétrique") {
+        SwitchLine(
+            "Enregistrer la télémétrie",
+            "Paquets GT7 seulement, sans son. Arrêt automatique à 80 Mo ou 4 h ; 5 traces gardées au plus.",
+            on,
+        ) {
+            on = it
+            if (it) engine.startTrace(dir, hz) else engine.stopTrace()
+        }
+        if (!on) Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf(20, 30, 60).forEach { f ->
+                OutlinedButton(onClick = { hz = f }, enabled = hz != f) { Text("$f Hz") }
+            }
+        }
+        lines.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall, color = PitColors.Muted) }
+        files.take(5).forEach { f ->
+            Text("${f.name} (${f.length() / 1024} Ko)", style = MaterialTheme.typography.bodySmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                OutlinedButton(onClick = {
+                    runCatching {
+                        val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.exports", f)
+                        val send = Intent(Intent.ACTION_SEND).apply {
+                            type = "application/octet-stream"
+                            putExtra(Intent.EXTRA_SUBJECT, "GT7 Pitwall — trace télémétrique")
+                            putExtra(Intent.EXTRA_STREAM, uri)
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }
+                        context.startActivity(Intent.createChooser(send, "GT7 Pitwall — trace télémétrique"))
+                    }
+                }, enabled = !on) { Text("Exporter") }
+                OutlinedButton(onClick = { engine.replayTrace(f) }, enabled = !on) { Text("Rejouer hors course") }
+            }
+        }
     }
 }
 
