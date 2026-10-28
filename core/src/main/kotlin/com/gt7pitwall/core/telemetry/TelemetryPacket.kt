@@ -207,6 +207,12 @@ data class TelemetryPacket(
 
     val isHandbrake: Boolean get() = flags and FLAG_HANDBRAKE != 0
     val areLightsOn: Boolean get() = flags and FLAG_LIGHTS != 0
+    /**
+     * Bits « pleins phares » et « feux de croisement » de 0x8E (gt7-udp, PDTools). Ce sont des **états** transmis par GT7,
+     * pas des événements de bouton : leur lien avec une touche de la DualSense reste à démontrer (issue #38).
+     */
+    val isHighBeam: Boolean get() = flags and FLAG_HIGH_BEAM != 0
+    val isLowBeam: Boolean get() = flags and FLAG_LOW_BEAM != 0
     val isElectric: Boolean get() = fuelCapacity <= 0f || carType == 4
 
     /**
