@@ -415,6 +415,7 @@ fun PitwallScreen(
                                 voiceRadioCard()
                                 BlackBoxMeasureCard(engine)
                                 CarImageDiagnosticCard()
+                                CarChangesCard(engine)
                                 DatabaseCoverageCard(engine)
                             }
                         }
@@ -437,6 +438,7 @@ fun PitwallScreen(
                             LapHistoryCard(state.snapshot.laps)
                             BlackBoxMeasureCard(engine)
                             CarImageDiagnosticCard()
+                            CarChangesCard(engine)
                             DatabaseCoverageCard(engine)
                         }
                     }
@@ -1389,6 +1391,25 @@ private fun CarImageDiagnosticCard() {
         Text("Vignette du catalogue officiel GT7 (images Sony / Polyphony, une seule voiture, en cache sur le téléphone).",
             style = MaterialTheme.typography.bodySmall, color = PitColors.Muted)
         OutlinedButton(onClick = { CarImageLoader.retryNow(context) }) { Text("Réessayer la photo maintenant") }
+    }
+}
+
+/** Changements de voiture lus dans 0x124 (issue #40), menus compris : précédente → nouvelle, état, format. */
+@Composable
+private fun CarChangesCard(engine: PitwallEngine) {
+    val ui by engine.state.collectAsStateWithLifecycle()
+    val changes = remember(ui.garageCar.code, ui.carChangePending) { engine.carTransitions() }
+    PitCard("Voiture détectée") {
+        Text(ui.garageCar.evidence.label, style = MaterialTheme.typography.bodySmall,
+            color = if (ui.garageCar.liveConfirmed) PitColors.Green else PitColors.Muted)
+        if (changes.isEmpty()) Text("Aucune voiture reçue depuis l'ouverture de Pitwall.",
+            style = MaterialTheme.typography.bodySmall, color = PitColors.Muted)
+        val fmt = remember { java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.FRANCE) }
+        changes.asReversed().take(8).forEach {
+            Text("• ${fmt.format(java.util.Date(it.atMs))} : ${it.text}", style = MaterialTheme.typography.bodySmall, color = PitColors.Muted)
+        }
+        Text("GT7 n'envoie rien dans certains menus et au garage : la voiture change ici dès que la PS5 renvoie des données.",
+            style = MaterialTheme.typography.bodySmall, color = PitColors.Muted)
     }
 }
 

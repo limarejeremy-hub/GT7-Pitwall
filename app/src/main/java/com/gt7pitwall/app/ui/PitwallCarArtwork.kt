@@ -122,7 +122,12 @@ object CarImageLoader {
         _status.value = CarImagePolicy.Outcome.Disabled(reason)
     }
 
-    fun load(context: Context, id: Int): Bitmap? {
+    /** Une requête à la fois par voiture : la vignette du Live et celle du Briefing ne téléchargent pas deux fois. */
+    private val locks = java.util.concurrent.ConcurrentHashMap<Int, Any>()
+
+    fun load(context: Context, id: Int): Bitmap? = synchronized(locks.getOrPut(id) { Any() }) { loadOnce(context, id) }
+
+    private fun loadOnce(context: Context, id: Int): Bitmap? {
         val address = CarImagePolicy.url(id) ?: return null.also { _status.value = CarImagePolicy.Outcome.Disabled("identifiant de voiture $id hors limites") }
         lastCar = id
         val disk = file(context, id)
