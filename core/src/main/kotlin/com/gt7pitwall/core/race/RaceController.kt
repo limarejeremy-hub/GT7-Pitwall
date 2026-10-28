@@ -238,6 +238,54 @@ class RaceController(
      * « box » et annoncerait un nouveau plan en pleine voie des stands.
      */
     private var pitWindowPackets = 0
+
+    /** Dernière fois que la voiture roulait en course (horloge du contrôleur). */
+    private var lastDrivenMs = 0L
+
+    /** Heure de déclaration de la gomme de départ ; null : venue d'un règlement mémorisé, sans date. */
+    private var startTyreDeclaredMs: Long? = null
+
+    /**
+     * Course de Fuji du 28/10 (#47) : le règlement mémorisé portait « durée 2 min » (deux commandes fantômes de la course
+     * précédente, #45) alors que GT7 annonçait 10 tours. Une course en tours n'a pas de durée : la valeur est retirée du
+     * règlement actif, jamais exportée comme règle de cette course.
+     */
+    private fun discardContradictedDuration(p: TelemetryPacket) {
+        val minutes = rules.durationMin ?: return
+        if (p.totalLaps <= 0) return
+        rules = profiles.discard(rules.copy(durationMin = null), RuleField.LAPS).rules
+        storage?.saveRules(rules)
+        storage?.saveProfiles(profiles)
+        journal.record(
+            JournalType.DECISION, JournalSource.TELEMETRY,
+            "Durée mémorisée de $minutes min écartée : GT7 annonce une course de ${p.totalLaps} tours",
+            decision = "règlement actif sans durée ; à reconfirmer", details = mapOf("duree_min_ecartee" to minutes.toString(), "tours_gt7" to p.totalLaps.toString()),
+        )
+    }
+
+    /**
+     * Gomme de départ d'une course précédente (#47) : déclarée avant que la voiture ne roule à nouveau, ou mémorisée sans
+     * date. Elle n'est pas reprise comme « montée » pour la nouvelle course ; une déclaration faite depuis la dernière
+     * fois que la voiture a roulé (menus, grille) est gardée.
+     */
+    private fun forgetStaleStartTyre() {
+        val tyre = rules.startTyre ?: return
+        val declared = startTyreDeclaredMs
+        val stale = if (declared == null) lastDrivenMs > 0 || sessions.isNotEmpty() else declared < lastDrivenMs
+        if (!stale) return
+        rules = profiles.discard(rules.copy(startTyre = null), RuleField.ALLOWED_TYRES).rules
+        startTyreDeclaredMs = null
+        storage?.saveRules(rules)
+        storage?.saveProfiles(profiles)
+        journal.record(
+            JournalType.DECISION, JournalSource.ENGINE,
+            "Gomme de départ ${tyre.name} d'une course précédente non reprise",
+            decision = "gomme inconnue tant que tu ne la déclares pas pour cette course",
+        )
+    }
+
+    /** Un recalcul a été demandé pendant la visite au stand : il sera fait à sa sortie (issue #47). */
+    private var replanDeferred = false
     private val pitApproachReminder = PitApproachReminder()
     private var driverRequestedPitLap: Int? = null
     private var sportRuleMismatchWarned = false
@@ -378,6 +426,7 @@ class RaceController(
         // Essai réel : à 91 km/h en piste, le drapeau « en piste » de GT7 n'était pas levé. On retient donc toute session
         // qui envoie des paquets hors chargement (voiture en piste, en mouvement, ou course en cours).
         lastPacketOnTrack = !p.isLoading && (p.isOnTrack || p.speedKmh > 1f || p.currentLap > 0)
+        if (!p.isLoading && !p.isPaused && p.currentLap >= 1 && p.speedKmh > 5f) lastDrivenMs = clock()
         val events = tracker.update(p)
         if (events.any { it is SessionEvent.SessionReset }) {
             // Une transition de session ne reprend rien : ni capture thermique, ni diagnostic en attente d'étiquette.
@@ -404,6 +453,7 @@ class RaceController(
         val finishedBefore = sessionFinished && events.any { it is SessionEvent.SessionReset }
         if (events.any { it is SessionEvent.SessionReset || it is SessionEvent.FirstData }) startSession()
         // Le journal ne s'ouvre qu'une fois la course lancée : un passage par la grille ou un menu ne crée pas de session.
+        if (sessionId != null) discardContradictedDuration(p)
         if (sessionId != null && journal.sessionId != sessionId && p.currentLap >= 1) beginJournal()
         if (!replay) events.filterIsInstance<SessionEvent.LapCompleted>().forEach { checkReplay(it.lap) }
         if (replay) return emptyList()
@@ -1054,6 +1104,7 @@ class RaceController(
     /** Le pilote donne lui-même des champs du règlement (même inchangés : « aucun arrêt obligatoire »). */
     fun declareRules(newRules: RaceRules, fields: Set<RuleField>): List<EngineerMessage> {
         if (newRules.trackId != rules.trackId) trackCandidates = emptyList()
+        if (newRules.startTyre != null && newRules.startTyre != rules.startTyre) startTyreDeclaredMs = clock()
         rules = profiles.declare(newRules, fields).rules
         storage?.saveRules(rules)
         storage?.saveProfiles(profiles)
@@ -1307,6 +1358,7 @@ class RaceController(
 
     private fun applyRules(newRules: RaceRules) {
         if (newRules.trackId != rules.trackId) trackCandidates = emptyList()
+        if (newRules.startTyre != null && newRules.startTyre != rules.startTyre) startTyreDeclaredMs = clock()
         rules = profiles.updateRules(newRules).rules
         storage?.saveRules(newRules)
         storage?.saveProfiles(profiles)
@@ -1315,12 +1367,14 @@ class RaceController(
     // ------------------------------------------------------------------ Archive des sessions
 
     private fun startSession() {
+        forgetStaleStartTyre()
         driverDeclaredDuringPitNumber = null
         gridPosition = null
         finishPosition = null
         internalErrors.clear()
         trackInconsistencyNoted = false
         geometry?.reset()
+        geometryLocked = false
         geometryHandled.clear()
         firstGeometryPosition = "aucune"
         sessionIdentity = SessionMatcher.Result.Unknown
@@ -1822,6 +1876,21 @@ class RaceController(
     private fun replan(): List<EngineerMessage> {
         val snap = tracker.snapshot
         val p = snap.packet ?: return emptyList()
+        // Issue #47 (Fuji, 28/10) : « oui » à la gomme déclarée pendant le plein relançait le plan (« arrêt fin du tour 7 »,
+        // « carburant critique ») alors que la voiture se ravitaillait. Point unique pour TOUS les chemins (paquets,
+        // commandes, « oui », règlement) : aucun plan ni arrêt annoncé pendant la visite au stand ; le recalcul attend
+        // sa fin (PitVisitEnded) et se fait une seule fois avec tout ce qui a été déclaré entre-temps.
+        if (tracker.pitVisitOpen) {
+            if (!replanDeferred) {
+                replanDeferred = true
+                journal.record(
+                    JournalType.STRATEGY, JournalSource.ENGINE, "Plan gelé : passage au stand en cours",
+                    decision = "recalcul après la sortie du stand", lap = p.currentLap,
+                )
+            }
+            return emptyList()
+        }
+        replanDeferred = false
         // Never optimize stops using the wrong weekly regulations (e.g. Sport A
         // selected while actual GT7 race has 14 laps, corresponding to Sport C).
         // Telemetry fuel is still monitored independently and the event can be
@@ -3875,6 +3944,9 @@ class RaceController(
             geometryHandled.clear()
         }
         val g = geometry ?: return
+        // Fuji, 28/10 (#47) : circuit reconnu à 709 m, puis « aucune signature » au tour 6 après 26,8 km cumulés (voie des
+        // stands, dérive). Une fois reconnu pour la session, le circuit n'est plus remis en cause par l'accumulation.
+        if (geometryLocked) return
         val moving = raceActive && !tracker.pitVisitOpen && p.speedKmh > 10f
         if (moving && firstGeometryPosition == "aucune") {
             firstGeometryPosition = String.format(java.util.Locale.ROOT, "x=%.0f z=%.0f", p.positionX, p.positionZ)
@@ -3923,6 +3995,7 @@ class RaceController(
                     ),
                 )
                 sessionTrackEvidence = v.course
+                geometryLocked = true
                 trackCandidates = emptyList()
                 if (previous != v.course) {
                     applyRules(rules.copy(trackId = v.course))
@@ -3952,6 +4025,9 @@ class RaceController(
             com.gt7pitwall.core.knowledge.TrackGeometryRecognizer.Verdict.Pending -> Unit
         }
     }
+
+    /** Circuit reconnu par la géométrie pour cette session : la reconnaissance s'arrête là (issue #47). */
+    private var geometryLocked = false
 
     /** Circuit déjà signalé incohérent dans cette session (un seul message). */
     private var trackInconsistencyNoted = false

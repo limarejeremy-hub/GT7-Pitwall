@@ -194,6 +194,18 @@ class ProfileBook(entries: Map<ProfileId, ProfileEntry>, active: ProfileId) {
     val current: ProfileEntry get() = book.getValue(active)
 
     /**
+     * Valeur mémorisée contredite par GT7 ou trop ancienne pour la course active (issue #47) : elle est retirée du
+     * règlement actif sans devenir « saisie par toi ». Le statut du champ redevient inconnu et la confirmation tombe,
+     * le règlement confirmé ne correspondant plus à la course.
+     */
+    fun discard(rules: RaceRules, field: RuleField): ProfileEntry {
+        val old = current
+        if (rules == old.rules) return old
+        val status = if (old.profile.ruleStatus.isEmpty()) old.profile.ruleStatus else old.profile.ruleStatus - field
+        return ProfileEntry(old.profile.copy(confirmed = false, ruleStatus = status), rules).also { book[active] = it }
+    }
+
+    /**
      * Passe à l'épreuve [id]. Nouvelle épreuve : règlement vide, sauf le circuit de la même série (qualification et
      * course d'une même épreuve se courent sur le même circuit).
      */
