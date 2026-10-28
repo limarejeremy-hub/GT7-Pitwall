@@ -85,7 +85,7 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
     private val lock = Mutex()
     private val speech by lazy { SpeechPcm(appContext) }
     // Créé à la première utilisation : aucune classe de JDA n'est chargée au lancement de l'application.
-    private val sender by lazy { OpusQueueSender() }
+    private val sender by lazy { OpusQueueSender(audioMonitor) }
     private var jda: JDA? = null
 
     /** Phrase à dire, ou signal déjà encodé ([frames]) : même file, donc jamais un bip au milieu d'une phrase. */
@@ -118,7 +118,7 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
             ?.takeIf { it.isNotEmpty() }?.also { toneFrames[tone] = it } ?: return false
         val done = CompletableDeferred<Boolean>()
         val dropped = queue.offer(Queued(EngineerMessage("[bip]", Priority.HIGH, MessageCategory.RADIO), { done.complete(false) }, frames, done))
-        if (dropped != null) sender.clear()
+        if (dropped != null) sender.clear("signal prioritaire", current?.text)
         wake.trySend(Unit)
         return withTimeoutOrNull(TONE_TIMEOUT_MS) { done.await() } ?: false
     }
@@ -566,13 +566,13 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
     private fun enqueue(message: EngineerMessage, onFailed: (EngineerMessage) -> Unit) {
         val dropped = queue.offer(Queued(message, onFailed))
         // Alerte critique : la phrase en cours est coupée, les messages en attente sont abandonnés (comme sur le Fold).
-        if (dropped != null) sender.clear()
+        if (dropped != null) sender.clear("alerte prioritaire (${message.text.take(30)})", current?.text)
         wake.trySend(Unit)
     }
 
     override fun stop() {
         queue.drain().forEach { it.done?.complete(false) }
-        sender.clear()
+        sender.clear("arrêt de la voix demandé", current?.text)
         current = null
         _speaking.value = false
     }
@@ -582,7 +582,19 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
     var current: EngineerMessage? = null
         private set
 
-    /** Premier son d'un message envoyé au salon (mesure de latence ; le tampon Discord et PS5 s'y ajoute). */
+    /**
+     * Diagnostic de la voix envoyée (issue #48), désactivé par défaut : trames, appels d'envoi en retard, file vide,
+     * vidages. Aucun son gardé ; seules les anomalies remontent par [onAudioEvent].
+     */
+    val audioMonitor = com.gt7pitwall.core.radio.AudioSendMonitor { android.os.SystemClock.elapsedRealtime() }
+
+    @Volatile
+    var onAudioEvent: (String, String) -> Unit = { _, _ -> }
+
+    /**
+     * Mise en file d'un message pour le salon (mesure de latence). Ce n'est PAS le son entendu dans le casque : le
+     * tampon de JDA, le réseau, Discord et la PS5 s'y ajoutent (issue #48).
+     */
     @Volatile
     var onAudible: (EngineerMessage, Long) -> Unit = { _, _ -> }
 
@@ -617,6 +629,7 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
                     current = item.message
                     onAudible(item.message, android.os.SystemClock.elapsedRealtime())
                 }
+                audioMonitor.beginPhrase(item.message.text, frames)
                 sender.enqueue(frames)
                 val started = System.currentTimeMillis()
                 val maxMs = frames.size * FRAME_MS + PLAYBACK_MARGIN_MS
@@ -625,6 +638,8 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
                 ) {
                     delay(FRAME_MS)
                 }
+                audioMonitor.endPhrase(cutShort = queue.generation != generation || !inVoice)
+                audioMonitor.drain().forEach { onAudioEvent(it.code, it.text) }
                 item.done?.complete(true)
                 if (!item.isTone) current = null
             }
@@ -650,7 +665,7 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
 
     /** Messages en attente rendus à l'appelant (haut-parleur du Fold) : la connexion au salon est perdue. */
     private fun failPending() {
-        sender.clear()
+        sender.clear("salon quitté ou connexion perdue", current?.text)
         queue.drain().forEach { it.onFailed(it.message) }
         _speaking.value = false
     }
@@ -756,18 +771,31 @@ private class PhraseCache(private val capacity: Int) {
 }
 
 /** File de trames Opus 20 ms lue par JDA toutes les 20 ms (audio déjà encodé : pas d'opus-java). */
-class OpusQueueSender : AudioSendHandler {
+class OpusQueueSender(private val monitor: com.gt7pitwall.core.radio.AudioSendMonitor? = null) : AudioSendHandler {
     private val queue = ConcurrentLinkedQueue<ByteArray>()
+
+    /** Dernière réponse à JDA : « prête » puis aucune trame = trou audible possible (issue #48). */
+    @Volatile
+    private var promised = false
 
     fun enqueue(frames: List<ByteArray>) {
         queue.addAll(frames)
     }
 
-    fun clear() = queue.clear()
+    /** Vide la file ; [reason] et la phrase en cours sont notés si le diagnostic audio est actif. */
+    fun clear(reason: String, current: String? = null) {
+        val dropped = queue.size
+        queue.clear()
+        monitor?.onClear(reason, dropped, current)
+    }
 
-    override fun canProvide(): Boolean = queue.isNotEmpty()
+    override fun canProvide(): Boolean = queue.isNotEmpty().also { promised = it }
 
-    override fun provide20MsAudio(): ByteBuffer? = queue.poll()?.let { ByteBuffer.wrap(it) }
+    override fun provide20MsAudio(): ByteBuffer? {
+        val frame = queue.poll()
+        monitor?.onProvide(frame != null, promised)
+        return frame?.let { ByteBuffer.wrap(it) }
+    }
 
     override fun isOpus(): Boolean = true
 }

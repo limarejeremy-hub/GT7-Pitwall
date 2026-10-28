@@ -1299,6 +1299,8 @@ private fun HumanRadioCard(engine: PitwallEngine, settings: com.gt7pitwall.app.s
     val memoryOn by engine.pilotMemoryEnabled.collectAsStateWithLifecycle()
     val latency by engine.latency.collectAsStateWithLifecycle()
     var bargeIn by rememberSaveable { mutableStateOf(settings.bargeIn) }
+    var audioDiag by rememberSaveable { mutableStateOf(settings.audioDiagnostics) }
+    val context = LocalContext.current
     androidx.compose.runtime.LaunchedEffect(Unit) { engine.refreshPilotMemory() }
     PitCard("Radio humaine") {
         SwitchLine(
@@ -1311,6 +1313,16 @@ private fun HumanRadioCard(engine: PitwallEngine, settings: com.gt7pitwall.app.s
             settings.bargeIn = it
         }
         latency?.let { DiagLine("Dernière latence", it) }
+        SwitchLine(
+            "Diagnostic de la voix Discord",
+            "Note au journal les trous possibles dans la voix envoyée au casque PS5 : trames anormales, envoi en retard, " +
+                "phrase coupée par une alerte. Aucun son n'est enregistré. À activer pour l'essai du son haché (#48).",
+            audioDiag,
+        ) {
+            audioDiag = it
+            settings.audioDiagnostics = it
+            (context.applicationContext as? com.gt7pitwall.app.PitwallApp)?.discord?.audioMonitor?.enabled = it
+        }
         SwitchLine(
             "Mémoire de l'ingénieur",
             "Seulement ce que tu lui demandes de retenir (« retiens que… ») et que tu confirmes. Aucun audio n'est gardé.",

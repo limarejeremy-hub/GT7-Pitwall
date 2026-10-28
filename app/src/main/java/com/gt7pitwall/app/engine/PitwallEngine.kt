@@ -223,6 +223,11 @@ class PitwallEngine(
     private var pendingLatency: Pair<com.gt7pitwall.core.radio.LatencyTrace, Set<EngineerMessage>>? = null
 
     /** Premier son réellement émis pour un message (synthèse du Fold ou salon Discord). */
+    /** État de la radio au journal (code stable, texte lisible), sans aucun son. */
+    fun journalRadio(code: String, text: String) {
+        runCatching { race.journal.record(JournalType.RADIO, JournalSource.SYSTEM, text, details = mapOf("code" to code)) }
+    }
+
     fun onAudible(message: EngineerMessage, atMs: Long) {
         val (trace, answers) = pendingLatency ?: return
         if (answers.none { it === message }) return

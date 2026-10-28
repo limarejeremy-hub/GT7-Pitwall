@@ -165,7 +165,8 @@ class LatencyTrace(val turn: Long) {
         ENGINE("calcul du moteur"),
         AI("réponse de l'IA"),
         SYNTHESIS("synthèse vocale"),
-        AUDIBLE("premier son audible"),
+        /** Téléphone : début de la lecture ; Discord : mise en file d'envoi (le casque PS5 n'est pas observable, #48). */
+        AUDIBLE("premier son envoyé"),
     }
 
     private val marks = LinkedHashMap<Step, Long>()
