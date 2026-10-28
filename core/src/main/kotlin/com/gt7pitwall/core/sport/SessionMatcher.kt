@@ -18,6 +18,10 @@ import java.time.LocalDate
  * réglages : c'est dit comme tel, jamais affirmé.
  *
  * Course du 26/10 : profil B (6 tours) chargé pour une course GT7 de 14 tours ; avec cette règle, le profil B est exclu.
+ *
+ * Issue #51 (Sport C SUGO, 28/10) : le circuit « reconnu » n'était que le nom publié par la fiche de l'épreuve déjà
+ * choisie, compté comme une seconde preuve. Seul un circuit MESURÉ (géométrie X/Z) peut rendre une épreuve reconnue ;
+ * une longueur de tour compatible ne fait qu'une épreuve probable (SUGO 3 586 m et Laguna Seca 3 602 m).
  */
 object SessionMatcher {
     enum class Confidence(val label: String) {
@@ -52,7 +56,15 @@ object SessionMatcher {
      * l'est ; [carGroup] : catégorie de la voiture d'après la base (« 3 », « N »…), si elle est connue ; [today] : date
      * du jour (heure de Paris).
      */
-    fun match(editions: Map<Series, Edition>, gt7Laps: Int?, trackId: Int?, today: LocalDate, carGroup: String? = null): Result {
+    fun match(
+        editions: Map<Series, Edition>,
+        gt7Laps: Int?,
+        trackId: Int?,
+        today: LocalDate,
+        carGroup: String? = null,
+        /** Le circuit vient d'une mesure indépendante (géométrie) ; faux : longueur compatible seulement. */
+        trackMeasured: Boolean = true,
+    ): Result {
         val laps = gt7Laps?.takeIf { it > 0 }
         val current = editions.filter { (s, e) -> s != Series.OTHER && e.covers(today) }
         if (current.isEmpty() || (laps == null && trackId == null && carGroup == null)) return Result.Unknown
@@ -73,9 +85,14 @@ object SessionMatcher {
                 evidence += "voiture ${groupLabel(carGroup)}"
             }
             if (trackId != null && ed.trackId != null) {
-                if (ed.trackId != trackId) return@mapNotNull null
-                evidence += "circuit"
-                trackOk = true
+                if (trackMeasured) {
+                    if (ed.trackId != trackId) return@mapNotNull null
+                    evidence += "circuit mesuré"
+                    trackOk = true
+                } else if (ed.trackId == trackId) {
+                    // Longueur compatible : un indice, jamais une exclusion ni une reconnaissance (circuits voisins).
+                    evidence += "longueur du tour compatible"
+                }
             }
             Scored(series, ed, evidence, lapsOk, trackOk)
         }

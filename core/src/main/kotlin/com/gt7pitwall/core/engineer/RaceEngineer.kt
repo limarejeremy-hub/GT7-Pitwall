@@ -689,6 +689,14 @@ class RaceEngineer {
 
     private fun planSentence(p: RacePlan): String = buildString {
         append(if (p.estimatedLaps) "Course estimée à ${p.totalLaps} tours. " else "Course de ${p.totalLaps} tours. ")
+        // Issue #51 : gommes imposées et gomme de départ inconnue. Le nombre d'arrêts dépend de la gomme de départ : pas
+        // de « 2 arrêts » présentés comme définitifs, mais ce qui est sûr (au moins un changement) et ce qu'il manque.
+        if (p.startTyreUnknown && p.requiredTyres.size >= 2) {
+            val tyres = p.requiredTyres.sortedBy { it.ordinal }.joinToString(" et ") { it.spoken }
+            append("Gommes $tyres obligatoires : au moins un arrêt pour changer de gomme. ")
+            append("Plan précis dès que je connais tes pneus de départ, dis par exemple « je pars en mediums ».")
+            return@buildString
+        }
         if (p.stops.isEmpty()) {
             append("Stratégie : pas d'arrêt, le carburant suffit")
             append(sourceSentence(p)).append('.')
