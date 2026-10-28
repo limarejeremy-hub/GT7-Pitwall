@@ -281,6 +281,11 @@ class PitwallEngine(
 
     /** Validation des champs expérimentaux (0x154 couple moteur ?, 0x140, 0x94) : observe seulement. */
     val torqueProbe = com.gt7pitwall.core.telemetry.TorqueProbe()
+    /**
+     * Sonde « touche radio DualSense » (issue #38, phase 1) : observe les bits de phares de 0x8E. Désactivée par défaut ;
+     * elle ne déclenche jamais la radio et ne dit rien.
+     */
+    val controllerProbe = com.gt7pitwall.core.telemetry.ControllerRadioProbe()
     private val _probe = MutableStateFlow(positionProbe.summary())
     val probe: StateFlow<PositionProbe.Summary> = _probe.asStateFlow()
     private var lastProbeMs = 0L
@@ -596,6 +601,10 @@ class PitwallEngine(
             positionProbe.onPacket(p, now)
             torqueProbe.onPacket(p)
             formatLog.onPacket(now)
+            if (controllerProbe.enabled) {
+                controllerProbe.profile(race.profile.id.label, now)
+                controllerProbe.onPacket(p, now)
+            }
             if (now - lastProbeMs >= PROBE_REFRESH_MS) {
                 lastProbeMs = now
                 refreshProbe()
