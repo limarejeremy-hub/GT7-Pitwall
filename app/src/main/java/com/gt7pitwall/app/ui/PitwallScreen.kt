@@ -1247,6 +1247,27 @@ private fun ControllerRadioProbeCard(engine: PitwallEngine) {
             Text("Sonde active", modifier = Modifier.weight(1f))
             Switch(checked = on, onCheckedChange = { probe.setEnabled(it, System.currentTimeMillis()); on = it })
         }
+        val now = { System.currentTimeMillis() }
+        Text("Mode de jeu (déclaré, Pitwall ne le détecte pas) : ${probe.currentMode.label}", style = MaterialTheme.typography.bodySmall)
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            com.gt7pitwall.core.telemetry.ControllerRadioProbe.Mode.entries.drop(1).forEach { m ->
+                OutlinedButton(onClick = { probe.declareMode(m, now()); lines = probe.summary() }, enabled = on, modifier = Modifier.weight(1f)) {
+                    Text(m.label, style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        }
+        Text("Série en cours : ${probe.currentSeries?.label ?: "aucune"}", style = MaterialTheme.typography.bodySmall)
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf(
+                com.gt7pitwall.core.telemetry.ControllerRadioProbe.SeriesKind.CONTROL,
+                com.gt7pitwall.core.telemetry.ControllerRadioProbe.SeriesKind.SHORT_PRESSES,
+                com.gt7pitwall.core.telemetry.ControllerRadioProbe.SeriesKind.HOLDS,
+            ).forEach { k ->
+                OutlinedButton(onClick = { probe.startSeries(k, now()); lines = probe.summary() }, enabled = on, modifier = Modifier.weight(1f)) {
+                    Text(k.label, style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        }
         lines.forEach { Text("• $it", style = MaterialTheme.typography.bodySmall) }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = { probe.mark(System.currentTimeMillis()); lines = probe.summary() }, enabled = on, modifier = Modifier.weight(1f)) {

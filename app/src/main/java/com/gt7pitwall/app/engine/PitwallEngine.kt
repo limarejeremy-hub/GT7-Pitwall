@@ -587,7 +587,7 @@ class PitwallEngine(
         runCatching {
             positionProbe.onPacket(p, now)
             if (controllerProbe.enabled) {
-                controllerProbe.session(race.profile.id.label, now)
+                controllerProbe.profile(race.profile.id.label, now)
                 controllerProbe.onPacket(p, now)
             }
             if (now - lastProbeMs >= PROBE_REFRESH_MS) {

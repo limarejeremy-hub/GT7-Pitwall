@@ -61,43 +61,46 @@ Elle ne dépend pas de la PR #37 (brouillon) et ne la contamine pas.
 - **Atelier** → carte « Sonde touche radio DualSense (expérimental) » : interrupteur, repère, résumé rafraîchi chaque
   seconde, export, effacer.
 
+## Révision après la revue de la PR #39
+
+| Point de la revue | Correction |
+|---|---|
+| 1. Repères non appariés 1:1 | Appariement chronologique **un repère ↔ un épisode distinct**. L'allumage doit commencer entre le repère et 2,5 s après ; un repère posé après l'allumage n'est jamais rattaché (même horloge). |
+| 2. Concordance sur signal perturbé | Seuls les épisodes **fermés et mesurables** comptent (montée et descente vues). Sont non mesurables : coupure UDP, pause, chargement, changement de voiture, de mode déclaré ou de série pendant l'épisode, allumage moins d'1 s après un changement de mode ou de série, début inconnu, bit coincé. Un épisode non mesurable dans la fenêtre d'un repère rend la série « non concluante ». |
+| 3. Contrôles négatifs, séries, mode | Séries **témoin sans appui**, **appels brefs**, **maintiens d'environ 1 s**. Par série : repères, montées, appariées, relâchements mesurés, non mesurables, verdict. Un témoin avec une montée rend tout l'essai non concluant. Le **mode de jeu est déclaré** par le pilote (hors ligne, Sport qualification, Sport course) ; le profil Pitwall n'est noté qu'« à titre indicatif, pas une détection du mode ». |
+| 4. Limites | 0x8E = **état des feux**, pas un bouton brut. L'écart entre paquets au 95e centile mesure la **régularité du flux reçu**, pas une latence de bout en bout. |
+
 ## Tests (JVM, trames synthétiques)
 
-`ControllerRadioProbeTest` (8). Ils prouvent la mesure et la prudence, **pas** le comportement de GT7.
+`ControllerRadioProbeTest` (12). Ils prouvent la mesure et la prudence, **pas** le comportement de GT7.
 
 | Cas | Attendu |
 |---|---|
 | Impulsions de 1 et 3 paquets, 0,3 s, 1 s, 2,4 s | Impulsion, impulsion, bref, maintenu, long |
-| Pleins phares allumés au premier paquet | Permanent, puis « non mesurable » à l'extinction (début inconnu) ; verdict « indétectable » |
+| Pleins phares allumés au premier paquet | Permanent ; « non mesurable » à l'extinction (début inconnu) ; verdict « indétectable » |
 | Feux automatiques (seul le bit 7 change) | Suivis à part ; pleins phares « jamais changé » |
 | Double appui | Deux épisodes |
-| Pause pendant l'appui ; coupure UDP de 2 s puis reprise | Non mesurables ; coupure comptée |
 | Format A (296 octets) | Fonctionne |
-| Transitions sans repère ; repères avec un allumage en trop ; 5 repères concordants | Aucune attribution ; pas de correspondance ; concordance limitée à l'essai |
-| Sonde désactivée ; reconnexion avec changement de voiture | Rien n'est enregistré ; coupure et changement journalisés, aucune adresse |
+| Témoin propre + 5 appels brefs + 5 maintiens, repères avant chaque appui, hors ligne | Concordance « sur cet essai seulement », jamais « touche détectée » |
+| 5 repères groupés puis une seule montée | 1/5 appariés : non concluant |
+| Repère posé après l'allumage | Jamais apparié |
+| Coupure UDP, pause, changement de voiture, changement de mode pendant un maintien ; bit coincé à 1 | Non concluant |
+| Allumage 0,16 s après le début d'une série | Non mesurable |
+| Témoin avec une montée sans appui | Tout l'essai non concluant |
+| Sonde désactivée ; reconnexion, changement de voiture ; export | Rien n'est enregistré ; coupure et changement journalisés ; limites écrites ; aucune adresse |
 
 ## Protocole PS5 (hors ligne d'abord, jamais en ligne avant validation)
 
-Préparation :
-- Atelier → « Sonde touche radio DualSense » : activer.
-- Course hors ligne, voiture **à l'arrêt**, Fold en main : tu ne conduis pas pendant cet essai.
+Préparation : Atelier → « Sonde touche radio DualSense » : activer, puis toucher **Hors ligne** (mode déclaré). Course
+hors ligne, voiture **à l'arrêt**, Fold en main : tu ne conduis pas pendant cet essai.
 
-1. **Repos.** 10 s sans rien toucher. Le résumé doit montrer l'état initial et aucune transition.
-2. **Appels courts.** Cinq fois : toucher « J'appuie maintenant », poser le Fold, faire **un** appel de phares bref.
-   Laisser 5 s entre chaque.
-3. **Appuis maintenus.** Cinq fois : repère, puis maintenir l'appel de phares environ 1 s.
-4. **Feux.** Allumer puis éteindre les phares fixes, s'ils sont disponibles sur la voiture. Si possible, refaire de
-   nuit pour voir les feux automatiques.
-5. **Autres touches.** Si GT7 permet d'attribuer l'appel de phares à une autre touche, refaire l'étape 2 avec elle.
-6. **Exporter** le journal et l'envoyer.
-7. Seulement si les étapes 2 et 3 concordent : refaire en **ligne droite sûre**, hors ligne, puis en qualification
-   Sport (pas en course).
-
-Ce que le journal permettra de trancher :
-- l'appel de phares change-t-il le bit 8 ? ;
-- son relâchement est-il visible (impulsion ou durée réelle) ? ;
-- les feux automatiques s'y mêlent-ils ? ;
-- même chose en Sport ?
+1. **Témoin sans appui** : toucher le bouton, puis 20 s sans rien toucher (phares fixes ou automatiques tels quels).
+2. **Appels brefs** : toucher le bouton. Cinq fois : « J'appuie maintenant », poser le Fold, **un** appel de phares bref,
+   attendre 5 s.
+3. **Maintiens d'environ 1 s** : toucher le bouton, puis cinq fois la même chose en maintenant environ 1 s.
+4. **Exporter** le journal et l'envoyer. Le résumé donne, par série, les repères, montées, appariements, relâchements
+   et épisodes non mesurables.
+5. Seulement si tout concorde : refaire en déclarant **Sport, qualification** (pas en course).
 
 ## Phase 2 — architecture proposée, **non implémentée**
 
