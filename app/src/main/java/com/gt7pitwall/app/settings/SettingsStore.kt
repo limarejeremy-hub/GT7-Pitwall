@@ -72,6 +72,14 @@ class SettingsStore(context: Context) {
         get() = prefs.getBoolean("barge_in", true)
         set(value) = prefs.edit().putBoolean("barge_in", value).apply()
 
+    /**
+     * Interruption pendant la parole quand l'ingénieur parle par Discord (casque PS5). Désactivée par défaut (issue #45 :
+     * la voix du bot revenait dans le micro du pilote). À activer seulement après un essai sans fausse interruption.
+     */
+    var remoteBargeIn: Boolean
+        get() = prefs.getBoolean("remote_barge_in", false)
+        set(value) = prefs.edit().putBoolean("remote_barge_in", value).apply()
+
     var discordMicInput: Boolean
         get() = prefs.getBoolean(KEY_DISCORD_MIC, true)
         set(value) = prefs.edit().putBoolean(KEY_DISCORD_MIC, value).apply()

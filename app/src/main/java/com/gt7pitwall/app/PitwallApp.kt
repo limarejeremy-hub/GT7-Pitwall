@@ -190,8 +190,10 @@ class PitwallApp : Application() {
      */
     fun duplexMode(): com.gt7pitwall.core.radio.DuplexMode {
         if (!settings.bargeIn) return com.gt7pitwall.core.radio.DuplexMode.OFF
-        // Voix dans le casque PS5 (Discord) : ni le flux Discord du pilote ni le micro du Fold ne l'entendent.
-        return com.gt7pitwall.core.radio.DuplexPolicy.mode(radioOut.route, phoneSpeaker = phoneOnSpeaker())
+        // Voix dans le casque PS5 (Discord) : pas d'interruption pendant la parole sans choix explicite (issue #45).
+        return com.gt7pitwall.core.radio.DuplexPolicy.mode(
+            radioOut.route, phoneSpeaker = phoneOnSpeaker(), remoteDuplexOptIn = settings.remoteBargeIn,
+        )
     }
 
     /** La voix du Fold sort par le haut-parleur intégré (aucun casque ni écouteurs branchés ou connectés). */

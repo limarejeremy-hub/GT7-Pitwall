@@ -43,6 +43,7 @@ class TyreChangeAdviceTest {
         val s = RaceSim(c, totalLaps = 15, perLap = 6f, fuel = 60f)
         s.start()
         s.say("les pneus tiennent quatre tours")
+        s.say("oui") // issue #45 : règlement dicté → confirmation
         s.driveLaps(1)
         val first = c.plan!!.stops.first()
         assertTrue(first.changeTyres && first.endOfLap <= 4, c.plan!!.stops.toString())
@@ -67,6 +68,7 @@ class TyreChangeAdviceTest {
         assertEquals(1, asks.size)
         assertTrue(asks[0].expectsReply)
         s.say("les pneus tiennent six tours")
+        s.say("oui") // issue #45 : règlement dicté → confirmation
         assertEquals(6, c.rules.tyreStintLaps)
     }
 }

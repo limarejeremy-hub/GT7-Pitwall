@@ -1299,16 +1299,26 @@ private fun HumanRadioCard(engine: PitwallEngine, settings: com.gt7pitwall.app.s
     val memoryOn by engine.pilotMemoryEnabled.collectAsStateWithLifecycle()
     val latency by engine.latency.collectAsStateWithLifecycle()
     var bargeIn by rememberSaveable { mutableStateOf(settings.bargeIn) }
+    var remoteBargeIn by rememberSaveable { mutableStateOf(settings.remoteBargeIn) }
     androidx.compose.runtime.LaunchedEffect(Unit) { engine.refreshPilotMemory() }
     PitCard("Radio humaine") {
         SwitchLine(
             "Interruption à la voix",
-            "Dis « attends » ou « stop » pendant qu'il parle. Casque PS5 (Discord) ou écouteurs : à tout moment. " +
+            "Dis « attends » ou « stop » pendant qu'il parle. Écouteurs du Fold : à tout moment. " +
                 "Haut-parleur du Fold : entre ses phrases seulement. Une alerte critique n'est jamais coupée.",
             bargeIn,
         ) {
             bargeIn = it
             settings.bargeIn = it
+        }
+        SwitchLine(
+            "Interruption aussi par Discord (expérimental)",
+            "Désactivée par défaut : en course le 28/10, le micro du casque PS5 renvoyait la voix de l'ingénieur et la coupait. " +
+                "Sans elle, attends la fin de sa phrase puis parle (ou dis « Radio »). À activer seulement après un essai à 0 fausse interruption.",
+            remoteBargeIn,
+        ) {
+            remoteBargeIn = it
+            settings.remoteBargeIn = it
         }
         latency?.let { DiagLine("Dernière latence", it) }
         SwitchLine(

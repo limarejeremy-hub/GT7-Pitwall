@@ -68,6 +68,11 @@ sealed interface VoiceInputEvent {
     data class Utterance(
         val text: String,
         val freeText: String? = null,
+        /**
+         * Phrase commencée pendant que l'ingénieur parlait ou dans les 2 s qui suivent : seule une telle phrase peut être
+         * son écho dans le micro (issue #45), elle est donc comparée à ce qu'il vient de dire.
+         */
+        val nearEngineer: Boolean = false,
         /** Faux : phrase entendue pendant la conversation continue sans « Radio » devant (modifications à confirmer). */
         val addressed: Boolean = true,
         /** Reconnaissance qui a transcrit la phrase (journal de course). */
