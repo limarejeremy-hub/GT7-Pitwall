@@ -25,20 +25,20 @@ class CarIdentity {
     private var candidateCount = 0
     private var candidateSinceMs = 0L
     private var prev: TelemetryPacket? = null
+    @Volatile
     private var frozen = 0
     private val log = ArrayDeque<Transition>()
 
     /** Lu par l'écran pendant que la télémétrie écrit : copie sous verrou. */
     val transitions: List<Transition> get() = synchronized(log) { log.toList() }
 
-    fun live(nowMs: Long): Boolean = current != null && nowMs - lastLiveMs <= LIVE_MS
+    /** En direct : paquet récent de cette voiture, et pas d'instantané figé en cours (même dans le délai de [LIVE_MS]). */
+    fun live(nowMs: Long): Boolean = current != null && nowMs - lastLiveMs <= LIVE_MS && frozen < FROZEN_PACKETS
 
     fun onPacket(p: TelemetryPacket, nowMs: Long): Transition? {
         val before = prev
         prev = p
-        // Même instantané renvoyé en boucle (menus après l'arrivée) : la voiture n'est pas « en direct ».
-        frozen = if (before != null && p.speedKmh > 1f && p.positionX == before.positionX &&
-            p.positionZ == before.positionZ && p.speedMps == before.speedMps) frozen + 1 else 0
+        frozen = if (before != null && isRepeat(before, p)) frozen + 1 else 0
         val code = p.carCode
         if (code <= 0 || p.isLoading || frozen >= FROZEN_PACKETS) return null
         if (code == current) {
@@ -64,6 +64,21 @@ class CarIdentity {
             while (log.size > MAX_TRANSITIONS) log.removeFirst()
         }
         return t
+    }
+
+    /**
+     * Même instantané renvoyé en boucle : la voiture n'est pas « en direct ».
+     * - Numéro de paquet (0x70) qui n'avance plus : instantané répété, **y compris à 0 km/h** (revue PR #42 : au
+     *   garage, un ancien instantané à l'arrêt entretenait « Confirmée par la PS5 »). Une voiture vraiment arrêtée
+     *   continue d'envoyer des paquets numérotés à la suite.
+     * - Numéro qui recule : reconnexion ou remise à zéro du compteur par GT7. Ce n'est pas un gel ; le compte repart.
+     * - Numéro qui avance mais même position et même vitesse non nulle : instantané figé (constat du 21/10).
+     * Limite : un instantané à 0 km/h renvoyé avec des numéros qui avancent reste indiscernable d'une voiture arrêtée.
+     */
+    private fun isRepeat(before: TelemetryPacket, p: TelemetryPacket): Boolean = when {
+        p.packetId == before.packetId -> true
+        p.packetId < before.packetId -> false
+        else -> p.speedKmh > 1f && p.positionX == before.positionX && p.positionZ == before.positionZ && p.speedMps == before.speedMps
     }
 
     private fun state(p: TelemetryPacket): String = when {

@@ -34,8 +34,10 @@ class CarChangeTest {
     private fun pkt(
         car: Int, lap: Int = 1, speedMps: Float = 30f, flags: Int = TelemetryPacket.FLAG_ON_TRACK,
         size: Int = GT7Crypto.PACKET_SIZE_A, posX: Float? = null,
+        /** Numéro de paquet imposé (instantané répété, compteur remis à zéro) ; sinon il avance. */
+        packetId: Int? = null,
     ): TelemetryPacket {
-        id++
+        id = packetId ?: (id + 1)
         val plain = TestPackets.plain(lap = lap, totalLaps = 5, speedMps = speedMps, carCode = car, packetId = id, flags = flags, size = size,
             posX = posX ?: if (speedMps > 1f) id * speedMps / 60f else 0f)
         return TelemetryParser.parseDecrypted(plain)!!
@@ -136,5 +138,64 @@ class CarChangeTest {
         assertEquals(1, race.carIdentity.transitions.size)
         assertNull(race.carIdentity.transitions.single().from)
         assertFalse(race.carChangePending)
+    }
+
+    // ------------------------------------------------ Revue PR #42 : instantané répété à 0 km/h, compteur remis à zéro
+
+    @Test fun aRepeatedSnapshotAtZeroSpeedIsNeverAConfirmation() {
+        val c = CarIdentity()
+        feed(c, 40) { pkt(brz, speedMps = 0f) }
+        assertTrue(c.live(now))
+        // Garage : GT7 renvoie le dernier instantané de la BRZ, à l'arrêt, avec le même numéro de paquet.
+        val frozenId = id
+        feed(c, 120) { pkt(brz, lap = -1, speedMps = 0f, packetId = frozenId) }
+        assertFalse(c.live(now))
+        assertEquals(brz, c.current)
+        val profile = EventProfile(id = ProfileId(Series.OTHER, SessionKind.RACE))
+        assertEquals(CarEvidence.LAST_SEEN, DriverGarage.resolve(c.current, c.live(now), profile, null, null, emptyList(), db).evidence)
+        // Le même instantané portant un autre code ne fait pas changer la voiture.
+        assertTrue(feed(c, 120) { pkt(other, lap = -1, speedMps = 0f, packetId = frozenId) }.isEmpty())
+        assertEquals(brz, c.current)
+    }
+
+    @Test fun aParkedCarWhosePacketsAdvanceStaysLive() {
+        val c = CarIdentity()
+        feed(c, 300) { pkt(brz, lap = 0, speedMps = 0f) }
+        assertTrue(c.live(now))
+    }
+
+    @Test fun aDuplicatedUdpPacketDoesNotBreakTheConfirmation() {
+        val c = CarIdentity()
+        feed(c, 40) { pkt(brz) }
+        val dup = id
+        feed(c, 2) { pkt(brz, packetId = dup) }
+        feed(c, 5) { pkt(brz) }
+        assertTrue(c.live(now))
+    }
+
+    @Test fun aCounterResetOrReconnectionIsNotAFreezeAndANewCarIsStillRecognised() {
+        val c = CarIdentity()
+        id = 50_000
+        feed(c, 40) { pkt(brz) }
+        // Reconnexion : GT7 repart de 1.
+        id = 0
+        feed(c, 40) { pkt(brz, speedMps = 0f) }
+        assertTrue(c.live(now))
+        // Nouvelle voiture après une seconde remise à zéro : reconnue normalement.
+        id = 0
+        val t = feed(c, 40) { pkt(other, lap = 0, speedMps = 0f) }.single()
+        assertEquals(brz, t.from)
+        assertEquals(other, t.to)
+        assertTrue(c.live(now))
+    }
+
+    @Test fun frozenThenRestartedTelemetryIsLiveAgain() {
+        val c = CarIdentity()
+        feed(c, 40) { pkt(brz) }
+        val frozenId = id
+        feed(c, 120) { pkt(brz, speedMps = 0f, packetId = frozenId) }
+        assertFalse(c.live(now))
+        feed(c, 5) { pkt(brz, speedMps = 0f) }
+        assertTrue(c.live(now))
     }
 }
