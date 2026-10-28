@@ -665,7 +665,9 @@ class RaceController(
                             localRulesConfirmed = true
                             val fields = mutableSetOf(RuleField.MANDATORY_STOPS)
                             if (rules.requiredTyres.isNotEmpty()) fields += RuleField.REQUIRED_TYRES
+                            val was = profile.confirmed
                             rules = profiles.declare(rules.copy(mandatoryStops = 0, requiredTyres = emptySet()), fields).rules
+                            noteConfirmationDrop(was, "obligations locales écartées à la radio")
                             storage?.saveRules(rules)
                             storage?.saveProfiles(profiles)
                             journal.record(JournalType.DECISION, JournalSource.TRANSCRIPT, "Règlement local écarté par le pilote pour cette course",
@@ -1075,7 +1077,9 @@ class RaceController(
     /** Le pilote donne lui-même des champs du règlement (même inchangés : « aucun arrêt obligatoire »). */
     fun declareRules(newRules: RaceRules, fields: Set<RuleField>): List<EngineerMessage> {
         if (newRules.trackId != rules.trackId) trackCandidates = emptyList()
+        val was = profile.confirmed
         rules = profiles.declare(newRules, fields).rules
+        noteConfirmationDrop(was, fields.joinToString(", ") { it.label } + " saisi par le pilote")
         storage?.saveRules(rules)
         storage?.saveProfiles(profiles)
         return deliver(replan())
@@ -1092,6 +1096,7 @@ class RaceController(
     /** Changement d'épreuve (pilote ou reconnaissance automatique) ; messages non filtrés. */
     private fun switchProfile(id: ProfileId, announce: Boolean = true): List<EngineerMessage> {
         profiles.select(id)
+        confirmationDropped = null
         // L'édition de la semaine passe avant toute ancienne fiche enregistrée.
         val ed = schedule?.editions?.get(id.series)
         if (ed != null) profiles.applyEdition(id, ed) { SportAutofill.rules(ed, it.kind) }
@@ -1293,7 +1298,9 @@ class RaceController(
 
     /** Version de GT7, contexte de réglages / BoP. */
     fun updateProfile(p: EventProfile) {
+        val was = profile.confirmed
         profiles.updateProfile(p)
+        noteConfirmationDrop(was, "version de GT7 ou réglages modifiés")
         storage?.saveProfiles(profiles)
         saveSession()
     }
@@ -1301,10 +1308,39 @@ class RaceController(
     /** Le pilote confirme le règlement de l'épreuve active ([today] : aaaa-mm-jj). */
     fun confirmRules(today: String) {
         profiles.confirm(today)
+        confirmationDropped = null
         raceMemory.fact(snapshot.packet?.currentLap ?: 0, clock(), "règlement de l'épreuve confirmé", Provenance.DRIVER)
         storage?.saveProfiles(profiles)
         saveSession()
     }
+
+    /**
+     * Dernière confirmation du règlement retirée et pourquoi (essai du 28/10 : l'écran disait « confirmé », l'archive
+     * `confirmed=false`). Affichée avec le statut ; null après une nouvelle confirmation.
+     */
+    var confirmationDropped: String? = null
+        private set
+
+    private fun noteConfirmationDrop(wasConfirmed: Boolean, why: String) {
+        if (!wasConfirmed || profile.confirmed) return
+        confirmationDropped = why
+        journal.record(JournalType.DECISION, JournalSource.ENGINE, "Confirmation du règlement retirée : $why",
+            decision = "règlement à reconfirmer, plus présenté comme confirmé")
+    }
+
+    /**
+     * Statut du règlement tel qu'il est archivé, pour l'écran : une confirmation est toujours celle du pilote dans
+     * Pitwall, jamais une lecture de la PS5 (GT7 ne transmet pas le règlement).
+     */
+    val ruleStatusText: String
+        get() = when {
+            profile.id.mode == SessionMode.CUSTOM && profile.confirmed && !localRulesConfirmed ->
+                "Règlement local confirmé par toi le ${profile.eventDate ?: "?"}, pas encore reconfirmé pour cette course. GT7 ne transmet pas le règlement."
+            profile.confirmed -> "Règlement confirmé par toi dans Pitwall" + (profile.eventDate?.let { " le $it" } ?: "") +
+                ". GT7 ne transmet pas le règlement : ce n'est pas une lecture de la PS5."
+            confirmationDropped != null -> "Confirmation retirée ($confirmationDropped) : règlement à reconfirmer."
+            else -> "Règlement non confirmé : " + ruleSourceLabel() + "."
+        }
 
     /** Télémétrie arrêtée : la session en cours est archivée comme interrompue (sauf si la course est finie). */
     fun endSession() {
@@ -1328,7 +1364,10 @@ class RaceController(
 
     private fun applyRules(newRules: RaceRules) {
         if (newRules.trackId != rules.trackId) trackCandidates = emptyList()
+        val was = profile.confirmed
+        val changed = ProfileBook.changedFields(rules, newRules)
         rules = profiles.updateRules(newRules).rules
+        noteConfirmationDrop(was, changed.joinToString(", ") { it.label } + " modifié")
         storage?.saveRules(newRules)
         storage?.saveProfiles(profiles)
     }
@@ -1450,6 +1489,11 @@ class RaceController(
             tyreCompound = if (change != null) change.compound else rules.startTyre,
             // Une gomme inconnue n'est jamais certaine ; l'âge garde sa propre certitude.
             tyreCertain = certain && (if (change != null) change.compound else rules.startTyre) != null,
+            tyreSource = when {
+                change != null -> TyreSource.DECLARED_CHANGE.takeIf { change.compound != null }
+                rules.startTyre != null -> TyreSource.DECLARED_START
+                else -> null
+            },
             tyreAgeCertain = certain,
             fuelAfter = l.fuelAfter,
             pitLane = l.pitLane,
@@ -1769,9 +1813,9 @@ class RaceController(
                         l.wheelTemps?.let { t -> "temperatures_pneus" to t.joinToString("/") { Math.round(it).toString() } },
                         l.tyreCompound?.let { "pneus" to it.name },
                         l.tyreAge?.let { "age_pneus_tours" to it.toString() },
-                        "gomme_certaine" to if (l.tyreCertain) "oui" else "non",
+                        "gomme_certaine" to if (l.tyreCertain) "déclaration certaine (non mesurée)" else "non",
                         // GT7 ne transmet pas la gomme : elle vient toujours d'une déclaration (pilote, réglage, règlement).
-                        "source_gomme" to if (l.tyreCompound != null) "déclarée (pilote, réglage ou règlement), non transmise par GT7" else "inconnue",
+                        "source_gomme" to (l.tyreSource?.let { it.label + ", non transmise par GT7" } ?: if (l.tyreCompound != null) "déclarée (pilote, réglage ou règlement), non transmise par GT7" else "inconnue"),
                         "age_pneus_certain" to if (l.tyreAgeCertain) "oui" else "non",
                         if (l.pitLane) "sortie_des_stands" to "oui (consommation exclue des moyennes)" else null,
                         l.kerbShare?.let { "vibreurs_pourcent" to Math.round(it * 100).toString() },
@@ -3904,7 +3948,9 @@ class RaceController(
             return answer(listOf("Je n'ai pas pu retirer l'arrêt fin du tour ${next.endOfLap} : je ne sais pas ce qui l'impose."))
         }
         // Le pilote corrige lui-même le règlement local : provenance « saisi par le pilote », jamais « confirmé par la PS5 ».
+        val was = profile.confirmed
         rules = if (fields.isNotEmpty()) profiles.declare(newRules, fields).rules else newRules.also { applyRules(it) }
+        noteConfirmationDrop(was, "arrêt obligatoire retiré par le pilote")
         storage?.saveRules(rules)
         storage?.saveProfiles(profiles)
         pitApproachReminder.reset()

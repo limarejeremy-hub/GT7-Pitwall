@@ -82,6 +82,8 @@ data class PitwallUiState(
     val carName: String? = null,
     /** Voiture changée dans GT7 depuis la session suivie : plan et historique recalculés au départ (issue #40). */
     val carChangePending: Boolean = false,
+    /** Statut du règlement tel qu'il est archivé (confirmé par le pilote, retiré, non confirmé), jamais « lu sur la PS5 ». */
+    val ruleStatus: String = "",
     /** Voiture confirmée par la PS5 ou dernière connue avec provenance, sans hypothèse déguisée. */
     val garageCar: GarageCar = GarageCar(null, null, com.gt7pitwall.core.knowledge.CarEvidence.UNKNOWN),
     val course: Course? = null,
@@ -720,6 +722,7 @@ class PitwallEngine(
             gForce = race.gForce,
             raining = race.engineer.raining,
             carName = race.carName,
+            ruleStatus = race.ruleStatusText,
             garageCar = garage,
             course = race.course,
             trackCandidates = race.trackCandidates,

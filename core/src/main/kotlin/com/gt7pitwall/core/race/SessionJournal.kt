@@ -357,7 +357,7 @@ object JournalExport {
                     l.tcsShare?.let { "TCS ${Math.round(it * 100)} %" },
                     l.lockups?.let { "blocages $it" },
                     l.wheelspins?.let { "patinages $it" },
-                    l.tyreCompound?.let { "pneus ${it.name}${if (l.tyreCertain) "" else " (incertain)"}, ${l.tyreAge ?: "?"} tour(s)" },
+                    l.tyreCompound?.let { "pneus ${it.name} déclarés${if (l.tyreCertain) "" else " (incertain)"}, ${l.tyreAge ?: "?"} tour(s)" },
                 )
                 appendLine("  " + parts.joinToString(" · "))
             }

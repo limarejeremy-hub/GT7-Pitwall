@@ -35,6 +35,11 @@ data class LapEntry(
     val tyreCompound: TyreCompound? = null,
     val tyreCertain: Boolean = true,
     /**
+     * D'où vient la gomme (essai du 28/10 : « RH, certaine » dans l'archive alors qu'elle était seulement déclarée).
+     * GT7 ne transmet jamais la gomme : [tyreCertain] est la certitude de la DÉCLARATION, jamais une mesure.
+     */
+    val tyreSource: TyreSource? = null,
+    /**
      * Certitude de l'âge des pneus seule (changement déclaré ou départ), indépendante de la gomme. [tyreCertain] exige
      * en plus une gomme connue : une gomme inconnue n'est jamais « certaine ».
      */
@@ -164,5 +169,16 @@ data class HistorySummary(
                 related = related.size,
             )
         }
+    }
+}
+
+/** Provenance de la gomme d'un tour. Il n'existe pas de valeur « mesurée » : l'UDP de GT7 ne contient pas la gomme. */
+enum class TyreSource(val code: String, val label: String) {
+    DECLARED_CHANGE("declared_change", "changement déclaré par le pilote"),
+    DECLARED_START("declared_start", "gomme de départ saisie (pilote ou règlement)"),
+    ;
+
+    companion object {
+        fun of(code: String?): TyreSource? = entries.firstOrNull { it.code == code }
     }
 }
