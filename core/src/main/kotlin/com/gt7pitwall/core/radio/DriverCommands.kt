@@ -176,6 +176,11 @@ object DriverCommandParser {
         if (has(t, "pourquoi") && has(t, "prochain tour", "prochain tours") &&
             has(t, "rentr", "arret", "arrete", "stand", "box", "rends")
         ) return DriverCommand.Ask(DriverQuery.PLAN)
+        // Course de Fuji du 28/10 (#47) : « je rentre dans combien de tours » recevait les tours restants de la course,
+        // pas le prochain arrêt. Rentrer / boxer + quand / combien : c'est le plan d'arrêt.
+        if (has(t, "quand", "combien") && Regex("(^|\\s)(rentre|rentrer|rentrerai|box|boxe|boxer|stand|stands)($|\\s)").containsMatchIn(t) &&
+            !has(t, "j'ai", "je suis passe", "fait")
+        ) return DriverCommand.Ask(DriverQuery.PLAN)
         keptIn(t)?.let { return it }
         // « Quand est-ce que je dois changer mes pneus ? » : une question, pas une déclaration de changement.
         val tyreWords = has(t, "pneu", "gomme")
