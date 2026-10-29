@@ -57,6 +57,11 @@ class SettingsStore(context: Context) {
         set(value) = prefs.edit().putBoolean(KEY_GOOGLE_SPEECH, value).apply()
 
     /** Radio Discord : connexion du bot et du dernier salon au lancement de la télémétrie. */
+    /** Issue #30 : « je choisis seulement dans GT7 » ; désactivé tant que le pilote ne l'a pas choisi. */
+    var sportFirst: Boolean
+        get() = prefs.getBoolean(KEY_SPORT_FIRST, false)
+        set(value) = prefs.edit().putBoolean(KEY_SPORT_FIRST, value).apply()
+
     var discordAutoJoin: Boolean
         get() = prefs.getBoolean(KEY_DISCORD_AUTO_JOIN, true)
         set(value) = prefs.edit().putBoolean(KEY_DISCORD_AUTO_JOIN, value).apply()
@@ -103,6 +108,7 @@ class SettingsStore(context: Context) {
         private const val KEY_GOOGLE_HEADSET = "google_on_headset"
         private const val KEY_DEV_TOOLS = "dev_tools"
         private const val KEY_DISCORD_AUTO_JOIN = "discord_auto_join"
+        private const val KEY_SPORT_FIRST = "sport_first"
         private const val KEY_DISCORD_MIRROR = "discord_mirror_phone"
         private const val KEY_GOOGLE_SPEECH = "google_speech"
         private const val KEY_AI = "ai_enabled"

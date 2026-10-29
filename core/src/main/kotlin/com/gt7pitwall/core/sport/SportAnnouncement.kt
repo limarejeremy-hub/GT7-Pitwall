@@ -28,7 +28,7 @@ object SportAnnouncement {
         append(
             when (match.confidence) {
                 SessionMatcher.Confidence.RECOGNIZED -> " Je prépare la stratégie."
-                SessionMatcher.Confidence.PROBABLE -> " J'applique ce règlement et je confirme au premier tour."
+                SessionMatcher.Confidence.PROBABLE -> " J'applique ce règlement, épreuve probable : seul le circuit mesuré pourra la confirmer."
             },
         )
     }
