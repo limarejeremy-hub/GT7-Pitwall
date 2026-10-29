@@ -22,7 +22,8 @@ android {
         targetSdk = 35
         // Sur GitHub Actions, chaque build a un numéro croissant : l'APK s'installe par-dessus le précédent.
         versionCode = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
-        versionName = "0.8.0"
+        // Issue #59 : le pilote doit savoir exactement quelle version il a (affichée dans la carte Connexion PS5).
+        versionName = "0.8.1 · V481 Sport d'abord + Connexion PS5 auto"
 
         // Le Fold est en arm64 ; on garde aussi armeabi-v7a. Réduit la taille des bibliothèques natives (Vosk).
         ndk {

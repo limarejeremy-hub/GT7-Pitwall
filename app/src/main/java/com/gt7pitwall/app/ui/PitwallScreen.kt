@@ -557,6 +557,7 @@ private fun ConnectionCard(
 ) {
     PitCard("Connexion PS5") {
         Text(describe(connection), style = MaterialTheme.typography.bodyMedium)
+        buildLabel()?.let { Text("Version : $it", style = MaterialTheme.typography.bodySmall) }
         OutlinedTextField(
             value = address,
             onValueChange = onAddressChange,
@@ -2350,5 +2351,17 @@ private fun FreshnessLine(
             },
             dismissButton = { TextButton(onClick = { open = false }) { Text("Fermer") } },
         )
+    }
+}
+
+/** Version installée (issue #59) : nom de version et numéro du build CI, pour savoir quelle APK est sur le Fold. */
+@Composable
+private fun buildLabel(): String? {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    return androidx.compose.runtime.remember {
+        runCatching {
+            val info = ctx.packageManager.getPackageInfo(ctx.packageName, 0)
+            "${info.versionName} (build ${info.longVersionCode})"
+        }.getOrNull()
     }
 }

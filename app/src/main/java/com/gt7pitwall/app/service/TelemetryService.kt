@@ -133,7 +133,7 @@ class TelemetryService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_pitwall)
             .setContentTitle("GT7 Pitwall")
-            .setContentText("Ingénieur en écoute de la télémétrie")
+            .setContentText("Recherche ou réception de la télémétrie PS5 (en attente tant que GT7 n'envoie rien)")
             .setOngoing(true)
             .setContentIntent(open)
             .addAction(0, "Arrêter", stop)

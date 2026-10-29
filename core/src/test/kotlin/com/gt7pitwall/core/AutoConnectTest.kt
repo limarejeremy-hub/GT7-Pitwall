@@ -45,4 +45,18 @@ class AutoConnectTest {
         assertTrue(a.onOpen(enabled = true, running = false))
         assertFalse(a.onOpen(enabled = true, running = false))
     }
+
+    @Test fun switchedOnInAnOpenAppStartsOnceButNeverOverridesAStop() {
+        // Revue #56 : l'interrupteur activé dans l'application déjà ouverte lance la recherche tout de suite, une fois.
+        val a = policy()
+        assertTrue(a.onOpen(enabled = true, running = false))
+        assertFalse(a.onOpen(enabled = true, running = false), "pas de seconde demande en rebasculant l'interrupteur")
+        // Après « Arrêter », réactiver l'interrupteur ne relance rien ; « Démarrer » reste le geste explicite.
+        a.onUserStop()
+        now += AutoConnect.PENDING_MS + 1
+        assertFalse(a.onOpen(enabled = true, running = false))
+        // Réouverture de l'application après l'arrêt : toujours arrêté.
+        now += 60_000
+        assertFalse(a.onOpen(enabled = true, running = false))
+    }
 }
