@@ -61,6 +61,10 @@ class SettingsStore(context: Context) {
     var sportFirst: Boolean
         get() = prefs.getBoolean(KEY_SPORT_FIRST, false)
         set(value) = prefs.edit().putBoolean(KEY_SPORT_FIRST, value).apply()
+    /** Issue #55 : démarrer la télémétrie à l'ouverture de Pitwall (désactivé tant que le pilote ne l'a pas choisi). */
+    var autoConnectOnOpen: Boolean
+        get() = prefs.getBoolean(KEY_AUTO_CONNECT, false)
+        set(value) = prefs.edit().putBoolean(KEY_AUTO_CONNECT, value).apply()
 
     var discordAutoJoin: Boolean
         get() = prefs.getBoolean(KEY_DISCORD_AUTO_JOIN, true)
@@ -109,6 +113,7 @@ class SettingsStore(context: Context) {
         private const val KEY_DEV_TOOLS = "dev_tools"
         private const val KEY_DISCORD_AUTO_JOIN = "discord_auto_join"
         private const val KEY_SPORT_FIRST = "sport_first"
+        private const val KEY_AUTO_CONNECT = "auto_connect_on_open"
         private const val KEY_DISCORD_MIRROR = "discord_mirror_phone"
         private const val KEY_GOOGLE_SPEECH = "google_speech"
         private const val KEY_AI = "ai_enabled"

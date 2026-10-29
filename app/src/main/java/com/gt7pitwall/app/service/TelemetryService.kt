@@ -37,6 +37,7 @@ class TelemetryService : Service() {
         val engine = (application as PitwallApp).engine
         when (intent?.action) {
             ACTION_STOP -> {
+                (application as PitwallApp).autoConnect.onUserStop()
                 engine.stop()
                 stopSelf()
                 return START_NOT_STICKY
@@ -49,6 +50,8 @@ class TelemetryService : Service() {
 
         goForeground()
         acquireLocks()
+        // Déjà en réception (demande doublée, issue #55) : relancer le moteur clôturerait la session en cours.
+        if (engine.running.value) return START_NOT_STICKY
         engine.start(intent?.getStringExtra(EXTRA_HOST))
         (application as PitwallApp).onTelemetryStart()
         return START_NOT_STICKY

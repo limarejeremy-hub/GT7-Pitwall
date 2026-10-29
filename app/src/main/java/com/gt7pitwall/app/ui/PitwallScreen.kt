@@ -120,6 +120,8 @@ fun PitwallScreen(
     freshness: kotlinx.coroutines.flow.StateFlow<com.gt7pitwall.core.sport.DataFreshness?>,
     onStart: (String) -> Unit,
     onStop: () -> Unit,
+    /** Interrupteur « Connexion PS5 automatique » activé maintenant (issue #59, revue #56). */
+    onAutoConnectEnabled: () -> Unit = {},
     onVoiceInputToggle: (Boolean) -> Unit,
 ) {
     val context = LocalContext.current
@@ -259,6 +261,7 @@ fun PitwallScreen(
     var address by rememberSaveable { mutableStateOf(settings.ps5Address) }
     var voiceOn by rememberSaveable { mutableStateOf(settings.voiceEnabled) }
     var sportFirst by rememberSaveable { mutableStateOf(settings.sportFirst) }
+    var autoConnect by rememberSaveable { mutableStateOf(settings.autoConnectOnOpen) }
 
     val connectionCard: @Composable () -> Unit = {
         ConnectionCard(
@@ -273,6 +276,12 @@ fun PitwallScreen(
                 sportFirst = it
                 settings.sportFirst = it
                 engine.sportFirst = it
+            autoConnect = autoConnect,
+            onAutoConnectChange = {
+                autoConnect = it
+                settings.autoConnectOnOpen = it
+                // Revue #56 : activé dans une application déjà ouverte, la recherche part tout de suite (une fois).
+                if (it) onAutoConnectEnabled()
             },
             voiceOn = voiceOn,
             onVoiceChange = {
@@ -512,7 +521,7 @@ private fun StatusPill(status: ConnectionStatus) {
 private fun describe(status: ConnectionStatus): String = when (status) {
     ConnectionStatus.Stopped -> "Réception arrêtée."
     is ConnectionStatus.Searching ->
-        if (status.target == null) "Recherche automatique de la PS5 sur le Wi-Fi…" else "Connexion à ${status.target}…"
+        if (status.target == null) "En attente de la PS5 et de GT7 (recherche sur le Wi-Fi)…" else "En attente de la PS5 et de GT7 (${status.target})…"
     is ConnectionStatus.Receiving -> buildString {
         append("PS5 ${status.ps5Address} • ${status.packetsPerSecond} paquets/s • format ${status.format.label}")
         if (status.unanswered.isNotEmpty()) {
@@ -539,6 +548,8 @@ private fun ConnectionCard(
     onStop: () -> Unit,
     sportFirst: Boolean,
     onSportFirstChange: (Boolean) -> Unit,
+    autoConnect: Boolean,
+    onAutoConnectChange: (Boolean) -> Unit,
     voiceOn: Boolean,
     onVoiceChange: (Boolean) -> Unit,
     voiceState: VoiceState,
@@ -573,6 +584,17 @@ private fun ConnectionCard(
                 )
             }
             Switch(checked = sportFirst, onCheckedChange = onSportFirstChange)
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Connexion PS5 automatique à l'ouverture")
+                Text(
+                    "Pitwall attend la PS5 et GT7 dès son ouverture, et tout de suite quand tu l'actives. Après « Arrêter », " +
+                        "il reste arrêté jusqu'à « Démarrer ». Sur la PS5, rejoins toi-même le salon Discord.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Switch(checked = autoConnect, onCheckedChange = onAutoConnectChange)
         }
         HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
         Row(verticalAlignment = Alignment.CenterVertically) {
