@@ -3,15 +3,20 @@
 Construit app/src/main/assets/gt7db/track_signatures.json à partir des signatures de circuits de
 jbhoorasingh/gt7-datalogger-track-data (données CC0 ; une partie dérivée de zetetos/gt-telemetry, MIT).
 
-Usage : python3 -I build.py <dossier du dépôt track-data> <course.csv de gt7info> <sortie.json>
+Usage : python3 -I build.py <dossier du dépôt track-data> <course.csv de gt7info> <sortie.json> [commit amont]
 
 Rapprochement prudent avec les identifiants gt7info (ceux de Pitwall) : même nom (sans « Reverse »), même sens,
 longueur à 3 % près. Une signature signalée par ses auteurs (« flags ») ou sans tracé est écartée. Rien n'est deviné :
 une configuration non rapprochée n'est pas utilisée et Pitwall garde sa reconnaissance par la longueur.
+
+Issue #58 : une signature sans identifiant gt7info mais non signalée (SUGO, ajouté en 1.72, absent de course.csv) est
+gardée avec « course » null. Pitwall la rattache au démarrage à un circuit des notes officielles de même nom et de même
+longueur (OfficialUpdates), jamais par supposition ; sinon elle sert seulement à écarter les autres circuits.
 """
 import csv, json, re, sys, unicodedata
 
 src, course_csv, out = sys.argv[1], sys.argv[2], sys.argv[3]
+commit = sys.argv[4] if len(sys.argv) > 4 else None
 doc = json.load(open(f"{src}/signatures.json", encoding="utf-8"))
 courses = list(csv.DictReader(open(course_csv, encoding="utf-8")))
 
@@ -35,7 +40,7 @@ for s in doc["signatures"]:
     fwd = match(s["official_name"], False, s["length_m"])
     rev = match(s["reverse"]["official_name"], True, s["length_m"]) if s.get("reverse") else None
     ids[s["official_id"]] = fwd
-    if s.get("flags") or not s.get("path") or (fwd is None and rev is None):
+    if s.get("flags") or not s.get("path"):
         skipped.append({"name": s["official_name"], "flags": s.get("flags"), "path": bool(s.get("path")), "id": fwd})
         continue
     rows.append({
@@ -46,9 +51,24 @@ for s in doc["signatures"]:
     })
 for r in rows:
     r["ambiguous_with"] = sorted({ids[o] for o in r["ambiguous_with"] if ids.get(o) is not None})
+
+# Issue #58 : site dont une autre configuration n'a pas de signature gardée (Fuji Short, Suzuka East…). Ses tracés
+# partagent des portions : la reconnaissance anticipée y est interdite (une variante inconnue ressemblerait au début).
+try:
+    index = json.load(open(f"{src}/index.json", encoding="utf-8"))["configurations"]
+except FileNotFoundError:
+    index = []
+kept = set()
+for r, s in [(r, next(x for x in doc["signatures"] if x["official_id"] == r["official_id"])) for r in rows]:
+    kept.add(s["official_id"])
+    if s.get("reverse"): kept.add(s["reverse"]["official_id"])
+venue_of = {c["official_id"]: c["track"] for c in index}
+incomplete = {c["track"] for c in index if c["official_id"] not in kept}
+for r in rows:
+    r["venue_incomplete"] = venue_of.get(r["official_id"]) in incomplete
 json.dump({
     "format": "gt7pitwall-track-signatures", "version": 1,
-    "source": {"repo": "https://github.com/jbhoorasingh/gt7-datalogger-track-data", "format": doc.get("format"),
+    "source": {"repo": "https://github.com/jbhoorasingh/gt7-datalogger-track-data", "commit": commit, "format": doc.get("format"),
                "version": doc.get("version"), "license": "CC0-1.0 (captures dérivées de zetetos/gt-telemetry : MIT)"},
     "path_step_m": doc["counts"].get("path_step_m", 20), "signatures": rows, "skipped": skipped,
 }, open(out, "w", encoding="utf-8"), ensure_ascii=False, separators=(",", ":"))

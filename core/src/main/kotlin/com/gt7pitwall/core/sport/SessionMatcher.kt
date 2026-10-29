@@ -64,10 +64,19 @@ object SessionMatcher {
         carGroup: String? = null,
         /** Le circuit vient d'une mesure indépendante (géométrie) ; faux : longueur compatible seulement. */
         trackMeasured: Boolean = true,
+        /** Ce qui rend le circuit seulement compatible (longueur du tour, position sur la grille). */
+        compatibleLabel: String = "longueur du tour compatible",
+        /** Code de la voiture envoyé par GT7 (null si inconnu). */
+        carCode: Int? = null,
+        /**
+         * Voiture imposée par épreuve (fiche qui nomme UNE voiture, rapprochée de la base par son nom exact, par exemple
+         * la Fairlady Z Z34 '08 de la A du 26/10) : une autre voiture exclut l'épreuve, la même la désigne.
+         */
+        imposedCars: Map<Series, Int> = emptyMap(),
     ): Result {
         val laps = gt7Laps?.takeIf { it > 0 }
         val current = editions.filter { (s, e) -> s != Series.OTHER && e.covers(today) }
-        if (current.isEmpty() || (laps == null && trackId == null && carGroup == null)) return Result.Unknown
+        if (current.isEmpty() || (laps == null && trackId == null && carGroup == null && carCode == null)) return Result.Unknown
         data class Scored(val series: Series, val edition: Edition, val evidence: List<String>, val laps: Boolean, val track: Boolean)
         val scored = current.mapNotNull { (series, ed) ->
             val edLaps = ed.laps.takeIf { it.known }?.value
@@ -78,6 +87,11 @@ object SessionMatcher {
                 if (edLaps != laps) return@mapNotNull null
                 evidence += "$laps tours"
                 lapsOk = true
+            }
+            val imposed = imposedCars[series]
+            if (carCode != null && imposed != null) {
+                if (carCode != imposed) return@mapNotNull null
+                evidence += "voiture imposée"
             }
             val groups = ed.cars.takeIf { it.known }?.value?.let(SportNames::carGroups)
             if (carGroup != null && groups != null) {
@@ -91,7 +105,7 @@ object SessionMatcher {
                     trackOk = true
                 } else if (ed.trackId == trackId) {
                     // Longueur compatible : un indice, jamais une exclusion ni une reconnaissance (circuits voisins).
-                    evidence += "longueur du tour compatible"
+                    evidence += compatibleLabel
                 }
             }
             Scored(series, ed, evidence, lapsOk, trackOk)

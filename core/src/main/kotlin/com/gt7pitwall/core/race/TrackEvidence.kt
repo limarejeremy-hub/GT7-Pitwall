@@ -11,6 +11,18 @@ enum class TrackEvidence(val label: String) {
     /** Longueur du tour mesurée compatible : circuit probable (des circuits voisins existent). */
     LAP_LENGTH_COMPATIBLE("longueur du tour compatible"),
 
+    /**
+     * Position à l'arrêt (grille, stands) proche d'un seul tracé connu (issue #58) : circuit probable dès la grille. Un
+     * point seul ne prouve rien (circuits absents des signatures, tracés qui se croisent) : jamais une reconnaissance.
+     */
+    POSITION_COMPATIBLE("position sur la grille compatible"),
+
+    /**
+     * Tracé mesuré dans la session précédente (qualification), même voiture, peu avant : circuit de travail dès la grille,
+     * à confirmer par le tracé de cette course (revue #62). Jamais compté comme mesuré dans la course.
+     */
+    PREVIOUS_SESSION_MEASURED("tracé mesuré en qualification, à confirmer"),
+
     /** Tracé X/Z mesuré par la PS5 conforme à une signature : seule preuve indépendante du circuit. */
     GEOMETRY_MEASURED("tracé mesuré par la PS5"),
 

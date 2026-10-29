@@ -81,6 +81,7 @@ class Gt7Database(cars: Map<Int, Car>, courses: List<Course>) {
                 )
             }
         courses = o + added + learnedCourses.filter { l -> key(l.name) !in names && added.none { it.id == l.id } }
+        resolveSignatures()
     }
 
     /**
@@ -97,6 +98,32 @@ class Gt7Database(cars: Map<Int, Car>, courses: List<Course>) {
     /** Signatures géométriques des circuits (fichier `track_signatures.json`) ; vide : reconnaissance par la longueur seule. */
     @Volatile
     var trackSignatures: List<TrackSignature> = emptyList()
+        set(value) {
+            field = value
+            resolveSignatures()
+        }
+
+    /**
+     * Signatures prêtes pour la reconnaissance (issue #58) : celles que la base communautaire ne connaît pas encore (SUGO,
+     * ajouté en 1.72) sont rattachées au circuit des notes officielles de même nom et de même longueur (à 3 % près).
+     * Jamais par supposition : sans fiche, la signature reste sans circuit et sert seulement à écarter les autres.
+     */
+    @Volatile
+    var geometrySignatures: List<TrackSignature> = emptyList()
+        private set
+
+    private fun resolveSignatures() {
+        val sigs = trackSignatures
+        val list = courses
+        geometrySignatures = sigs.map { sig ->
+            if (sig.course != null || sig.reverseCourse != null) return@map sig
+            val c = list.filter { c ->
+                !c.reverse && c.lengthM > 0 && key(c.name) == key(sig.name) &&
+                    abs(c.lengthM - sig.lengthM).toFloat() / sig.lengthM <= SIGNATURE_LENGTH_TOLERANCE
+            }.singleOrNull()
+            if (c == null) sig else sig.resolved(c.id, c.source ?: "base communautaire")
+        }
+    }
 
     /** Catégorie GT7 de la voiture [code] (« 3 » pour Gr.3, « N » pour les voitures de route), si la base la donne. */
     fun carGroup(code: Int): String? = carGroups[code]
@@ -195,6 +222,9 @@ class Gt7Database(cars: Map<Int, Car>, courses: List<Course>) {
         }.getOrDefault(emptyList())
 
         /** Nom comparable (« SUGO International Racing Course » = « sugo international racing course »). */
+        /** Écart de longueur admis entre une signature et la fiche du circuit pour les rattacher (comme build.py). */
+        const val SIGNATURE_LENGTH_TOLERANCE = 0.03f
+
         fun key(name: String): String =
             java.text.Normalizer.normalize(name.lowercase(), java.text.Normalizer.Form.NFD).replace(Regex("\\p{Mn}+"), "")
                 .replace(Regex("[^a-z0-9]+"), " ").trim()

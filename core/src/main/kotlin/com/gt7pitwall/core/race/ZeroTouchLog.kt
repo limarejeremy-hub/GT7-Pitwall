@@ -8,6 +8,8 @@ package com.gt7pitwall.core.race
 enum class Milestone(val label: String) {
     UDP_CONNECTED("premier paquet GT7 reçu"),
     CARCODE_CONFIRMED("voiture confirmée par les paquets"),
+    TRACK_CANDIDATE("circuit probable d'après la position à l'arrêt"),
+    TRACK_MEASURED("circuit reconnu par le tracé mesuré"),
     SPORT_CANDIDATE("épreuve Sport candidate"),
     QUALIFYING_SUSPECTED("qualification ou essais supposés (GT7 n'annonce pas de tours)"),
     GRID_DETECTED("grille de départ"),
