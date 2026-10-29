@@ -168,6 +168,37 @@ class RaceEngineer {
     /** Le dernier message de tour mérite d'être dit (voir [quietRace]). */
     private var lapNoteworthy = true
 
+    private var sessionResetDone = false
+
+    /**
+     * Nouvelle session : rien de la précédente ne reste (arrêts annoncés, alertes, position). Appelé par le contrôleur
+     * dès le début de la session (issue #30 : l'épreuve reconnue sur la grille annonce son plan avant le traitement des
+     * événements ; l'ancien plan ne doit pas en faire un « nouveau plan »).
+     */
+    fun newSession() {
+        sessionResetDone = true
+        resetAlerts()
+        announcedNoConsumption = false
+        announcedMeasuring = false
+        fuelRadio.reset()
+        driverPosition = null
+        carsInRace = null
+        tyres.reset()
+        raining = false
+        announcedStops = null
+        pendingLater = null
+        announcedWarnings.clear()
+        raceOver = false
+        positionReportedLap = null
+        lastLapDetails = null
+        measured = MeasuredPosition.NONE
+        announcedPosition = null
+        lastPositionAnnounceMs = null
+        lastMoveMs = null
+        finishPositionSaid = false
+        positionLostSaid = false
+    }
+
     fun onUpdate(events: List<SessionEvent>, snapshot: SessionSnapshot, fuel: FuelReport?): List<EngineerMessage> {
         snapshot.packet?.let { fuelCapacity = it.fuelCapacity.takeIf { c -> c > 0f } }
         val out = mutableListOf<EngineerMessage>()
@@ -181,26 +212,9 @@ class RaceEngineer {
                     out += msg("Radio check. Je reçois la télémétrie, je suis avec toi.", Priority.NORMAL, MessageCategory.RADIO)
 
                 SessionEvent.SessionReset -> {
-                    resetAlerts()
-                    announcedNoConsumption = false
-                    announcedMeasuring = false
-                    fuelRadio.reset()
-                    driverPosition = null
-                    carsInRace = null
-                    tyres.reset()
-                    raining = false
-                    announcedStops = null
-                    pendingLater = null
-                    announcedWarnings.clear()
-                    raceOver = false
-                    positionReportedLap = null
-                    lastLapDetails = null
-                    measured = MeasuredPosition.NONE
-                    announcedPosition = null
-                    lastPositionAnnounceMs = null
-                    lastMoveMs = null
-                    finishPositionSaid = false
-                    positionLostSaid = false
+                    // Déjà remis à zéro par le contrôleur au début de la session : le plan qu'il vient d'annoncer reste.
+                    if (!sessionResetDone) newSession()
+                    sessionResetDone = false
                     out += msg("Nouvelle session détectée, je repars de zéro.", Priority.NORMAL, MessageCategory.RADIO)
                 }
 
@@ -689,6 +703,28 @@ class RaceEngineer {
 
     private fun planSentence(p: RacePlan): String = buildString {
         append(if (p.estimatedLaps) "Course estimée à ${p.totalLaps} tours. " else "Course de ${p.totalLaps} tours. ")
+        // Issue #51 : gommes imposées et gomme de départ inconnue. Le nombre d'arrêts dépend de la gomme de départ : pas
+        // de « 2 arrêts » présentés comme définitifs, mais ce qui est sûr (au moins un changement) et ce qu'il manque.
+        if (p.startTyreUnknown && p.requiredTyres.size >= 2) {
+            val tyres = p.requiredTyres.sortedBy { it.ordinal }.joinToString(" et ") { it.spoken }
+            append("Gommes $tyres obligatoires : au moins un arrêt pour changer de gomme. ")
+            // Issue #30 : deux scénarios conditionnels, aucun choisi d'office ; la gomme n'est jamais déduite.
+            if (p.scenarios.size == 2) {
+                p.scenarios.forEach { (start, sc) ->
+                    val stop = sc.stops.firstOrNull { it.tyreToFit != null }
+                    append("Si tu pars en ${start.spoken} : ")
+                    append(
+                        if (stop == null) "pas d'arrêt possible pour les ${sc.requiredTyres.first { it != start }.spoken}. "
+                        else "arrêt fin du tour ${stop.endOfLap} pour les ${stop.tyreToFit!!.spoken}" +
+                            (if (sc.stops.size > 1) ", ${sc.stops.size} arrêts au total" else "") + ". ",
+                    )
+                }
+                append("Gomme de départ non confirmée : dis par exemple « je pars en ${p.scenarios.keys.first().let { it.hardness?.spoken ?: it.spoken }} ».")
+            } else {
+                append("Plan précis dès que je connais tes pneus de départ, dis par exemple « je pars en mediums ».")
+            }
+            return@buildString
+        }
         if (p.stops.isEmpty()) {
             append("Stratégie : pas d'arrêt, le carburant suffit")
             append(sourceSentence(p)).append('.')

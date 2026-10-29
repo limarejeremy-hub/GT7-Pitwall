@@ -121,6 +121,7 @@ class PitwallApp : Application() {
             discord.audioMonitor.enabled = settings.audioDiagnostics
             discord.onAudioEvent = { code, text -> it.journalRadio(code, text) }
             it.voiceEnabled = settings.voiceEnabled
+            it.sportFirst = settings.sportFirst
             it.detailedLapReports = settings.detailedLapReports
             it.voiceBusy = { speaking.value }
             it.askPositionEachLap = { settings.askPositionEachLap && voiceInput.isRunning }
@@ -240,6 +241,9 @@ class PitwallApp : Application() {
     }
 
     /** Lancement de la télémétrie : le bot rejoint le dernier salon si le réglage est actif. */
+    /** Démarrage automatique de la télémétrie à l'ouverture (issue #55) : une demande par ouverture réelle. */
+    val autoConnect = com.gt7pitwall.core.telemetry.AutoConnect()
+
     fun onTelemetryStart() {
         if (settings.discordAutoJoin) discord.autoStart()
     }

@@ -58,11 +58,13 @@ class SportCertaintyTest {
         val s = RaceSim(c, totalLaps = 6, perLap = 3f)
         s.start()
         s.driveLaps(1)
-        assertEquals(SessionMode.SPORT_IDENTIFIED, c.profile.id.mode)
+        // Issue #51 : tours + longueur du tour (sans tracé mesuré) ne font qu'une épreuve probable ; une course
+        // personnalisée le reste.
+        assertEquals(SessionMode.CUSTOM, c.profile.id.mode)
         // Redémarrage de l'application : le type relu n'est jamais promu « officiel ».
         val restarted = RaceController(database = db, storage = store, clock = { now++ })
         restarted.applySchedule(schedule(listOf("GTPlanet", "Victory")))
-        assertEquals(SessionMode.SPORT_IDENTIFIED, restarted.profile.id.mode)
+        assertNotEquals(SessionMode.SPORT_OFFICIAL, restarted.profile.id.mode)
         // La réponse vocale « la B » ne vaut pas déclaration d'officialité non plus (testée dans SportIntelligenceTest).
         // Seul le bouton « Sport officiel » le fait.
         restarted.selectProfile(ProfileId.of(SessionMode.SPORT_OFFICIAL, Series.DAILY_B))

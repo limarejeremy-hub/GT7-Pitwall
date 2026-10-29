@@ -26,7 +26,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        (application as PitwallApp).syncOnOpen()
+        val app = application as PitwallApp
+        app.syncOnOpen()
+        // Issue #55 : l'activité est visible, le service de premier plan peut démarrer. Adresse vide = recherche automatique.
+        if (app.autoConnect.onOpen(app.settings.autoConnectOnOpen, app.engine.running.value)) {
+            TelemetryService.start(this, app.settings.ps5Address)
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -71,9 +76,18 @@ class MainActivity : ComponentActivity() {
                     freshness = app.freshness,
                     onStart = { address ->
                         app.settings.ps5Address = address
+                        app.autoConnect.onUserStart()
                         TelemetryService.start(this, address)
                     },
-                    onStop = { TelemetryService.stop(this) },
+                    onAutoConnectEnabled = {
+                        if (app.autoConnect.onOpen(enabled = true, running = app.engine.running.value)) {
+                            TelemetryService.start(this, app.settings.ps5Address)
+                        }
+                    },
+                    onStop = {
+                        app.autoConnect.onUserStop()
+                        TelemetryService.stop(this)
+                    },
                     onVoiceInputToggle = { enabled ->
                         if (enabled && ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
                             PackageManager.PERMISSION_GRANTED
