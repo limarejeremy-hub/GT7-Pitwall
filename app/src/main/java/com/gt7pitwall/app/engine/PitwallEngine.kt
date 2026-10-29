@@ -211,6 +211,11 @@ class PitwallEngine(
     @Volatile
     var voiceEnabled: Boolean = true
 
+    /** Zéro touch Sport (issue #30) : l'épreuve de la semaine est préparée sans choix dans Pitwall, jamais « officielle ». */
+    var sportFirst: Boolean
+        get() = race.sportFirst
+        set(value) { race.sportFirst = value }
+
     /** IA de la radio (Gemini Nano sur le téléphone), null si désactivée. */
     @Volatile
     var languageModel: LanguageModel? = null

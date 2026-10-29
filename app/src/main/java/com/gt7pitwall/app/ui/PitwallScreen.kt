@@ -258,6 +258,7 @@ fun PitwallScreen(
 
     var address by rememberSaveable { mutableStateOf(settings.ps5Address) }
     var voiceOn by rememberSaveable { mutableStateOf(settings.voiceEnabled) }
+    var sportFirst by rememberSaveable { mutableStateOf(settings.sportFirst) }
 
     val connectionCard: @Composable () -> Unit = {
         ConnectionCard(
@@ -267,6 +268,12 @@ fun PitwallScreen(
             onAddressChange = { address = it },
             onStart = { onStart(address.trim()) },
             onStop = onStop,
+            sportFirst = sportFirst,
+            onSportFirstChange = {
+                sportFirst = it
+                settings.sportFirst = it
+                engine.sportFirst = it
+            },
             voiceOn = voiceOn,
             onVoiceChange = {
                 voiceOn = it
@@ -530,6 +537,8 @@ private fun ConnectionCard(
     onAddressChange: (String) -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
+    sportFirst: Boolean,
+    onSportFirstChange: (Boolean) -> Unit,
     voiceOn: Boolean,
     onVoiceChange: (Boolean) -> Unit,
     voiceState: VoiceState,
@@ -553,6 +562,17 @@ private fun ConnectionCard(
             Button(onClick = onStart, modifier = Modifier.fillMaxWidth()) {
                 Text("Démarrer la télémétrie", fontWeight = FontWeight.Bold)
             }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Sport d'abord : je choisis seulement dans GT7")
+                Text(
+                    "La course A, B ou C de la semaine est reconnue d'après GT7 (tours, voiture, circuit) et son règlement préparé " +
+                        "sans choix ici. Toujours « probable » ou « reconnue », jamais comptée officielle : un salon privé identique ne se distingue pas.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Switch(checked = sportFirst, onCheckedChange = onSportFirstChange)
         }
         HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
         Row(verticalAlignment = Alignment.CenterVertically) {

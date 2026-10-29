@@ -73,6 +73,11 @@ data class RacePlan(
     val warnings: Set<PlanWarning> = emptySet(),
     /** Gommes imposées alors que les pneus de départ ne sont pas déclarés : le plan compte un changement par gomme. */
     val startTyreUnknown: Boolean = false,
+    /**
+     * Issue #30 : deux gommes imposées et gomme de départ inconnue. Un plan par gomme de départ possible (« si tu pars en
+     * durs… ») ; aucun n'est choisi tant que la gomme n'est pas déclarée.
+     */
+    val scenarios: Map<TyreCompound, RacePlan> = emptyMap(),
 ) {
     val estimatedLaps: Boolean get() = lapsSource == DataSource.ESTIMATED
 
@@ -122,6 +127,17 @@ object RacePlanner {
     )
 
     fun plan(i: Input): RacePlan? {
+        val base = planOne(i) ?: return null
+        val required = i.rules.requiredTyres
+        // Gomme de départ inconnue, deux gommes imposées, rien encore monté : un plan conditionnel par gomme de départ.
+        if (!base.startTyreUnknown || required.size != 2 || i.tyresMissing.size != 2) return base
+        val scenarios = required.sortedBy { it.ordinal }.mapNotNull { start ->
+            planOne(i.copy(rules = i.rules.copy(startTyre = start), tyresMissing = required.filter { it != start }))?.let { start to it }
+        }.toMap()
+        return base.copy(scenarios = scenarios)
+    }
+
+    private fun planOne(i: Input): RacePlan? {
         val rules = i.rules
         val (total, lapsSource) = totalLaps(i) ?: return null
         val perLap = i.perLap?.takeIf { it > 0f }

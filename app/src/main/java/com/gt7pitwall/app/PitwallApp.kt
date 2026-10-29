@@ -121,6 +121,7 @@ class PitwallApp : Application() {
             discord.audioMonitor.enabled = settings.audioDiagnostics
             discord.onAudioEvent = { code, text -> it.journalRadio(code, text) }
             it.voiceEnabled = settings.voiceEnabled
+            it.sportFirst = settings.sportFirst
             it.detailedLapReports = settings.detailedLapReports
             it.voiceBusy = { speaking.value }
             it.askPositionEachLap = { settings.askPositionEachLap && voiceInput.isRunning }
