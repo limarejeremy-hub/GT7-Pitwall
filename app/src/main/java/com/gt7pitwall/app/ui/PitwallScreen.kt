@@ -258,6 +258,7 @@ fun PitwallScreen(
 
     var address by rememberSaveable { mutableStateOf(settings.ps5Address) }
     var voiceOn by rememberSaveable { mutableStateOf(settings.voiceEnabled) }
+    var autoConnect by rememberSaveable { mutableStateOf(settings.autoConnectOnOpen) }
 
     val connectionCard: @Composable () -> Unit = {
         ConnectionCard(
@@ -267,6 +268,11 @@ fun PitwallScreen(
             onAddressChange = { address = it },
             onStart = { onStart(address.trim()) },
             onStop = onStop,
+            autoConnect = autoConnect,
+            onAutoConnectChange = {
+                autoConnect = it
+                settings.autoConnectOnOpen = it
+            },
             voiceOn = voiceOn,
             onVoiceChange = {
                 voiceOn = it
@@ -505,7 +511,7 @@ private fun StatusPill(status: ConnectionStatus) {
 private fun describe(status: ConnectionStatus): String = when (status) {
     ConnectionStatus.Stopped -> "Réception arrêtée."
     is ConnectionStatus.Searching ->
-        if (status.target == null) "Recherche automatique de la PS5 sur le Wi-Fi…" else "Connexion à ${status.target}…"
+        if (status.target == null) "En attente de la PS5 et de GT7 (recherche sur le Wi-Fi)…" else "En attente de la PS5 et de GT7 (${status.target})…"
     is ConnectionStatus.Receiving -> buildString {
         append("PS5 ${status.ps5Address} • ${status.packetsPerSecond} paquets/s • format ${status.format.label}")
         if (status.unanswered.isNotEmpty()) {
@@ -530,6 +536,8 @@ private fun ConnectionCard(
     onAddressChange: (String) -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
+    autoConnect: Boolean,
+    onAutoConnectChange: (Boolean) -> Unit,
     voiceOn: Boolean,
     onVoiceChange: (Boolean) -> Unit,
     voiceState: VoiceState,
@@ -553,6 +561,17 @@ private fun ConnectionCard(
             Button(onClick = onStart, modifier = Modifier.fillMaxWidth()) {
                 Text("Démarrer la télémétrie", fontWeight = FontWeight.Bold)
             }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Connexion PS5 automatique à l'ouverture")
+                Text(
+                    "Pitwall attend la PS5 et GT7 dès son ouverture. Après « Arrêter », il reste arrêté. " +
+                        "Sur la PS5, rejoins toi-même le salon Discord.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Switch(checked = autoConnect, onCheckedChange = onAutoConnectChange)
         }
         HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
         Row(verticalAlignment = Alignment.CenterVertically) {
