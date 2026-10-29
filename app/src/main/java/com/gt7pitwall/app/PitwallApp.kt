@@ -240,6 +240,9 @@ class PitwallApp : Application() {
     }
 
     /** Lancement de la télémétrie : le bot rejoint le dernier salon si le réglage est actif. */
+    /** Démarrage automatique de la télémétrie à l'ouverture (issue #55) : une demande par ouverture réelle. */
+    val autoConnect = com.gt7pitwall.core.telemetry.AutoConnect()
+
     fun onTelemetryStart() {
         if (settings.discordAutoJoin) discord.autoStart()
     }
