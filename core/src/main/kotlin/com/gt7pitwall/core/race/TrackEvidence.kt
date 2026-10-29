@@ -17,6 +17,12 @@ enum class TrackEvidence(val label: String) {
      */
     POSITION_COMPATIBLE("position sur la grille compatible"),
 
+    /**
+     * Tracé mesuré dans la session précédente (qualification), même voiture, peu avant : circuit de travail dès la grille,
+     * à confirmer par le tracé de cette course (revue #62). Jamais compté comme mesuré dans la course.
+     */
+    PREVIOUS_SESSION_MEASURED("tracé mesuré en qualification, à confirmer"),
+
     /** Tracé X/Z mesuré par la PS5 conforme à une signature : seule preuve indépendante du circuit. */
     GEOMETRY_MEASURED("tracé mesuré par la PS5"),
 

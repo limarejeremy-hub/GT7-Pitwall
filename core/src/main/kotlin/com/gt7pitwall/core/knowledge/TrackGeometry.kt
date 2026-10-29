@@ -27,11 +27,20 @@ class TrackSignature(
      * des portions, donc pas de reconnaissance anticipée ici (issue #58).
      */
     val venueIncomplete: Boolean = false,
+    /** « survey » (relevé CC0) ou « capture » (zetetos/gt-telemetry, MIT), d'après la source. */
+    val provenance: String? = null,
 ) {
+    /** Source et licence de cette signature, pour le journal. */
+    val sourceLabel: String get() = when (provenance) {
+        "survey" -> "relevé gt7-datalogger-track-data (CC0)"
+        "capture" -> "capture zetetos/gt-telemetry (MIT) via gt7-datalogger-track-data"
+        else -> "gt7-datalogger-track-data (CC0 / MIT)"
+    }
+
     val points: Int get() = path.size / 2
 
     /** Même signature rattachée au circuit [course] (issue #58 : SUGO absent de la base communautaire). */
-    fun resolved(course: Int, by: String) = TrackSignature(name, course, reverseCourse, lengthM, minX, maxX, minZ, maxZ, path, by, venueIncomplete)
+    fun resolved(course: Int, by: String) = TrackSignature(name, course, reverseCourse, lengthM, minX, maxX, minZ, maxZ, path, by, venueIncomplete, provenance)
 
     companion object {
         fun parseAll(json: String): List<TrackSignature> {
@@ -52,6 +61,7 @@ class TrackSignature(
                     minZ = box.getDouble(2).toFloat(), maxZ = box.getDouble(3).toFloat(),
                     path = FloatArray(p.length()) { p.getDouble(it).toFloat() },
                     venueIncomplete = r.optBoolean("venue_incomplete", false),
+                    provenance = r.optString("provenance", "").ifEmpty { null },
                 )
             }
         }
@@ -78,7 +88,7 @@ class TrackSignature(
  */
 class TrackGeometryRecognizer(private val signatures: List<TrackSignature>) {
     sealed interface Verdict {
-        data class Identified(val course: Int, val name: String, val reverse: Boolean, val distanceM: Float, val meanDevM: Float) : Verdict
+        data class Identified(val course: Int, val name: String, val reverse: Boolean, val distanceM: Float, val meanDevM: Float, val source: String? = null) : Verdict
         data class Ambiguous(val courses: List<Int>, val distanceM: Float) : Verdict
         data class Unknown(val distanceM: Float) : Verdict
         data object Pending : Verdict
@@ -218,7 +228,7 @@ class TrackGeometryRecognizer(private val signatures: List<TrackSignature>) {
         }.distinctBy { it.course }
         return when (options.size) {
             0 -> Verdict.Unknown(distanceM)
-            1 -> options[0].let { Verdict.Identified(it.course, it.c.sig.name, it.reverse, distanceM, (it.c.devSum / it.c.samples).toFloat()) }
+            1 -> options[0].let { Verdict.Identified(it.course, it.c.sig.name, it.reverse, distanceM, (it.c.devSum / it.c.samples).toFloat(), it.c.sig.sourceLabel) }
             else -> Verdict.Ambiguous(options.map { it.course }.sorted(), distanceM)
         }
     }
@@ -233,7 +243,7 @@ class TrackGeometryRecognizer(private val signatures: List<TrackSignature>) {
         if (total == 0 || maxOf(c.forward, c.backward).toFloat() / total < DIRECTION_SHARE) return null
         val reverse = c.backward > c.forward
         val course = (if (reverse) c.sig.reverseCourse else c.sig.course) ?: return null
-        return Verdict.Identified(course, c.sig.name, reverse, distanceM, (c.devSum / c.samples).toFloat())
+        return Verdict.Identified(course, c.sig.name, reverse, distanceM, (c.devSum / c.samples).toFloat(), c.sig.sourceLabel)
     }
 
     /** Une signature compatible avec une position à l'arrêt, et l'écart à son tracé (m). */

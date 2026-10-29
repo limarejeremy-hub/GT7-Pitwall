@@ -1,4 +1,29 @@
-# Circuits zéro touch : validation hors ligne (issue #58, V482)
+# Circuits zéro touch : validation hors ligne (issue #58, V482 + revue #62)
+
+## Deux voies, à ne pas confondre (revue #62)
+
+| Voie | Quand | Preuve | Libellé |
+|---|---|---|---|
+| **Contextuelle immédiate** | dès le premier paquet avec code voiture, même à 0 m et sans tours annoncés (qualification) | programme de la semaine + catégorie ou voiture imposée (+ tours quand GT7 les annonce) | épreuve **probable**, circuit **attendu**, plan conditionnel ; jamais mesuré, jamais officiel |
+| **Géométrique opportuniste** | dès que la voiture roule (tour de sortie de qualification compris) ; à l'arrêt, candidat seulement | tracé X/Z contre 72 signatures | circuit **mesuré** (ou probable à l'arrêt) ; en course, « mesuré en qualification, à confirmer » s'il vient de la qualification |
+
+### Qualification courte → prégrille (`QualifyingToGridHandoffTest`, simulé, semaine réelle du 26/10)
+
+| Mètres roulés en qualification | Épreuve candidate en qualif | Tracé mesuré en qualif | Repris pour la course | Briefing sur la grille, à 0 m de course |
+|---|---|---|---|---|
+| 0 | C (voiture Gr.3) dès 0 m | non | — | oui |
+| 30 | C | non | — | oui |
+| 100 | C | non | — | oui |
+| 250 | C | non (seuil anticipé pas encore atteint après les premiers échantillons) | — | oui |
+| 500 | C | oui, à 255 m | oui, « à confirmer » | oui |
+
+- Mètres de **course** avant le briefing : **0** dans les cinq cas.
+- Mètres de course avant la reconnaissance géométrique : c'est une **autre mesure**, inchangée (voir plus bas).
+- Contrôles :
+  - autre voiture en course → rien n'est hérité ;
+  - qualification de plus de 30 min → rien n'est repris ;
+  - sans programme → rien n'est préparé ;
+  - Gr.1 → aucune épreuve inventée.
 
 **Aucune validation PS5.** Le pilote n'a pas sa console. Les trajectoires de ce document sont **synthétiques** : tirées des tracés de référence, avec décalage latéral et bruit. Le dépôt ne contient aucune trace réelle de positions sur la grille. La seule validation réelle antérieure reste Suzuka : reconnu en course le 27/10 à 706 m, écart moyen de 1,4 m.
 
