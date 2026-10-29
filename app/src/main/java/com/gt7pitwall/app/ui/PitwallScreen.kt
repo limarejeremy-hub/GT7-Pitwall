@@ -276,6 +276,7 @@ fun PitwallScreen(
                 sportFirst = it
                 settings.sportFirst = it
                 engine.sportFirst = it
+            },
             autoConnect = autoConnect,
             onAutoConnectChange = {
                 autoConnect = it
