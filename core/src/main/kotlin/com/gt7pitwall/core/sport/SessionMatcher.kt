@@ -64,6 +64,8 @@ object SessionMatcher {
         carGroup: String? = null,
         /** Le circuit vient d'une mesure indépendante (géométrie) ; faux : longueur compatible seulement. */
         trackMeasured: Boolean = true,
+        /** Ce qui rend le circuit seulement compatible (longueur du tour, position sur la grille). */
+        compatibleLabel: String = "longueur du tour compatible",
     ): Result {
         val laps = gt7Laps?.takeIf { it > 0 }
         val current = editions.filter { (s, e) -> s != Series.OTHER && e.covers(today) }
@@ -91,7 +93,7 @@ object SessionMatcher {
                     trackOk = true
                 } else if (ed.trackId == trackId) {
                     // Longueur compatible : un indice, jamais une exclusion ni une reconnaissance (circuits voisins).
-                    evidence += "longueur du tour compatible"
+                    evidence += compatibleLabel
                 }
             }
             Scored(series, ed, evidence, lapsOk, trackOk)

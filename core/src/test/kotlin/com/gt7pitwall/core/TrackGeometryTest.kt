@@ -14,7 +14,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 /**
- * Reconnaissance du circuit par la géométrie, sur les 67 signatures embarquées. Trajectoires SIMULÉES à partir des
+ * Reconnaissance du circuit par la géométrie, sur les 72 signatures embarquées. Trajectoires SIMULÉES à partir des
  * tracés de référence (écart latéral et bruit ajoutés) : aucune trace réelle de Pitwall ne contient encore de
  * positions. Le repère X/Z reste à confirmer en course PS5.
  */
@@ -60,7 +60,7 @@ class TrackGeometryTest {
 
     @Test
     fun everyEmbeddedLayoutIsRecognisedWithinOneLapAndNeverConfused() {
-        assertEquals(67, sigs.size)
+        assertEquals(72, sigs.size)
         val wrong = mutableListOf<String>()
         val unresolved = mutableListOf<String>()
         val distances = mutableListOf<Float>()
@@ -147,7 +147,7 @@ class TrackGeometryTest {
         val r = TrackGeometryRecognizer(sigs)
         repeat(500) { r.onPosition(s.path[0], s.path[1], moving = true) }
         assertEquals(Verdict.Pending, r.verdict)
-        for ((x, z) in drive(s, 300f)) r.onPosition(x, z, moving = true)
+        for ((x, z) in drive(s, 200f)) r.onPosition(x, z, moving = true)
         assertEquals(Verdict.Pending, r.verdict)
     }
 

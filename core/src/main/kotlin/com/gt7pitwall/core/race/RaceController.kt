@@ -571,6 +571,7 @@ class RaceController(
             out += applySchedule(it)
         }
         if (sessionId != null && !sessionFinished && !replay) trackGeometry(p, raceActive, out)
+        if (sessionId != null && !sessionFinished && !replay) gridPositionProbe(p, out)
         if (sessionId != null && !sessionFinished && !sessionIdentitySettled && snapshot.laps.size <= 2) identifySession(out)
         if (sessionId != null && !sessionFinished) sportCandidateWithoutLaps(p)
         phaseMilestones(p, events)
@@ -1250,6 +1251,7 @@ class RaceController(
         val m = SessionMatcher.match(
             st.editions, null, sessionTrackEvidence, today, database.carGroup(p.carCode),
             trackMeasured = sessionTrackSource == TrackEvidence.GEOMETRY_MEASURED,
+            compatibleLabel = sessionTrackSource?.label ?: "longueur du tour compatible",
         ) as? SessionMatcher.Result.Match ?: return
         sportCandidate = m
         milestone(Milestone.SPORT_CANDIDATE, "fiche de la semaine", m.confidence.label, "${m.series.label} : ${m.evidence.joinToString(", ")}")
@@ -1291,6 +1293,7 @@ class RaceController(
         val result = SessionMatcher.match(
             st.editions, p.totalLaps, sessionTrackEvidence, today, database.carGroup(p.carCode),
             trackMeasured = sessionTrackSource == TrackEvidence.GEOMETRY_MEASURED,
+            compatibleLabel = sessionTrackSource?.label ?: "longueur du tour compatible",
         )
         // Course personnalisée : même nombre de tours ou même catégorie par hasard ; il faut l'épreuve reconnue.
         // Zéro touch (issue #30) : avec « Sport d'abord », le profil neutre n'est pas un choix de course personnalisée ;
@@ -1538,6 +1541,10 @@ class RaceController(
         sessionTrackSource = null
         sportCandidate = null
         zeroTouch.newSession()
+        gridProbeDone = false
+        gridStillPackets = 0
+        gridLastX = Float.NaN
+        gridLastZ = Float.NaN
         pitOpenBefore = false
         ambiguityAnnounced = false
         pendingSeriesChoice = null
@@ -3707,6 +3714,9 @@ class RaceController(
     }
 
     private companion object {
+        /** Voiture immobile depuis 0,5 s (à 60 paquets/s), à moins de [GRID_STILL_M] près : position de grille examinée. */
+        const val GRID_STILL_PACKETS = 30
+        const val GRID_STILL_M = 2f
         val INCIDENT_NOTE = Regex("(?i)accident|accroch|t[eê]te.?[aà].?queue|sortie de piste|touch[eé]|crash|abîm|abim")
         const val TYRE_QUESTION_PACKETS = 60 * 60
 
@@ -4232,7 +4242,7 @@ class RaceController(
      * journal seulement (circuit absent des signatures, configurations voisines, repère à confirmer en course).
      */
     private fun trackGeometry(p: TelemetryPacket, raceActive: Boolean, out: MutableList<EngineerMessage>) {
-        val sigs = database.trackSignatures
+        val sigs = database.geometrySignatures
         if (sigs.isEmpty()) return
         if (geometrySignatures !== sigs) {
             geometrySignatures = sigs
@@ -4293,6 +4303,7 @@ class RaceController(
                 sessionTrackEvidence = v.course
                 sessionTrackSource = TrackEvidence.GEOMETRY_MEASURED
                 geometryLocked = true
+                milestone(Milestone.TRACK_MEASURED, "télémétrie (tracé X/Z)", "mesurée", "${c.label} à ${v.distanceM.roundToInt()} m")
                 trackCandidates = emptyList()
                 if (previous != v.course) {
                     applyRules(rules.copy(trackId = v.course))
@@ -4343,6 +4354,73 @@ class RaceController(
 
     /** Circuit reconnu par la géométrie pour cette session : la reconnaissance s'arrête là (issue #47). */
     private var geometryLocked = false
+
+    // Issue #58 : position à l'arrêt (grille, voie des stands) examinée une fois par session.
+    private var gridProbeDone = false
+    private var gridStillPackets = 0
+    private var gridLastX = Float.NaN
+    private var gridLastZ = Float.NaN
+
+    /**
+     * Issue #58 (zéro touch circuits) : dès que la voiture est immobile avec une position valide (grille, stands), sa
+     * position est comparée à tous les tracés connus. Un seul circuit compatible (et un seul sens possible) en fait le
+     * circuit de travail PROBABLE dès la grille ; jamais une reconnaissance : un point seul ne prouve pas le circuit
+     * (circuit absent des signatures, tracés qui se croisent). Le tracé mesuré en roulant confirme ou remplace.
+     */
+    private fun gridPositionProbe(p: TelemetryPacket, out: MutableList<EngineerMessage>) {
+        if (gridProbeDone || geometryLocked || sessionTrackSource == TrackEvidence.GEOMETRY_MEASURED) return
+        if (p.isLoading || p.isPaused || p.speedKmh > 1f || (p.positionX == 0f && p.positionZ == 0f) ||
+            p.positionX.isNaN() || p.positionZ.isNaN()
+        ) {
+            gridStillPackets = 0
+            return
+        }
+        if (gridLastX.isNaN() || kotlin.math.hypot(p.positionX - gridLastX, p.positionZ - gridLastZ) > GRID_STILL_M) {
+            gridLastX = p.positionX
+            gridLastZ = p.positionZ
+            gridStillPackets = 0
+        }
+        if (++gridStillPackets < GRID_STILL_PACKETS) return
+        gridProbeDone = true
+        val sigs = database.geometrySignatures
+        if (sigs.isEmpty()) return
+        val matches = com.gt7pitwall.core.knowledge.TrackGeometryRecognizer.positionCandidates(sigs, p.positionX, p.positionZ)
+        val courses = matches.flatMap { listOfNotNull(it.sig.course, it.sig.reverseCourse) }.distinct()
+        val where = String.format(java.util.Locale.ROOT, "x=%.0f z=%.0f", p.positionX, p.positionZ)
+        val unique = matches.singleOrNull()?.takeIf { courses.size == 1 }
+        journal.record(
+            JournalType.DECISION, JournalSource.ENGINE,
+            when {
+                matches.isEmpty() -> "Position à l'arrêt : aucun tracé connu à moins de ${com.gt7pitwall.core.knowledge.TrackGeometryRecognizer.GRID_TOLERANCE_M.roundToInt()} m"
+                else -> "Position à l'arrêt compatible avec : " + matches.joinToString(", ") { it.sig.name }
+            },
+            decision = when {
+                unique != null -> "circuit probable, à confirmer par le tracé en roulant"
+                matches.isEmpty() -> "aucune conclusion (circuit absent des signatures, ou voiture hors piste)"
+                else -> "plusieurs tracés ou sens possibles : aucune conclusion avant de rouler"
+            },
+            details = listOfNotNull(
+                "position" to where,
+                "candidats" to matches.size.toString(),
+                matches.firstOrNull()?.let { "ecart_m" to String.format(java.util.Locale.ROOT, "%.1f", it.devM) },
+                "circuit_enregistre" to (rules.trackId?.toString() ?: "aucun"),
+                "source" to "signatures gt7-datalogger-track-data (CC0 ; captures MIT)",
+            ).toMap(),
+        )
+        val id = unique?.let { courses.single() } ?: return
+        val c = database.course(id) ?: return
+        milestone(Milestone.TRACK_CANDIDATE, "télémétrie (position à l'arrêt)", "probable", "${c.label}, écart ${unique.devM.roundToInt()} m")
+        sessionTrackEvidence = id
+        sessionTrackSource = TrackEvidence.POSITION_COMPATIBLE
+        val previous = rules.trackId
+        // Circuit enregistré (fiche, mémoire) sans tracé connu à cet endroit : la position le contredit.
+        val contradicted = previous != null && previous != id && sigs.any { it.course == previous || it.reverseCourse == previous }
+        if (previous == null || contradicted) {
+            applyRules(rules.copy(trackId = id))
+            out += EngineerMessage("Circuit probable d'après la position sur la grille : ${c.label}.", Priority.NORMAL, MessageCategory.RADIO, dedupKey = "grille:$sessionId:$id")
+            out += replan()
+        }
+    }
 
     /** Circuit déjà signalé incohérent dans cette session (un seul message). */
     private var trackInconsistencyNoted = false

@@ -83,7 +83,7 @@ object DatabaseCoverage {
         out += "Circuits : ${courses.count { !it.learned && it.source == null }} configurations de la base communautaire" +
             (if (fromUpdates.isNotEmpty()) " + ${fromUpdates.size} des notes officielles (${fromUpdates.joinToString { it.name }})" else "") +
             (if (learned.isNotEmpty()) " + ${learned.size} appris par Pitwall (${learned.joinToString { it.name }})" else "") + "."
-        val sigCourses = db.trackSignatures.flatMap { listOfNotNull(it.course, it.reverseCourse) }.toSet()
+        val sigCourses = db.geometrySignatures.flatMap { listOfNotNull(it.course, it.reverseCourse) }.toSet()
         out += "Reconnaissance par la géométrie : ${sigCourses.size} configurations ; virages numérotés : ${db.numberedCorners.size} circuits."
         val missingGeometry = fromUpdates.filter { it.id !in sigCourses }
         if (missingGeometry.isNotEmpty()) {

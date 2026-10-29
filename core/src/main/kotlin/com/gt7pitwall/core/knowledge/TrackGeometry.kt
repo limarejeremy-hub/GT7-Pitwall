@@ -20,8 +20,18 @@ class TrackSignature(
     val minX: Float, val maxX: Float, val minZ: Float, val maxZ: Float,
     /** Tracé : x0, z0, x1, z1… (mètres, repère de la télémétrie GT7 : positions X et Z). */
     val path: FloatArray,
+    /** Rattachement fait au démarrage (« notes officielles GT7 1.72… ») quand la base communautaire n'a pas le circuit. */
+    val resolvedBy: String? = null,
+    /**
+     * Une autre configuration du même site n'a pas de signature (Fuji Short, Suzuka East…) : leurs tracés se partagent
+     * des portions, donc pas de reconnaissance anticipée ici (issue #58).
+     */
+    val venueIncomplete: Boolean = false,
 ) {
     val points: Int get() = path.size / 2
+
+    /** Même signature rattachée au circuit [course] (issue #58 : SUGO absent de la base communautaire). */
+    fun resolved(course: Int, by: String) = TrackSignature(name, course, reverseCourse, lengthM, minX, maxX, minZ, maxZ, path, by, venueIncomplete)
 
     companion object {
         fun parseAll(json: String): List<TrackSignature> {
@@ -41,6 +51,7 @@ class TrackSignature(
                     minX = box.getDouble(0).toFloat(), maxX = box.getDouble(1).toFloat(),
                     minZ = box.getDouble(2).toFloat(), maxZ = box.getDouble(3).toFloat(),
                     path = FloatArray(p.length()) { p.getDouble(it).toFloat() },
+                    venueIncomplete = r.optBoolean("venue_incomplete", false),
                 )
             }
         }
@@ -57,7 +68,9 @@ class TrackSignature(
  * - à plus de [SOFT_DEV_M] pendant [SOFT_STRIKES] échantillons de suite (sortie de piste brève tolérée) : éliminée ;
  * - le sens de progression le long du tracé distingue un circuit de son inverse (même géométrie) : sens inverse
  *   sans circuit inverse connu → éliminée.
- * Verdict seulement après [MIN_DISTANCE_M] mètres et [MIN_SAMPLES] échantillons :
+ * Issue #58 (zéro touch) : verdict anticipé dès [EARLY_DISTANCE_M] mètres et [EARLY_SAMPLES] échantillons si UNE seule
+ * signature (sur toutes, même celles sans circuit rattaché) est encore compatible, de près (écart moyen au plus
+ * [EARLY_MEAN_DEV_M]) et dans un sens net. Sinon, verdict après [MIN_DISTANCE_M] mètres et [MIN_SAMPLES] échantillons :
  * - une seule configuration restante → reconnue ;
  * - plusieurs (configurations voisines, comme Le Mans avec ou sans chicanes, tant que la partie qui les distingue
  *   n'est pas parcourue) → ambiguë, jamais tranchée au hasard ;
@@ -190,7 +203,8 @@ class TrackGeometryRecognizer(private val signatures: List<TrackSignature>) {
     val sampleCount: Int get() = samples
 
     private fun decide(): Verdict {
-        if (distanceM < MIN_DISTANCE_M || samples < MIN_SAMPLES) return Verdict.Pending
+        if (distanceM < EARLY_DISTANCE_M || samples < EARLY_SAMPLES) return Verdict.Pending
+        if (distanceM < MIN_DISTANCE_M || samples < MIN_SAMPLES) return early() ?: Verdict.Pending
         data class Option(val course: Int, val c: Candidate, val reverse: Boolean)
         val options = candidates.filter { it.alive }.mapNotNull { c ->
             // Le sens se juge sur la progression le long du tracé : il faut une nette majorité.
@@ -209,7 +223,35 @@ class TrackGeometryRecognizer(private val signatures: List<TrackSignature>) {
         }
     }
 
+    /** Verdict anticipé : une seule signature encore compatible, suivie de près, sens net. Null : attendre. */
+    private fun early(): Verdict? {
+        val alive = candidates.filter { it.alive }
+        val c = alive.singleOrNull() ?: return null
+        if (c.sig.venueIncomplete) return null
+        if (c.samples == 0 || c.devSum / c.samples > EARLY_MEAN_DEV_M) return null
+        val total = c.forward + c.backward
+        if (total == 0 || maxOf(c.forward, c.backward).toFloat() / total < DIRECTION_SHARE) return null
+        val reverse = c.backward > c.forward
+        val course = (if (reverse) c.sig.reverseCourse else c.sig.course) ?: return null
+        return Verdict.Identified(course, c.sig.name, reverse, distanceM, (c.devSum / c.samples).toFloat())
+    }
+
+    /** Une signature compatible avec une position à l'arrêt, et l'écart à son tracé (m). */
+    data class PositionMatch(val sig: TrackSignature, val devM: Float)
+
     companion object {
+        /**
+         * Signatures dont le tracé passe à moins de [toleranceM] de la position (x, z) : grille, stands, voiture à l'arrêt.
+         * Le sens ne se voit pas à l'arrêt : un circuit et son inverse restent tous deux possibles. Calcul complet sur toutes
+         * les signatures : à appeler une fois par position stable, jamais à chaque paquet.
+         */
+        fun positionCandidates(signatures: List<TrackSignature>, x: Float, z: Float, toleranceM: Float = GRID_TOLERANCE_M): List<PositionMatch> =
+            signatures.mapNotNull { s ->
+                if (x < s.minX - toleranceM || x > s.maxX + toleranceM || z < s.minZ - toleranceM || z > s.maxZ + toleranceM) return@mapNotNull null
+                val dev = nearest(s.path, x, z).second
+                if (dev <= toleranceM) PositionMatch(s, dev) else null
+            }.sortedBy { it.devM }
+
         const val STEP_M = 10f
         const val RECENT = 60
         const val JUMP_M = 300f
@@ -219,6 +261,14 @@ class TrackGeometryRecognizer(private val signatures: List<TrackSignature>) {
         const val HARD_DEV_M = 80f
         const val SOFT_STRIKES = 4
         const val MIN_DISTANCE_M = 700f
+
+        /** Verdict anticipé (issue #58) : distance, échantillons et écart moyen maximal. */
+        const val EARLY_DISTANCE_M = 250f
+        const val EARLY_SAMPLES = 20
+        const val EARLY_MEAN_DEV_M = 10f
+
+        /** Écart admis entre une voiture à l'arrêt (grille, voie des stands) et le tracé de référence. */
+        const val GRID_TOLERANCE_M = 30f
         const val MIN_SAMPLES = 40
         const val DIRECTION_SHARE = 0.8f
 
