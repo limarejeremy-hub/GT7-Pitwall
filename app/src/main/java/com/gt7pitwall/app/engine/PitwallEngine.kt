@@ -446,11 +446,43 @@ class PitwallEngine(
         voiceInput?.let { input -> scope.launch { input.events.collect { onVoice(it) } } }
     }
 
+    /**
+     * Issue #63 : veille automatique quand le flux GT7 s'arrête durablement (horloge monotone). [onIdle] est appelé une
+     * fois, avec la raison ; l'application arrête alors le service (moteur, UDP, verrous, notification).
+     */
+    private val idle = com.gt7pitwall.core.telemetry.TelemetryIdlePolicy({ android.os.SystemClock.elapsedRealtime() })
+    private var idleJob: Job? = null
+    @Volatile
+    var onIdle: ((com.gt7pitwall.core.telemetry.TelemetryIdlePolicy.Reason) -> Unit)? = null
+
+    /** Raison de la dernière veille automatique (affichée tant que la réception n'a pas repris), ou null. */
+    private val _autoSuspended = MutableStateFlow<String?>(null)
+    val autoSuspended: StateFlow<String?> = _autoSuspended.asStateFlow()
+
+    fun markAutoSuspended(reason: com.gt7pitwall.core.telemetry.TelemetryIdlePolicy.Reason) {
+        _autoSuspended.value = reason.label
+        journalRadio("TELEMETRY_AUTO_SUSPEND", "Veille automatique : ${reason.label}. Plus de recherche de la PS5 jusqu'à la prochaine ouverture de Pitwall ou « Démarrer ».")
+    }
+
     @Synchronized
     fun start(ps5Host: String?) {
         stop()
+        _autoSuspended.value = null
+        idle.start()
         collectJob = scope.launch(start = CoroutineStart.UNDISPATCHED) {
-            client.packets.collect { onPacket(it) }
+            client.packets.collect {
+                idle.onPacket(it.packetId)
+                onPacket(it)
+            }
+        }
+        idleJob = scope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(IDLE_CHECK_MS)
+                val reason = idle.check() ?: continue
+                idle.stop()
+                onIdle?.invoke(reason)
+                break
+            }
         }
         client.start(scope, ps5Host)
         _running.value = true
@@ -459,6 +491,9 @@ class PitwallEngine(
     @Synchronized
     fun stop() {
         if (recorder.running) stopTrace()
+        idle.stop()
+        idleJob?.cancel()
+        idleJob = null
         client.stop()
         collectJob?.cancel()
         collectJob = null
@@ -983,6 +1018,8 @@ class PitwallEngine(
     }
 
     private companion object {
+        /** Vérification de la veille automatique (issue #63). */
+        const val IDLE_CHECK_MS = 5_000L
         const val TRACE_EXT = ".gt7trace"
         const val MAX_TRACES = 5
         /** Au-delà, un petit signal discret dit que la réponse arrive (jamais une phrase « je réfléchis »). */

@@ -24,9 +24,19 @@ class MainActivity : ComponentActivity() {
             if (granted) (application as PitwallApp).setVoiceInput(true)
         }
 
+    /** Lancement neuf (pas une recréation après rotation ou pliage du Fold) : lève la veille automatique (#63). */
+    private var freshLaunch = false
+
+    override fun onStop() {
+        super.onStop()
+        (application as PitwallApp).autoConnect.onBackground()
+    }
+
     override fun onStart() {
         super.onStart()
         val app = application as PitwallApp
+        app.autoConnect.onReopened(freshLaunch)
+        freshLaunch = false
         app.syncOnOpen()
         // Issue #55 : l'activité est visible, le service de premier plan peut démarrer. Adresse vide = recherche automatique.
         if (app.autoConnect.onOpen(app.settings.autoConnectOnOpen, app.engine.running.value)) {
@@ -36,6 +46,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        freshLaunch = savedInstanceState == null
         enableEdgeToEdge()
         // Tableau de bord : l'écran reste allumé tant que l'application est affichée.
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)

@@ -129,6 +129,7 @@ fun PitwallScreen(
     val state by engine.state.collectAsStateWithLifecycle()
     val connection by engine.connection.collectAsStateWithLifecycle()
     val running by engine.running.collectAsStateWithLifecycle()
+    val autoSuspended by engine.autoSuspended.collectAsStateWithLifecycle()
     val radio by engine.radio.collectAsStateWithLifecycle()
     val voiceState by voice.state.collectAsStateWithLifecycle()
     val rules by engine.rules.collectAsStateWithLifecycle()
@@ -266,6 +267,7 @@ fun PitwallScreen(
     val connectionCard: @Composable () -> Unit = {
         ConnectionCard(
             connection = connection,
+            autoSuspended = autoSuspended,
             running = running,
             address = address,
             onAddressChange = { address = it },
@@ -313,10 +315,19 @@ fun PitwallScreen(
                 },
                 actions = {
                     TextButton(onClick = { selectedTab = "Atelier" }) {
-                        Text(if (running) "● PS5 active" else "○ Connecter PS5",
-                            color = if (running) PitColors.Green else PitColors.Muted)
+                        // Libellé d'après le flux réellement reçu (#61) : « active » seulement en réception.
+                        val live = connection is ConnectionStatus.Receiving
+                        Text(
+                            when {
+                                live -> "● PS5 active"
+                                running -> "◌ Recherche PS5"
+                                autoSuspended != null -> "○ En veille"
+                                else -> "○ Connecter PS5"
+                            },
+                            color = if (live) PitColors.Green else PitColors.Muted,
+                        )
                     }
-                    StatusPill(connection)
+                    StatusPill(connection, autoSuspended)
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.background),
@@ -498,9 +509,9 @@ private fun PitCard(title: String, content: @Composable ColumnScope.() -> Unit) 
 }
 
 @Composable
-private fun StatusPill(status: ConnectionStatus) {
+private fun StatusPill(status: ConnectionStatus, autoSuspended: String? = null) {
     val (label, color) = when (status) {
-        ConnectionStatus.Stopped -> "Arrêté" to PitColors.Muted
+        ConnectionStatus.Stopped -> (if (autoSuspended != null) "Veille" else "Arrêté") to PitColors.Muted
         is ConnectionStatus.Searching -> "Recherche" to PitColors.Yellow
         is ConnectionStatus.Receiving -> "En direct" to PitColors.Green
         is ConnectionStatus.NoData -> "Silence" to PitColors.Orange
@@ -542,6 +553,7 @@ private fun describe(status: ConnectionStatus): String = when (status) {
 @Composable
 private fun ConnectionCard(
     connection: ConnectionStatus,
+    autoSuspended: String?,
     running: Boolean,
     address: String,
     onAddressChange: (String) -> Unit,
@@ -557,7 +569,14 @@ private fun ConnectionCard(
     onTestVoice: () -> Unit,
 ) {
     PitCard("Connexion PS5") {
-        Text(describe(connection), style = MaterialTheme.typography.bodyMedium)
+        Text(
+            if (connection == ConnectionStatus.Stopped && autoSuspended != null) {
+                "Veille automatique : $autoSuspended. Pitwall ne cherche plus la PS5. Rouvre Pitwall ou touche « Démarrer » pour reprendre."
+            } else {
+                describe(connection)
+            },
+            style = MaterialTheme.typography.bodyMedium,
+        )
         buildLabel()?.let { Text("Version : $it", style = MaterialTheme.typography.bodySmall) }
         OutlinedTextField(
             value = address,
