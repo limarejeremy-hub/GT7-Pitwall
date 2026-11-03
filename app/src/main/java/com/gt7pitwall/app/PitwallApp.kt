@@ -121,6 +121,7 @@ class PitwallApp : Application() {
             discord.audioMonitor.enabled = settings.audioDiagnostics
             discord.onAudioEvent = { code, text -> it.journalRadio(code, text) }
             it.voiceEnabled = settings.voiceEnabled
+            it.onIdle = ::onTelemetryIdle
             it.sportFirst = settings.sportFirst
             it.detailedLapReports = settings.detailedLapReports
             it.voiceBusy = { speaking.value }
@@ -244,8 +245,41 @@ class PitwallApp : Application() {
     /** Démarrage automatique de la télémétrie à l'ouverture (issue #55) : une demande par ouverture réelle. */
     val autoConnect = com.gt7pitwall.core.telemetry.AutoConnect()
 
+    /** Bot Discord lancé par le démarrage de la télémétrie (et non par le pilote) : coupé à la veille automatique. */
+    private var discordStartedByTelemetry = false
+    /** Écoute du micro coupée par la veille automatique : reprise au prochain démarrage. */
+    private var voiceStoppedByIdle = false
+
     fun onTelemetryStart() {
-        if (settings.discordAutoJoin) discord.autoStart()
+        if (settings.discordAutoJoin) {
+            discordStartedByTelemetry = discord.state.value != com.gt7pitwall.app.discord.DiscordState.IN_VOICE
+            discord.autoStart()
+        }
+        if (voiceStoppedByIdle) {
+            voiceStoppedByIdle = false
+            if (settings.voiceInputEnabled) voiceInput.start()
+        }
+    }
+
+    /**
+     * Issue #63 : flux GT7 interrompu durablement. Le service s'arrête (moteur, UDP, verrous Wi-Fi et CPU, notification),
+     * la session est archivée, le bot lancé automatiquement quitte Discord, l'écoute du micro se met en pause. Aucun
+     * réglage n'est modifié ; rien ne relance avant une ouverture intentionnelle ou « Démarrer ».
+     */
+    private fun onTelemetryIdle(reason: com.gt7pitwall.core.telemetry.TelemetryIdlePolicy.Reason) {
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            autoConnect.onAutoSuspended()
+            engine.markAutoSuspended(reason)
+            com.gt7pitwall.app.service.TelemetryService.stop(this)
+            if (discordStartedByTelemetry) {
+                discordStartedByTelemetry = false
+                discord.disconnect()
+            }
+            if (voiceInput.isRunning) {
+                voiceInput.stop()
+                voiceStoppedByIdle = true
+            }
+        }
     }
 
     /** Durée de silence avant la fermeture de la conversation continue. */
