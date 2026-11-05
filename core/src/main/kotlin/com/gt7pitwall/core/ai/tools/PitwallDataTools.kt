@@ -1,6 +1,8 @@
 package com.gt7pitwall.core.ai.tools
 
 import com.gt7pitwall.core.ai.AiFacts
+import com.gt7pitwall.core.ai.FactProvenance
+import com.gt7pitwall.core.ai.FactTopic
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -18,20 +20,13 @@ import org.json.JSONObject
 object PitwallDataTools {
     const val NAMESPACE = "pitwall"
 
-    enum class Provenance(val label: String) {
-        MEASURED("mesuré (télémétrie GT7)"),
-        CALCULATED("calculé par le moteur Pitwall"),
-        PUBLISHED("publié (programme Sport, source tierce)"),
-        DECLARED("déclaré par le pilote"),
-    }
-
-    enum class Tool(val toolName: String, val description: String, val topic: ToolSnapshot.Topic?) {
-        LIVE("get_live_race_state", "État de la course en direct : télémétrie active ou non, voiture, circuit, tour, position, chronos, rythme, météo déclarée.", ToolSnapshot.Topic.LIVE),
-        RULES("get_race_rules_and_sources", "Règlement de l'épreuve et ses sources : obligations (gommes, arrêts), programme Sport de la semaine, champs inconnus. Deux gommes imposées ne veulent pas dire un arrêt explicite.", ToolSnapshot.Topic.RULES),
-        FUEL("get_fuel_strategy", "Carburant et plan d'arrêt calculés par le moteur : consommation mesurée, marge, arrêt prévu, arrêts faits.", ToolSnapshot.Topic.FUEL),
-        TYRES("get_tyre_strategy", "Pneus : gomme, âge du train, prochaine gomme, performance estimée des gommes sur l'historique comparable.", ToolSnapshot.Topic.TYRES),
-        LAPS("get_recent_laps", "Derniers tours mesurés : chrono, carburant consommé, blocages, patinages, vitesse maximale, antipatinage.", ToolSnapshot.Topic.LAPS),
-        HISTORY("get_session_history", "Historique comparable : sessions archivées, justesse des prévisions, dernier bilan, profil de pilotage.", ToolSnapshot.Topic.HISTORY),
+    enum class Tool(val toolName: String, val description: String, val topic: FactTopic?) {
+        LIVE("get_live_race_state", "État de la course en direct : télémétrie active ou non, voiture, circuit, tour, position, chronos, rythme, météo déclarée.", FactTopic.LIVE),
+        RULES("get_race_rules_and_sources", "Règlement de l'épreuve et ses sources : obligations (gommes, arrêts), programme Sport de la semaine, champs inconnus. Deux gommes imposées ne veulent pas dire un arrêt explicite.", FactTopic.RULES),
+        FUEL("get_fuel_strategy", "Carburant et plan d'arrêt calculés par le moteur : consommation mesurée, marge, arrêt prévu, arrêts faits.", FactTopic.FUEL),
+        TYRES("get_tyre_strategy", "Pneus : gomme, âge du train, prochaine gomme, performance estimée des gommes sur l'historique comparable.", FactTopic.TYRES),
+        LAPS("get_recent_laps", "Derniers tours mesurés : chrono, carburant consommé, blocages, patinages, vitesse maximale, antipatinage.", FactTopic.LAPS),
+        HISTORY("get_session_history", "Historique comparable : sessions archivées, justesse des prévisions, dernier bilan, profil de pilotage.", FactTopic.HISTORY),
         ;
 
         companion object {
@@ -57,15 +52,15 @@ object PitwallDataTools {
             }
         })
 
-    /** Exécute un appel du modèle sur le cliché ; ne modifie rien. */
-    fun call(name: String, snapshot: ToolSnapshot): ToolResult {
+    /** Exécute un appel du modèle sur le cliché ; ne modifie rien. Cliché trop vieux : refusé, aucune donnée. */
+    fun call(name: String, snapshot: ToolSnapshot, nowMs: Long = snapshot.observedAtMs): ToolResult {
         val tool = Tool.byName(name) ?: return ToolResult.unknown(name, snapshot.observedAtMs)
-        return snapshot.result(tool)
+        return snapshot.result(tool, nowMs)
     }
 }
 
-/** Un fait rendu par un outil, avec sa provenance. */
-data class ToolFact(val text: String, val provenance: PitwallDataTools.Provenance)
+/** Un fait rendu par un outil, avec sa provenance, sa source et sa fiabilité (fixées à la création du fait). */
+data class ToolFact(val text: String, val provenance: FactProvenance, val source: String = "inconnue", val reliability: String? = null)
 
 /** Contrat de réponse d'un outil (#70) : quand, d'où, quelle confiance, ce qui manque, ce qui se contredit. */
 data class ToolResult(
@@ -77,14 +72,18 @@ data class ToolResult(
     val facts: List<ToolFact>,
     val missing: List<String>,
     val conflicts: List<String>,
+    /** Le cliché est trop vieux pour la question (session changée, garage, réponse tardive) : aucune donnée rendue. */
+    val stale: Boolean = false,
 ) {
     val confidence: String
         get() = when {
             !known -> "aucune"
+            stale -> "aucune (cliché périmé)"
             facts.isEmpty() -> "aucune donnée"
             conflicts.isNotEmpty() -> "faible (sources contradictoires)"
-            facts.any { it.provenance == PitwallDataTools.Provenance.MEASURED } && telemetryLive -> "élevée (mesures en direct)"
-            else -> "moyenne (calculs, publications ou déclarations)"
+            facts.any { it.provenance == FactProvenance.UNKNOWN } -> "faible (provenance inconnue pour une partie des faits)"
+            telemetryLive && facts.all { it.provenance == FactProvenance.MEASURED || it.provenance == FactProvenance.REFERENCE } -> "élevée (mesures en direct)"
+            else -> "moyenne (calculs du moteur, publications ou déclarations)"
         }
 
     /** Texte des faits rendus : sert au contrôle des chiffres de la réponse (rien d'autre n'est autorisé). */
@@ -100,7 +99,10 @@ data class ToolResult(
         put("telemetry_live", telemetryLive)
         lap?.let { put("lap", it) }
         put("confidence", confidence)
-        put("facts", JSONArray().also { a -> facts.forEach { f -> a.put(JSONObject().put("text", f.text).put("provenance", f.provenance.label)) } })
+        if (stale) put("stale", true)
+        put("facts", JSONArray().also { a ->
+            facts.forEach { f -> a.put(JSONObject().put("text", f.text).put("provenance", f.provenance.label).put("source", f.source).apply { f.reliability?.let { put("reliability", it) } }) }
+        })
         put("missing", JSONArray(missing))
         put("conflicts", JSONArray(conflicts))
         put("rule", "Utilise seulement ces faits ; ne calcule pas de nouveau chiffre ; dis ce qui manque.")
@@ -112,65 +114,54 @@ data class ToolResult(
 }
 
 /**
- * Cliché des faits du moteur au moment de la question, rangés par sujet. Construit à partir de [AiFacts] (les phrases
- * de [com.gt7pitwall.core.race.RaceController.aiFacts]) : aucun calcul refait, aucune source dupliquée.
+ * Cliché des faits du moteur au moment de la question, rangés par sujet. Sujet, provenance et source viennent de
+ * [AiFacts.tagged] (fixés par [com.gt7pitwall.core.race.RaceController.aiFacts]) : rien n'est deviné d'après le texte.
+ * Une phrase non étiquetée est rangée en [FactTopic.OTHER] avec une provenance [FactProvenance.UNKNOWN], et n'est
+ * servie par aucun outil.
  */
 class ToolSnapshot(
     val observedAtMs: Long,
     val telemetryLive: Boolean,
     val lap: Int?,
-    private val byTopic: Map<Topic, List<ToolFact>>,
+    private val byTopic: Map<FactTopic, List<ToolFact>>,
+    private val conflicts: List<String> = emptyList(),
+    private val maxAgeMs: Long = MAX_AGE_MS,
 ) {
-    enum class Topic { LIVE, RULES, FUEL, TYRES, LAPS, HISTORY }
+    fun facts(t: FactTopic): List<ToolFact> = byTopic[t].orEmpty()
 
-    fun facts(t: Topic): List<ToolFact> = byTopic[t].orEmpty()
+    /** Phrases sans étiquette (provenance inconnue) : jamais servies, comptées pour le diagnostic. */
+    val untagged: Int get() = facts(FactTopic.OTHER).size
 
-    fun result(tool: PitwallDataTools.Tool): ToolResult {
+    fun result(tool: PitwallDataTools.Tool, nowMs: Long = observedAtMs): ToolResult {
         val topic = tool.topic ?: return ToolResult.unknown(tool.toolName, observedAtMs)
+        if (nowMs - observedAtMs > maxAgeMs) {
+            return ToolResult(tool.toolName, true, observedAtMs, telemetryLive, lap, emptyList(), listOf("cliché périmé : repose la question"), emptyList(), stale = true)
+        }
         val f = facts(topic)
         val missing = buildList {
-            if (!telemetryLive && topic in setOf(Topic.LIVE, Topic.FUEL, Topic.TYRES)) add("télémétrie en direct (aucune course suivie en ce moment)")
-            if (topic == Topic.LIVE) add("écarts, arrêts et pneus des adversaires (GT7 ne les transmet pas)")
-            if (topic == Topic.TYRES) add("usure réelle et gomme montée (GT7 ne les transmet pas)")
+            if (!telemetryLive && topic in setOf(FactTopic.LIVE, FactTopic.FUEL, FactTopic.TYRES)) add("télémétrie en direct (aucune course suivie en ce moment)")
+            if (topic == FactTopic.LIVE) add("écarts, arrêts et pneus des adversaires (GT7 ne les transmet pas)")
+            if (topic == FactTopic.TYRES) add("usure réelle et gomme montée (GT7 ne les transmet pas)")
             if (f.isEmpty()) add("aucun fait disponible sur ce sujet")
         }
-        val conflicts = f.filter { CONFLICT.containsMatchIn(it.text) }.map { it.text }
-        return ToolResult(tool.toolName, true, observedAtMs, telemetryLive, lap, f, missing, conflicts)
+        return ToolResult(tool.toolName, true, observedAtMs, telemetryLive, lap, f, missing, if (topic == FactTopic.RULES) conflicts else emptyList())
     }
 
     companion object {
-        private val CONFLICT = Regex("(?i)contradi|conflit|incohéren")
+        /** Au-delà, le cliché ne vaut plus pour la question (la radio écarte de toute façon une réponse tardive). */
+        const val MAX_AGE_MS = 60_000L
 
-        /** Range chaque phrase des faits dans un sujet, avec sa provenance (préfixes des phrases du moteur). */
         fun from(facts: AiFacts, telemetryLive: Boolean, lap: Int?, observedAtMs: Long): ToolSnapshot {
-            val map = linkedMapOf<Topic, MutableList<ToolFact>>()
+            val map = linkedMapOf<FactTopic, MutableList<ToolFact>>()
+            val byText = facts.tagged.associateBy { it.text }
             for (line in facts.lines) {
-                val topic = topicOf(line)
-                map.getOrPut(topic) { mutableListOf() } += ToolFact(line, provenanceOf(line, topic))
+                val t = byText[line]
+                val topic = t?.topic ?: FactTopic.OTHER
+                map.getOrPut(topic) { mutableListOf() } += ToolFact(line, t?.provenance ?: FactProvenance.UNKNOWN, t?.source ?: "non classée", t?.reliability)
             }
-            facts.observations.forEach { o -> map.getOrPut(Topic.HISTORY) { mutableListOf() } += ToolFact(o.text, PitwallDataTools.Provenance.MEASURED) }
-            return ToolSnapshot(observedAtMs, telemetryLive, lap, map)
-        }
-
-        private fun starts(line: String, vararg p: String) = p.any { line.startsWith(it) }
-
-        fun topicOf(line: String): Topic = when {
-            starts(line, "Épreuve", "Programme de la semaine", "Règlement", "Obligations du règlement") -> Topic.RULES
-            starts(line, "Carburant", "Stratégie", "Arrêt prévu", "Arrêts aux stands") -> Topic.FUEL
-            starts(line, "Pneus", "Changement de pneus", "Prochaine gomme", "Performance des gommes") -> Topic.TYRES
-            Regex("^(Tour \\d+ :|Dernière session, tour|Détail du dernier tour)").containsMatchIn(line) -> Topic.LAPS
-            starts(line, "Historique", "Justesse", "Dernier bilan") -> Topic.HISTORY
-            starts(line, "GT7 transmet", "Aucune télémétrie", "Voiture", "Circuit", "Course", "Position", "Places", "Dernier tour",
-                "Meilleur tour", "Rythme", "Secteurs", "Pluie", "Pas de pluie", "Déclaré par le pilote", "Intention du pilote") -> Topic.LIVE
-            else -> Topic.HISTORY // profil de pilotage et autres constats durables
-        }
-
-        fun provenanceOf(line: String, topic: Topic): PitwallDataTools.Provenance = when {
-            Regex("(?i)déclaré|d'après toi|signalée? par le pilote|intention du pilote|confirmé par le pilote").containsMatchIn(line) -> PitwallDataTools.Provenance.DECLARED
-            line.startsWith("Programme de la semaine") -> PitwallDataTools.Provenance.PUBLISHED
-            Regex("(?i)estimé|prévision|plan|stratégie|arrêt prévu|marge").containsMatchIn(line) -> PitwallDataTools.Provenance.CALCULATED
-            topic == Topic.LAPS || topic == Topic.LIVE -> PitwallDataTools.Provenance.MEASURED
-            else -> PitwallDataTools.Provenance.CALCULATED
+            // Constats de pilotage : calculés par le moteur à partir de la télémétrie des tours.
+            facts.observations.forEach { o -> map.getOrPut(FactTopic.LAPS) { mutableListOf() } += ToolFact(o.text, FactProvenance.CALCULATED, "constats de pilotage (télémétrie des tours)") }
+            return ToolSnapshot(observedAtMs, telemetryLive, lap, map, facts.conflicts)
         }
     }
 }

@@ -18,6 +18,7 @@ class ToolLoop(
     private val send: suspend (body: String) -> ResponsesStream.Turn,
     private val maxRounds: Int = MAX_ROUNDS,
     private val maxCalls: Int = MAX_CALLS,
+    private val clock: () -> Long = System::currentTimeMillis,
 ) {
     data class Call(val name: String, val known: Boolean)
 
@@ -41,7 +42,7 @@ class ToolLoop(
             }
             for (fc in turn.calls) {
                 if (calls.size >= maxCalls) return Outcome(AiResult.Failure(FailureKind.OTHER, "trop d'appels d'outils (${calls.size})"), calls, round)
-                val res = PitwallDataTools.call(fc.name, snapshot)
+                val res = PitwallDataTools.call(fc.name, snapshot, clock())
                 input.put(fc.toInputItem())
                 input.put(JSONObject().put("type", "function_call_output").put("call_id", fc.callId).put("output", res.toJson()))
                 if (res.known) evidence.append(res.evidenceText).append('\n')

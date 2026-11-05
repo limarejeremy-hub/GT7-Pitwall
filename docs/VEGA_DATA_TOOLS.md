@@ -19,8 +19,15 @@ Rien ne donne à GPT un accès automatique au téléphone ni à Internet : c'est
   restent hors d'atteinte ; une commande passe toujours par le moteur et son garde).
   `get_live_race_state`, `get_race_rules_and_sources`, `get_fuel_strategy`, `get_tyre_strategy`, `get_recent_laps`,
   `get_session_history`.
-- `ToolSnapshot` : cliché figé **sous le verrou de la course** au moment de la question, construit à partir des phrases
-  de `RaceController.aiFacts()` (aucun calcul refait, aucune source dupliquée, aucun flux 60 Hz envoyé).
+- `ToolSnapshot` : cliché figé **sous le verrou de la course** au moment de la question, construit à partir de
+  `RaceController.aiFacts()` (aucun calcul refait, aucune source dupliquée, aucun flux 60 Hz envoyé). Périmé après
+  60 s : plus aucune donnée servie.
+- **Provenance fixée à la source (V491, revue #71)** : `aiFacts()` étiquette chaque phrase au moment où il la produit
+  (`TaggedFact` : sujet, provenance, source, fiabilité). Plus aucune déduction d'après le texte. Une phrase non
+  étiquetée est « non classée, provenance inconnue » et n'est servie par aucun outil ; « mesuré » n'est jamais un
+  défaut. Les contradictions viennent du statut `CONFLICT` des champs du programme Sport, pas de mots-clés.
+  Confiance « élevée » seulement si tout est mesuré en direct ; « faible » dès qu'une provenance est inconnue ou qu'il
+  y a contradiction. (Corrigé au passage : 6 phrases de pilotage partaient vers l'IA précédées de « null : ».)
 - Contrat de chaque réponse : `observed_at_ms`, `telemetry_live`, `lap`, `confidence`, `facts[{text, provenance}]`
   (mesuré / calculé / publié / déclaré), `missing` (dont ce que GT7 ne transmet pas), `conflicts`.
 - `ToolLoop` : 3 allers-retours et 6 appels au plus ; outil inconnu → erreur, jamais une donnée ; dépassement → échec →
@@ -29,7 +36,8 @@ Rien ne donne à GPT un accès automatique au téléphone ni à Internet : c'est
   outils** (`AiResult.Text.evidence`) ; mêmes règles qu'avant (autres voitures, conseils non prouvés, commandes).
 - App : réglage « Véga consulte les données Pitwall » (désactivé par défaut) et bouton **« Tester les outils de Véga »** :
   la question carburant SANS les faits, qui ne peuvent venir que des outils (simulation). La carte dit quels outils GPT a
-  appelés et si la réponse est vérifiée.
+  appelés et si la réponse est vérifiée. Si le serveur refuse les outils : « MODE OUTILS NON PRIS EN CHARGE (pas une
+  validation) », sans réponse de repli présentée comme un succès.
 
 ## Pas encore fait (étapes suivantes de #70)
 
@@ -41,7 +49,7 @@ Rien ne donne à GPT un accès automatique au téléphone ni à Internet : c'est
 
 ## Vérifié / non vérifié
 
-- Vérifié sur PC (`VegaToolsTest`, 12 tests, transport simulé) : découpage et provenance, format namespace, boucle,
+- Vérifié sur PC (`VegaToolsTest`, 17 tests, transport simulé) : découpage et provenance, format namespace, boucle,
   historique renvoyé sans `previous_response_id`, outil halluciné, boucle infinie coupée, refus serveur, lecture des
   appels dans le flux, outils seulement si activés, chiffre absent rejeté, repli local.
 - **Non vérifié** : acceptation réelle des outils par le forfait sur le Fold, comportement de `gpt-6.1-sol`, latence.

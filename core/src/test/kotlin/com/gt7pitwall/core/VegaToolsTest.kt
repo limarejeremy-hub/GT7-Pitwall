@@ -39,7 +39,7 @@ class VegaToolsTest {
         return RaceSim(RaceController(storage = FakeStorage(rules = rules)), totalLaps = 12, perLap = 14f).also { it.start(); it.driveLaps(3) }
     }
 
-    private fun snapshotOf(sim: RaceSim) = ToolSnapshot.from(sim.controller.aiFacts(), sim.controller.telemetryLive(), 4, 1_000L)
+    private fun snapshotOf(sim: RaceSim) = ToolSnapshot.from(sim.controller.aiFacts(), sim.controller.telemetryLive(), 4, System.currentTimeMillis())
 
     @Test fun theEngineFactsAreSplitByTopicWithTheirProvenance() {
         val sim = race()
@@ -49,7 +49,7 @@ class VegaToolsTest {
         assertTrue(fuel.facts.any { it.text.startsWith("Carburant") }, fuel.toJson())
         val laps = snap.result(PitwallDataTools.Tool.LAPS)
         val measured = laps.facts.filter { Regex("^Tour \\d+ :").containsMatchIn(it.text) }
-        assertTrue(measured.isNotEmpty() && measured.all { it.provenance == PitwallDataTools.Provenance.MEASURED }, laps.toJson())
+        assertTrue(measured.isNotEmpty() && measured.all { it.provenance == com.gt7pitwall.core.ai.FactProvenance.MEASURED }, laps.toJson())
         val rules = snap.result(PitwallDataTools.Tool.RULES)
         assertTrue(rules.facts.any { it.text.startsWith("Obligations du règlement") })
         val live = snap.result(PitwallDataTools.Tool.LIVE)
@@ -60,7 +60,7 @@ class VegaToolsTest {
     }
 
     @Test fun withoutTelemetryTheToolsSaySoInsteadOfServingOldValues() {
-        val snap = ToolSnapshot.from(AiFacts(listOf("Aucune télémétrie de course en ce moment : aucune position.", "Obligations du règlement : 1 arrêt.")), false, null, 5L)
+        val snap = ToolSnapshot.from(RaceController(storage = FakeStorage()).aiFacts(), false, null, 5L)
         val fuel = snap.result(PitwallDataTools.Tool.FUEL)
         assertTrue(fuel.facts.isEmpty())
         assertTrue(fuel.missing.any { "télémétrie en direct" in it })
@@ -209,9 +209,61 @@ class VegaToolsTest {
             if (n == 1) ResponsesStream.Turn("", listOf(call("c1", "get_fuel_strategy")), null)
             else ResponsesStream.Turn("Simulation : arrêt à la fin du tour 6, plein de 85 % pour finir avec 2 % de marge.", emptyList(), null)
         })
-        val ok = p.checkWithTools(loop.run("m", "i", p.toolsPrompt, p.snapshot(0)).result)
+        val ok = p.checkWithTools(loop.run("m", "i", p.toolsPrompt, p.snapshot(System.currentTimeMillis())).result)
         assertTrue(ok.fromChatGpt, ok.verdict)
         assertFalse(p.checkWithTools(AiResult.Text("Arrêt au tour 6.")).fromChatGpt, "sans appel d'outil : écarté")
         assertFalse(p.checkWithTools(AiResult.Text("Arrêt au tour 9.", "Plan du moteur : arrêt à la fin du tour 6.")).fromChatGpt, "chiffre absent des outils")
+    }
+
+    // ---------------------------------------------------------------- Revue #71 : provenance fixée à la source
+
+    @Test fun everyEngineFactIsTaggedWhereItIsProduced() {
+        val sim = race()
+        val live = sim.controller.aiFacts()
+        assertEquals(live.lines.toSet(), live.tagged.map { it.text }.toSet(), "chaque phrase porte sujet, provenance et source")
+        val unknownTopic = live.tagged.filter { it.topic == com.gt7pitwall.core.ai.FactTopic.OTHER }
+        assertTrue(unknownTopic.isEmpty(), unknownTopic.toString())
+        val off = RaceController(storage = FakeStorage()).aiFacts()
+        assertFalse(RaceController(storage = FakeStorage()).telemetryLive())
+        assertTrue(live.lines.none { it.startsWith("null") }, "aucune phrase sans libellé")
+        assertEquals(off.lines.toSet(), off.tagged.map { it.text }.toSet())
+    }
+
+    @Test fun anUntaggedSentenceIsNeverCalledMeasured() {
+        val snap = ToolSnapshot.from(AiFacts(listOf("Tour 3 : 1 minute 30.", "Position : P2.")), true, 3, 0L)
+        assertTrue(snap.facts(com.gt7pitwall.core.ai.FactTopic.LAPS).isEmpty(), "rien n'est deviné d'après le texte")
+        assertEquals(2, snap.untagged)
+        assertTrue(PitwallDataTools.Tool.entries.all { t -> snap.result(t).facts.none { it.provenance == com.gt7pitwall.core.ai.FactProvenance.MEASURED } })
+    }
+
+    @Test fun calculatedFactsNeverRaiseTheConfidenceToMeasured() {
+        val snap = snapshotOf(race())
+        val fuel = snap.result(PitwallDataTools.Tool.FUEL)
+        assertTrue(fuel.facts.all { it.provenance == com.gt7pitwall.core.ai.FactProvenance.CALCULATED }, fuel.toJson())
+        assertTrue(fuel.confidence.startsWith("moyenne"), fuel.confidence)
+        assertTrue(fuel.toJson().contains("\"source\""))
+    }
+
+    @Test fun ruleConflictsComeFromTheStructuredStatus() {
+        val t = com.gt7pitwall.core.ai.TaggedFact("Obligations du règlement : 1 arrêt.", com.gt7pitwall.core.ai.FactTopic.RULES, com.gt7pitwall.core.ai.FactProvenance.PUBLISHED, "GTPlanet")
+        val facts = AiFacts(listOf(t.text), tagged = listOf(t), conflicts = listOf("Programme Sport : sources contradictoires sur « tours » : rien n'est appliqué."))
+        val rules = ToolSnapshot.from(facts, true, 1, 0L).result(PitwallDataTools.Tool.RULES)
+        assertEquals(1, rules.conflicts.size)
+        assertTrue(rules.confidence.startsWith("faible"))
+        val noKeyword = AiFacts(listOf("Règlement contradictoire selon moi."), tagged = listOf(t.copy(text = "Règlement contradictoire selon moi.")))
+        assertTrue(ToolSnapshot.from(noKeyword, true, 1, 0L).result(PitwallDataTools.Tool.RULES).conflicts.isEmpty(), "pas de conflit déduit d'un mot-clé")
+    }
+
+    @Test fun aStaleSnapshotServesNoData() = runBlocking<Unit> {
+        val snap = ToolSnapshot.from(race().controller.aiFacts(), true, 4, 1_000L)
+        var now = 1_000L
+        var n = 0
+        val loop = ToolLoop({ _ ->
+            n++
+            now += ToolSnapshot.MAX_AGE_MS + 1 // réponse très tardive du modèle
+            if (n == 1) ResponsesStream.Turn("", listOf(call("c", "get_fuel_strategy")), null) else ResponsesStream.Turn("Le plan tient.", emptyList(), null)
+        }, clock = { now })
+        val out = loop.run("m", "i", "q", snap)
+        assertEquals("", (out.result as AiResult.Text).evidence, "aucun fait d'un cliché périmé")
     }
 }

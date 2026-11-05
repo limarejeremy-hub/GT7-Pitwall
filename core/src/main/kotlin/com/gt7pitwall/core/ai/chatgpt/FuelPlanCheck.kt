@@ -4,6 +4,9 @@ import com.gt7pitwall.core.ai.AiFacts
 import com.gt7pitwall.core.ai.AiReply
 import com.gt7pitwall.core.ai.AiResult
 import com.gt7pitwall.core.ai.EngineerPrompt
+import com.gt7pitwall.core.ai.FactProvenance
+import com.gt7pitwall.core.ai.FactTopic
+import com.gt7pitwall.core.ai.TaggedFact
 import com.gt7pitwall.core.ai.RadioAi
 import com.gt7pitwall.core.ai.Topic
 
@@ -17,14 +20,16 @@ object FuelPlanCheck {
     const val QUESTION = "Quel est mon plan carburant ?"
 
     /** Faits simulés (scénario d'essai). */
-    val facts = AiFacts(
-        listOf(
-            "Course : SIMULATION (essai de la connexion, pas une course réelle), 12 tours, tour 4 en cours.",
-            "Carburant : 38 % restant, consommation mesurée de 7,1 % par tour sur les 3 derniers tours (simulation).",
-            "Obligations du règlement : 1 arrêt obligatoire, pas encore fait (simulation).",
-            "Stratégie : plan du moteur, arrêt à la fin du tour 6, plein de 85 % pour finir avec 2 % de marge (simulation).",
-        ),
-    )
+    val facts: AiFacts = run {
+        val sim = "simulation d'essai (pas une course réelle)"
+        val t = listOf(
+            TaggedFact("Course : SIMULATION (essai de la connexion, pas une course réelle), 12 tours, tour 4 en cours.", FactTopic.LIVE, FactProvenance.DECLARED, sim),
+            TaggedFact("Carburant : 38 % restant, consommation mesurée de 7,1 % par tour sur les 3 derniers tours (simulation).", FactTopic.FUEL, FactProvenance.CALCULATED, sim),
+            TaggedFact("Obligations du règlement : 1 arrêt obligatoire, pas encore fait (simulation).", FactTopic.RULES, FactProvenance.DECLARED, sim),
+            TaggedFact("Stratégie : plan du moteur, arrêt à la fin du tour 6, plein de 85 % pour finir avec 2 % de marge (simulation).", FactTopic.FUEL, FactProvenance.CALCULATED, sim),
+        )
+        AiFacts(t.map { it.text }, tagged = t)
+    }
 
     /** Réponse locale (moteur), sans IA : reprise mot pour mot du plan simulé. */
     const val LOCAL_ANSWER = "Simulation : arrêt à la fin du tour 6, plein de 85 % pour finir avec 2 % de marge."

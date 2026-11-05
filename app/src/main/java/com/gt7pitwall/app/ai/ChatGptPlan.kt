@@ -143,9 +143,18 @@ class ChatGptPlan(private val context: Context, private val usage: AiUsage, priv
     }
 
     override suspend fun completeWithTools(systemInstruction: String, prompt: String, snapshot: com.gt7pitwall.core.ai.tools.ToolSnapshot): AiResult =
+        completeWithTools(systemInstruction, prompt, snapshot, allowPlainFallback = true)
+
+    /** [allowPlainFallback] faux (test des outils) : un refus des outils est signalé, jamais remplacé par une réponse sans outils. */
+    private suspend fun completeWithTools(
+        systemInstruction: String,
+        prompt: String,
+        snapshot: com.gt7pitwall.core.ai.tools.ToolSnapshot,
+        allowPlainFallback: Boolean,
+    ): AiResult =
         withContext(Dispatchers.IO) {
             val r = try {
-                toolLoop(systemInstruction, prompt, snapshot)
+                toolLoop(systemInstruction, prompt, snapshot, allowPlainFallback)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: SocketTimeoutException) {
@@ -157,7 +166,7 @@ class ChatGptPlan(private val context: Context, private val usage: AiUsage, priv
             r
         }
 
-    private suspend fun toolLoop(instructions: String, prompt: String, snapshot: com.gt7pitwall.core.ai.tools.ToolSnapshot): AiResult {
+    private suspend fun toolLoop(instructions: String, prompt: String, snapshot: com.gt7pitwall.core.ai.tools.ToolSnapshot, allowPlainFallback: Boolean): AiResult {
         val c = fresh() ?: return AiResult.Failure(FailureKind.NOT_CONFIGURED, "ChatGPT non connecté")
         if (!c.planUsage) return AiResult.Failure(FailureKind.NOT_CONFIGURED, "usage du forfait non autorisé")
         val model = c.model ?: readModel(c) ?: return AiResult.Failure(FailureKind.MODEL_UNAVAILABLE, "aucun modèle listé pour ce compte")
@@ -165,8 +174,13 @@ class ChatGptPlan(private val context: Context, private val usage: AiUsage, priv
         _lastTools.value = if (out.calls.isEmpty()) "aucun outil appelé" else
             "${out.calls.size} outil(s) : " + out.calls.joinToString { it.name + if (it.known) "" else " (inconnu, refusé)" }
         if (out.toolsRejected) {
-            // Outils refusés par le serveur pour ce compte : une seule reprise, sans outils (la question a tous les faits).
-            _lastTools.value = "outils refusés par le serveur (${(out.result as? AiResult.Failure)?.detail ?: "400"}) : réponse sans outils"
+            val why = SignInTrace.redact((out.result as? AiResult.Failure)?.detail ?: "HTTP 400")
+            if (!allowPlainFallback) {
+                _lastTools.value = "mode outils non pris en charge pour ce compte ($why)"
+                return AiResult.Failure(FailureKind.NOT_CONFIGURED, "mode outils non pris en charge ($why)")
+            }
+            // Radio : la question contient déjà tous les faits ; une seule reprise, sans outils.
+            _lastTools.value = "mode outils non pris en charge ($why) : réponse sans outils"
             return infer(instructions, prompt)
         }
         return out.result
@@ -191,6 +205,7 @@ class ChatGptPlan(private val context: Context, private val usage: AiUsage, priv
     /** #70 : même question, faits SEULEMENT via les outils (simulation) : prouve que le forfait accepte les outils. */
     fun testTools() {
         scope.launch {
+            _lastTools.value = null
             _testResult.value = "Essai des outils : « ${FuelPlanCheck.QUESTION} » (faits de simulation, via outils seulement)…"
             val t0 = System.currentTimeMillis()
             var asked = false
@@ -199,7 +214,7 @@ class ChatGptPlan(private val context: Context, private val usage: AiUsage, priv
             } else {
                 asked = true
                 usage.onSent(backend)
-                (withTimeoutOrNull(TEST_TIMEOUT_MS) { completeWithTools(FuelPlanCheck.instructions, FuelPlanCheck.toolsPrompt, FuelPlanCheck.snapshot(now())) }
+                (withTimeoutOrNull(TEST_TIMEOUT_MS) { completeWithTools(FuelPlanCheck.instructions, FuelPlanCheck.toolsPrompt, FuelPlanCheck.snapshot(now()), allowPlainFallback = false) }
                     ?: AiResult.Failure(FailureKind.TIMEOUT)).also { res ->
                     val ms = System.currentTimeMillis() - t0
                     if (res is AiResult.Failure) usage.onFailure(backend, res, ms) else usage.onSuccess(backend, ms)
@@ -207,8 +222,10 @@ class ChatGptPlan(private val context: Context, private val usage: AiUsage, priv
             }
             val o = FuelPlanCheck.checkWithTools(r)
             _lastAnswer.value = o
+            val unsupported = _lastTools.value?.startsWith("mode outils non pris en charge") == true
             val who = when {
-                o.fromChatGpt -> "GPT a utilisé les outils"
+                unsupported -> "MODE OUTILS NON PRIS EN CHARGE (pas une validation)"
+                o.fromChatGpt -> "Validé : GPT a exécuté des outils et sa réponse ne cite que leurs faits"
                 asked -> "GPT interrogé, outils non utilisés ou réponse écartée → secours local"
                 else -> "GPT non interrogé → secours local"
             }

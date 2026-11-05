@@ -12,6 +12,13 @@ data class AiFacts(
     val lines: List<String>,
     /** Constats de pilotage prouvés par la télémétrie (voir [CoachingObservations]). */
     val observations: List<Observation> = emptyList(),
+    /**
+     * #70 (revue #71) : les mêmes phrases, avec sujet, provenance et source fixés là où elles sont produites (jamais
+     * devinés d'après le texte). Une phrase de [lines] absente d'ici est « non classée, provenance inconnue ».
+     */
+    val tagged: List<TaggedFact> = emptyList(),
+    /** Contradictions structurées (champs du programme Sport au statut CONFLICT), pas déduites de mots-clés. */
+    val conflicts: List<String> = emptyList(),
 ) {
     val text: String get() = lines.joinToString("\n") { "- $it" }
 
@@ -24,6 +31,28 @@ data class AiFacts(
             )
         }
 }
+
+/** Sujet d'un fait (outils de données #70). */
+enum class FactTopic { LIVE, RULES, FUEL, TYRES, LAPS, HISTORY, OTHER }
+
+/** D'où vient un fait. [UNKNOWN] en cas de doute : jamais « mesuré » par défaut. */
+enum class FactProvenance(val label: String) {
+    MEASURED("mesuré (télémétrie GT7)"),
+    CALCULATED("calculé par le moteur Pitwall"),
+    PUBLISHED("publié (programme Sport, source tierce)"),
+    DECLARED("déclaré par le pilote"),
+    REFERENCE("connaissance du protocole GT7"),
+    UNKNOWN("provenance inconnue"),
+}
+
+/** Un fait avec son sujet, sa provenance, sa source et sa fiabilité (« confirmé », « probable »…) si elle est connue. */
+data class TaggedFact(
+    val text: String,
+    val topic: FactTopic,
+    val provenance: FactProvenance,
+    val source: String,
+    val reliability: String? = null,
+)
 
 /** Ce qu'on fait de la réponse de l'IA. */
 sealed interface AiReply {

@@ -1,5 +1,7 @@
 package com.gt7pitwall.core.race
 
+import com.gt7pitwall.core.ai.FactProvenance
+import com.gt7pitwall.core.ai.FactTopic
 import com.gt7pitwall.core.ai.AiFacts
 import com.gt7pitwall.core.ai.AiReply
 import com.gt7pitwall.core.ai.Intent
@@ -1030,34 +1032,61 @@ class RaceController(
     fun aiFacts(): AiFacts {
         val snap = snapshot
         val lines = mutableListOf<String>()
-        lines += "GT7 transmet ta place en course (champ 0x84) et le nombre de voitures (0x86), mais pas les écarts, les arrêts ni les pneus des adversaires. GT7 ne transmet pas l’usure des pneus, la gomme réellement montée ni la météo. Les seules températures ne prouvent pas combien de tours un train peut encore tenir."
-        lines += "Épreuve : ${profile.id.label}" + if (profile.confirmed) ", règlement confirmé par le pilote." else ", règlement non confirmé."
-        edition?.let { ed ->
-            lines += "Programme de la semaine (${ed.sources.joinToString { it.name }}) : " +
-                listOfNotNull(ed.trackName.value, ed.cars.value?.let { "voitures $it" }, ed.bop.value?.let { "BoP $it" }).joinToString(", ") + "."
+        val tagged = mutableListOf<com.gt7pitwall.core.ai.TaggedFact>()
+        // #70 (revue #71) : sujet, provenance et source fixés ICI, là où chaque phrase est produite.
+        fun add(text: String, topic: com.gt7pitwall.core.ai.FactTopic, prov: com.gt7pitwall.core.ai.FactProvenance, source: String, reliability: String? = null) {
+            lines += text
+            tagged += com.gt7pitwall.core.ai.TaggedFact(text, topic, prov, source, reliability)
         }
-        ruleGaps.takeIf { it.isNotEmpty() }?.let { g -> lines += "Règlement inconnu sur : ${g.joinToString(", ") { it.label }}." }
+        // Règlement : confirmé par le pilote, sinon publié par le programme Sport, sinon d'origine inconnue.
+        val rulesProv = when {
+            profile.confirmed -> FactProvenance.DECLARED
+            edition != null -> FactProvenance.PUBLISHED
+            else -> FactProvenance.UNKNOWN
+        }
+        val rulesSource = if (profile.confirmed) "règlement confirmé par le pilote" else edition?.sources?.joinToString { it.name } ?: "règlement non confirmé"
+        add(
+            "GT7 transmet ta place en course (champ 0x84) et le nombre de voitures (0x86), mais pas les écarts, les arrêts ni les pneus des adversaires. GT7 ne transmet pas l’usure des pneus, la gomme réellement montée ni la météo. Les seules températures ne prouvent pas combien de tours un train peut encore tenir.",
+            FactTopic.LIVE, FactProvenance.REFERENCE, "protocole de télémétrie GT7",
+        )
+        add("Épreuve : ${profile.id.label}" + if (profile.confirmed) ", règlement confirmé par le pilote." else ", règlement non confirmé.", FactTopic.RULES, rulesProv, rulesSource)
+        val conflicts = mutableListOf<String>()
+        edition?.let { ed ->
+            add(
+                "Programme de la semaine (${ed.sources.joinToString { it.name }}) : " +
+                    listOfNotNull(ed.trackName.value, ed.cars.value?.let { "voitures $it" }, ed.bop.value?.let { "BoP $it" }).joinToString(", ") + ".",
+                FactTopic.RULES, FactProvenance.PUBLISHED, ed.sources.joinToString { it.name }, "circuit ${ed.trackName.status.label}",
+            )
+            listOf(
+                "circuit" to ed.trackName, "tours" to ed.laps, "voitures" to ed.cars, "pneus autorisés" to ed.allowedTyres,
+                "pneus imposés" to ed.requiredTyres, "arrêts obligatoires" to ed.mandatoryStops, "carburant" to ed.fuelMultiplier, "usure" to ed.tyreMultiplier,
+            ).filter { it.second.status == com.gt7pitwall.core.sport.FieldStatus.CONFLICT }.forEach { (label, f) ->
+                conflicts += "Programme Sport : sources contradictoires sur « $label »${f.note?.let { " ($it)" } ?: ""} : rien n'est appliqué."
+            }
+        }
+        ruleGaps.takeIf { it.isNotEmpty() }?.let { g -> add("Règlement inconnu sur : ${g.joinToString(", ") { it.label }}.", FactTopic.RULES, FactProvenance.UNKNOWN, "aucune source") }
         // Sans télémétrie en direct, aucune valeur « du moment » (position, carburant, plan, tour en cours) : ce serait
         // celle d'une ancienne session, présentée comme actuelle (essai réel : « Tu es P8 » télémétrie arrêtée).
         val live = telemetryLive()
         if (!live) {
-            lines += "Aucune télémétrie de course en ce moment : aucune position, aucun tour en cours, aucun carburant ni plan en direct."
-            carName?.let { lines += "Voiture de la dernière session : $it." }
-            course?.let { lines += "Circuit de la dernière session : ${it.label}." }
-            lines += "Obligations du règlement : ${obligationsSentence()}"
+            add("Aucune télémétrie de course en ce moment : aucune position, aucun tour en cours, aucun carburant ni plan en direct.", FactTopic.LIVE, FactProvenance.MEASURED, "état de la réception UDP")
+            carName?.let { add("Voiture de la dernière session : $it.", FactTopic.LIVE, FactProvenance.MEASURED, "code voiture GT7 (dernière session)") }
+            course?.let { add("Circuit de la dernière session : ${it.label}.", FactTopic.LIVE, FactProvenance.CALCULATED, "reconnaissance du circuit (dernière session)") }
+            add("Obligations du règlement : ${obligationsSentence()}", FactTopic.RULES, rulesProv, rulesSource)
             for (lap in snap.laps.takeLast(AI_LAPS)) {
-                lap.timeMs?.takeIf { it > 0 }?.let { lines += "Dernière session, tour ${lap.lapNumber} : ${FrenchFormat.lapTimeSpeech(it)} (mesuré, course terminée ou interrompue)." }
+                lap.timeMs?.takeIf { it > 0 }?.let { add("Dernière session, tour ${lap.lapNumber} : ${FrenchFormat.lapTimeSpeech(it)} (mesuré, course terminée ou interrompue).", FactTopic.LAPS, FactProvenance.MEASURED, "télémétrie GT7 (dernière session)") }
             }
-            return AiFacts(lines)
+            return AiFacts(lines, tagged = tagged, conflicts = conflicts)
         }
-        strategyBrief?.let { lines += it.facts() }
-        lines += runCatching { driverCoach.facts(driverKey) }.getOrElse { diagnostic("profil de pilotage (faits)", it); emptyList() }
-        forecastTrack().text()?.let { lines += "Justesse de mes prévisions comparables : $it" }
-        lastReview?.lines()?.takeIf { it.isNotEmpty() }?.let { lines += "Dernier bilan : ${it.joinToString(" ")}" }
-        activeObservations.forEach { o -> lines += "Déclaré par le pilote au tour ${o.lap} (non mesuré) : ${o.kind.label}." }
-        history.let { h -> lines += "Historique : ${h.comparable} session(s) comparable(s) archivée(s), dont ${h.sameEvent} avec le même règlement." }
-        carName?.let { lines += "Voiture : $it." }
-        course?.let { lines += "Circuit : ${it.label}." }
+        strategyBrief?.let { it.facts().forEach { f -> add(f, FactTopic.FUEL, FactProvenance.CALCULATED, "stratégie du moteur") } }
+        runCatching { driverCoach.facts(driverKey) }.getOrElse { diagnostic("profil de pilotage (faits)", it); emptyList() }
+            .forEach { add(it, FactTopic.HISTORY, FactProvenance.CALCULATED, "profil de pilotage (historique)") }
+        forecastTrack().text()?.let { add("Justesse de mes prévisions comparables : $it", FactTopic.HISTORY, FactProvenance.CALCULATED, "suivi des prévisions") }
+        lastReview?.lines()?.takeIf { it.isNotEmpty() }?.let { add("Dernier bilan : ${it.joinToString(" ")}", FactTopic.HISTORY, FactProvenance.CALCULATED, "bilan de course") }
+        activeObservations.forEach { o -> add("Déclaré par le pilote au tour ${o.lap} (non mesuré) : ${o.kind.label}.", FactTopic.LIVE, FactProvenance.DECLARED, "radio du pilote") }
+        history.let { h -> add("Historique : ${h.comparable} session(s) comparable(s) archivée(s), dont ${h.sameEvent} avec le même règlement.", FactTopic.HISTORY, FactProvenance.CALCULATED, "archives des sessions") }
+        carName?.let { add("Voiture : $it.", FactTopic.LIVE, FactProvenance.MEASURED, "code voiture GT7") }
+        course?.let { add("Circuit : ${it.label}.", FactTopic.LIVE, FactProvenance.CALCULATED, "reconnaissance du circuit") }
         for (q in DriverQuery.entries) {
             val text = when (q) {
                 DriverQuery.OBLIGATIONS -> obligationsSentence()
@@ -1066,18 +1095,30 @@ class RaceController(
                 DriverQuery.NEXT_TYRE -> nextTyreSentence()
                 else -> engineer.answer(q, snap, fuel).text
             }
-            lines += "${AI_TOPICS[q]} : $text"
+            val (topic, prov, src) = when (q) {
+                DriverQuery.FUEL, DriverQuery.PLAN, DriverQuery.STOP_STATUS -> Triple(FactTopic.FUEL, FactProvenance.CALCULATED, "calcul carburant/arrêts du moteur")
+                DriverQuery.LAST_LAP, DriverQuery.BEST_LAP -> Triple(FactTopic.LAPS, FactProvenance.MEASURED, "chronos GT7")
+                DriverQuery.PACE, DriverQuery.SECTORS, DriverQuery.DETAILS, DriverQuery.DRIVING_QUALITY, DriverQuery.DRIVING_LOSS,
+                DriverQuery.DRIVING_BRAKING, DriverQuery.DRIVING_PROGRESS, DriverQuery.DRIVING_ADVICE -> Triple(FactTopic.LAPS, FactProvenance.CALCULATED, "analyse des tours par le moteur")
+                DriverQuery.RACE_STATUS, DriverQuery.POSITION -> Triple(FactTopic.LIVE, FactProvenance.MEASURED, "télémétrie GT7")
+                DriverQuery.DRIVING_LEARNED -> Triple(FactTopic.HISTORY, FactProvenance.CALCULATED, "profil de pilotage (historique)")
+                DriverQuery.PLACES -> Triple(FactTopic.LIVE, FactProvenance.CALCULATED, "places depuis le départ (moteur)")
+                DriverQuery.TYRES, DriverQuery.TYRE_CHANGE, DriverQuery.NEXT_TYRE -> Triple(FactTopic.TYRES, FactProvenance.CALCULATED, "pneus : registre des arrêts et déclarations")
+                DriverQuery.OBLIGATIONS -> Triple(FactTopic.RULES, rulesProv, rulesSource)
+                else -> Triple(FactTopic.OTHER, FactProvenance.UNKNOWN, "réponse de l'ingénieur")
+            }
+            add("${AI_TOPICS[q] ?: "Ingénieur"} : $text", topic, prov, src)
         }
-        lines += "Arrêts aux stands enregistrés : ${ledger.stopCount}."
+        add("Arrêts aux stands enregistrés : ${ledger.stopCount}.", FactTopic.FUEL, FactProvenance.CALCULATED, "détection des arrêts (moteur)")
         tyreScenarios().basis.takeIf { it.isNotEmpty() }?.let { b ->
-            lines += "Performance des gommes (estimée sur l'historique comparable, pas une mesure de cette course) : ${b.joinToString(" ; ")}."
+            add("Performance des gommes (estimée sur l'historique comparable, pas une mesure de cette course) : ${b.joinToString(" ; ")}.", FactTopic.TYRES, FactProvenance.CALCULATED, "historique comparable des gommes")
         }
         rules.tyreStintLaps?.let { life ->
             val age = ledger.tyreAge((snap.packet?.currentLap ?: 1).coerceAtLeast(1))
-            lines += "Pneus : ils tiennent $life tours d'après toi ; $age tours faits avec le train actuel."
+            add("Pneus : ils tiennent $life tours d'après toi ; $age tours faits avec le train actuel.", FactTopic.TYRES, FactProvenance.DECLARED, "durée de vie déclarée + registre des arrêts")
         }
-        lines += if (engineer.raining) "Pluie signalée par le pilote." else "Pas de pluie signalée par le pilote."
-        intentions.forEach { lines += "Intention du pilote, pas encore réalisée : $it." }
+        add(if (engineer.raining) "Pluie signalée par le pilote." else "Pas de pluie signalée par le pilote.", FactTopic.LIVE, FactProvenance.DECLARED, "radio du pilote")
+        intentions.forEach { add("Intention du pilote, pas encore réalisée : $it.", FactTopic.LIVE, FactProvenance.DECLARED, "radio du pilote") }
         for (lap in snap.laps.takeLast(AI_LAPS)) {
             val parts = mutableListOf<String>()
             parts += lap.timeMs?.takeIf { it > 0 }?.let { FrenchFormat.lapTimeSpeech(it) } ?: "chrono inconnu"
@@ -1087,9 +1128,9 @@ class RaceController(
             lap.wheelspins?.let { parts += "$it patinages" }
             lap.maxSpeedKmh?.let { parts += "vitesse maximale ${it.roundToInt()} km/h" }
             lap.tcsShare?.let { parts += "antipatinage actif ${(it * 100).roundToInt()} % du tour" }
-            lines += "Tour ${lap.lapNumber} : ${parts.joinToString(", ")}."
+            add("Tour ${lap.lapNumber} : ${parts.joinToString(", ")}.", FactTopic.LAPS, FactProvenance.MEASURED, "télémétrie GT7 (tour ${lap.lapNumber})")
         }
-        return AiFacts(lines, CoachingObservations.from(snap.laps, snap.packet))
+        return AiFacts(lines, CoachingObservations.from(snap.laps, snap.packet), tagged, conflicts)
     }
 
     /** L'ingénieur attend un oui / non (arrêt à confirmer, pneus changés ?) : la réponse n'est pas pour l'IA. */
@@ -4072,6 +4113,13 @@ class RaceController(
             DriverQuery.STOP_STATUS to "Arrêt prévu",
             DriverQuery.TYRE_CHANGE to "Changement de pneus",
             DriverQuery.NEXT_TYRE to "Prochaine gomme",
+            // Manquait : la phrase partait vers l'IA précédée de « null : » (vu grâce à l'étiquetage #71).
+            DriverQuery.DRIVING_QUALITY to "Qualité de pilotage",
+            DriverQuery.DRIVING_LOSS to "Où je perds du temps",
+            DriverQuery.DRIVING_BRAKING to "Freinage",
+            DriverQuery.DRIVING_PROGRESS to "Progrès de pilotage",
+            DriverQuery.DRIVING_ADVICE to "Conseil de pilotage",
+            DriverQuery.DRIVING_LEARNED to "Ce que j'ai appris de ton pilotage",
         )
 
         /** 45 s après la ligne d'un tour d'arrêt prévu, le temps d'atteindre son stand. */
