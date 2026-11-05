@@ -59,7 +59,7 @@ import javax.crypto.spec.GCMParameterSpec
  * « Autorisé » et « GPT réellement interrogé » sont distingués. Connexion et réponse GPT texte confirmées par le pilote
  * sur le Fold le 05/11 ; la radio (voix, Discord) ne l'est pas.
  */
-class ChatGptPlan(private val context: Context, private val usage: AiUsage, private val appVersion: String = "") : AiProvider {
+class ChatGptPlan(private val context: Context, private val usage: AiUsage, private val appVersion: String = "") : AiProvider, com.gt7pitwall.core.ai.ToolCapable {
 
     enum class State(val label: String) {
         NOT_CONNECTED("Non connecté"),
@@ -127,6 +127,94 @@ class ChatGptPlan(private val context: Context, private val usage: AiUsage, priv
 
     @Volatile
     private var receiver: LoopbackReceiver? = null
+
+    /** #70 : derniers outils appelés par GPT (noms seulement), pour la carte. */
+    private val _lastTools = MutableStateFlow<String?>(null)
+    val lastTools: StateFlow<String?> = _lastTools.asStateFlow()
+
+    // ------------------------------------------------------------------ Outils de données (#70, lecture seule, opt-in)
+
+    /** Le pilote autorise Véga à consulter les outils de données (désactivé par défaut tant que non validé sur le Fold). */
+    override val toolsEnabled: Boolean get() = store.toolsEnabled
+
+    fun setToolsEnabled(on: Boolean) {
+        store.toolsEnabled = on
+        publish()
+    }
+
+    override suspend fun completeWithTools(systemInstruction: String, prompt: String, snapshot: com.gt7pitwall.core.ai.tools.ToolSnapshot): AiResult =
+        withContext(Dispatchers.IO) {
+            val r = try {
+                toolLoop(systemInstruction, prompt, snapshot)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: SocketTimeoutException) {
+                AiResult.Failure(FailureKind.TIMEOUT)
+            } catch (e: IOException) {
+                AiResult.Failure(FailureKind.NETWORK)
+            }
+            onResult(r)
+            r
+        }
+
+    private suspend fun toolLoop(instructions: String, prompt: String, snapshot: com.gt7pitwall.core.ai.tools.ToolSnapshot): AiResult {
+        val c = fresh() ?: return AiResult.Failure(FailureKind.NOT_CONFIGURED, "ChatGPT non connecté")
+        if (!c.planUsage) return AiResult.Failure(FailureKind.NOT_CONFIGURED, "usage du forfait non autorisé")
+        val model = c.model ?: readModel(c) ?: return AiResult.Failure(FailureKind.MODEL_UNAVAILABLE, "aucun modèle listé pour ce compte")
+        val out = com.gt7pitwall.core.ai.tools.ToolLoop({ body -> streamTurn(c, body) }).run(model, instructions, prompt, snapshot)
+        _lastTools.value = if (out.calls.isEmpty()) "aucun outil appelé" else
+            "${out.calls.size} outil(s) : " + out.calls.joinToString { it.name + if (it.known) "" else " (inconnu, refusé)" }
+        if (out.toolsRejected) {
+            // Outils refusés par le serveur pour ce compte : une seule reprise, sans outils (la question a tous les faits).
+            _lastTools.value = "outils refusés par le serveur (${(out.result as? AiResult.Failure)?.detail ?: "400"}) : réponse sans outils"
+            return infer(instructions, prompt)
+        }
+        return out.result
+    }
+
+    private suspend fun streamTurn(c: SiwcAuth.Credentials, body: String): ResponsesStream.Turn {
+        val req = Request.Builder().url(ResponsesStream.RESPONSES_URL)
+            .header("Authorization", "Bearer ${c.accessToken}")
+            .header("Accept", "text/event-stream")
+            .post(body.toRequestBody(JSON))
+            .build()
+        return execute(http.newCall(req)) { resp ->
+            if (!resp.isSuccessful) return@execute ResponsesStream.Turn("", emptyList(), ResponsesStream.httpFailure(resp.code, resp.body.string().take(4000)))
+            val reader = ResponsesStream.Reader()
+            val source = resp.body.source()
+            while (true) reader.line(source.readUtf8Line() ?: break)
+            reader.end()
+            reader.turn
+        }
+    }
+
+    /** #70 : même question, faits SEULEMENT via les outils (simulation) : prouve que le forfait accepte les outils. */
+    fun testTools() {
+        scope.launch {
+            _testResult.value = "Essai des outils : « ${FuelPlanCheck.QUESTION} » (faits de simulation, via outils seulement)…"
+            val t0 = System.currentTimeMillis()
+            var asked = false
+            val r = if (!ready || !usage.canSend(backend)) {
+                AiResult.Failure(FailureKind.NOT_CONFIGURED, status)
+            } else {
+                asked = true
+                usage.onSent(backend)
+                (withTimeoutOrNull(TEST_TIMEOUT_MS) { completeWithTools(FuelPlanCheck.instructions, FuelPlanCheck.toolsPrompt, FuelPlanCheck.snapshot(now())) }
+                    ?: AiResult.Failure(FailureKind.TIMEOUT)).also { res ->
+                    val ms = System.currentTimeMillis() - t0
+                    if (res is AiResult.Failure) usage.onFailure(backend, res, ms) else usage.onSuccess(backend, ms)
+                }
+            }
+            val o = FuelPlanCheck.checkWithTools(r)
+            _lastAnswer.value = o
+            val who = when {
+                o.fromChatGpt -> "GPT a utilisé les outils"
+                asked -> "GPT interrogé, outils non utilisés ou réponse écartée → secours local"
+                else -> "GPT non interrogé → secours local"
+            }
+            _testResult.value = "$who : « ${o.answer} »\n${o.verdict} · ${_lastTools.value ?: "aucun outil"} · ${System.currentTimeMillis() - t0} ms"
+        }
+    }
 
     // ------------------------------------------------------------------ AiProvider
 
@@ -514,6 +602,10 @@ class ChatGptPlan(private val context: Context, private val usage: AiUsage, priv
         var welcomeShown: Boolean
             get() = prefs.getBoolean("welcome_shown", false)
             set(v) = prefs.edit().putBoolean("welcome_shown", v).apply()
+
+        var toolsEnabled: Boolean
+            get() = prefs.getBoolean("tools_enabled", false)
+            set(v) = prefs.edit().putBoolean("tools_enabled", v).apply()
 
         fun trace(): SignInTrace = SignInTrace.fromJson(prefs.getString("trace", null))
         fun saveTrace(t: SignInTrace) = prefs.edit().putString("trace", t.toJson()).apply()

@@ -24,6 +24,26 @@ object ResponsesStream {
         put("stream", true)
     }.toString()
 
+    /** Variante avec historique complet ([input]) et outils (namespace) : issue #70, boucle d'outils. */
+    fun requestBody(model: String, instructions: String, input: JSONArray, tools: JSONArray?): String = JSONObject().apply {
+        put("model", model)
+        put("instructions", instructions)
+        put("input", input)
+        tools?.let { put("tools", it) }
+        put("store", false)
+        put("stream", true)
+    }.toString()
+
+    /** Appel d'outil demandé par le modèle (événement `response.output_item.done`, élément `function_call`). */
+    data class FunctionCall(val callId: String, val name: String, val arguments: String, val namespace: String?) {
+        /** Élément renvoyé dans `input` au tour suivant (sans identifiant serveur : rien n'est stocké, store=false). */
+        fun toInputItem(): JSONObject = JSONObject().put("type", "function_call").put("call_id", callId).put("name", name)
+            .put("arguments", arguments).apply { namespace?.let { put("namespace", it) } }
+    }
+
+    /** Un tour du flux : texte, appels d'outils, ou échec. */
+    data class Turn(val text: String, val calls: List<FunctionCall>, val failure: AiResult.Failure?)
+
     /** Modèles affichables du compte (visibility « list »), dans l'ordre du serveur : (slug, nom affiché). */
     fun listedModels(json: String): List<Pair<String, String>> {
         val arr = JSONObject(json).optJSONArray("models") ?: return emptyList()
@@ -36,6 +56,7 @@ object ResponsesStream {
     class Reader {
         private val text = StringBuilder()
         private var data = StringBuilder()
+        private val calls = mutableListOf<FunctionCall>()
         var completed = false
             private set
         var failure: AiResult.Failure? = null
@@ -62,12 +83,24 @@ object ResponsesStream {
             val o = runCatching { JSONObject(d) }.getOrNull() ?: return
             when (o.optString("type")) {
                 "response.output_text.delta" -> text.append(o.optString("delta"))
+                "response.output_item.done" -> o.optJSONObject("item")?.takeIf { it.optString("type") == "function_call" }?.let { i ->
+                    val id = i.optString("call_id").ifEmpty { null } ?: return@let
+                    calls += FunctionCall(id, i.optString("name"), i.optString("arguments").ifEmpty { "{}" }, i.optString("namespace").ifEmpty { null })
+                }
                 "response.completed" -> completed = true
                 "response.failed" -> failure = errorOf(o.optJSONObject("response")?.optJSONObject("error"), null)
                 "response.incomplete" -> failure = AiResult.Failure(FailureKind.EMPTY, "réponse incomplète")
                 "error" -> failure = errorOf(o.optJSONObject("error") ?: o, null)
             }
         }
+
+        /** Tour complet (pour la boucle d'outils) : appels et texte seulement après `response.completed`. */
+        val turn: Turn
+            get() = when {
+                failure != null -> Turn("", emptyList(), failure)
+                !completed -> Turn("", emptyList(), AiResult.Failure(FailureKind.OTHER, "flux non terminé"))
+                else -> Turn(text.toString(), calls.toList(), null)
+            }
 
         val result: AiResult
             get() = failure ?: if (completed) {

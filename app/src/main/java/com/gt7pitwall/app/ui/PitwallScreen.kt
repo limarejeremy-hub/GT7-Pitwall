@@ -2414,6 +2414,22 @@ private fun ChatGptCard(cloud: com.gt7pitwall.app.ai.CloudAi, voice: TtsVoiceOut
                 color = PitColors.Muted,
                 style = MaterialTheme.typography.bodySmall,
             )
+            // #70 : outils de données en lecture seule (opt-in).
+            var tools by rememberSaveable { mutableStateOf(plan.toolsEnabled) }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Switch(checked = tools, onCheckedChange = { tools = it; plan.setToolsEnabled(it) })
+                Text(
+                    "  Véga consulte les données Pitwall (outils en lecture seule, expérimental)",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            OutlinedButton(onClick = plan::testTools, modifier = Modifier.fillMaxWidth()) { Text("Tester les outils de Véga") }
+            Text(
+                "Même question, mais les faits ne sont donnés QUE par les outils (simulation). Montre si ton forfait accepte les " +
+                    "outils et quels outils GPT appelle. Aucun outil n'écrit quoi que ce soit.",
+                color = PitColors.Muted,
+                style = MaterialTheme.typography.bodySmall,
+            )
             test?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             VegaListen(plan, voice)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

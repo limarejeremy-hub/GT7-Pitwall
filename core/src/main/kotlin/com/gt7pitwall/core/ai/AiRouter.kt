@@ -19,7 +19,7 @@ class AiRouter(
     data class Attempt(val backend: AiBackend, val modelId: String, val failure: AiResult.Failure?, val latencyMs: Long)
 
     /** Résultat : texte du modèle qui a répondu (ou null), et tous les essais pour le journal et l'écran. */
-    data class Outcome(val text: String?, val backend: AiBackend?, val modelId: String?, val attempts: List<Attempt>, val skipped: List<String>) {
+    data class Outcome(val text: String?, val backend: AiBackend?, val modelId: String?, val attempts: List<Attempt>, val skipped: List<String>, val evidence: String = "") {
         val failure: AiResult.Failure? get() = attempts.lastOrNull()?.failure
     }
 
@@ -32,7 +32,7 @@ class AiRouter(
     /** Au moins un modèle cloud peut répondre maintenant. */
     fun available(complex: Boolean = false): Boolean = candidates(complex).isNotEmpty()
 
-    suspend fun complete(systemInstruction: String, prompt: String, complex: Boolean): Outcome {
+    suspend fun complete(systemInstruction: String, prompt: String, complex: Boolean, tools: com.gt7pitwall.core.ai.tools.ToolSnapshot? = null): Outcome {
         val attempts = mutableListOf<Attempt>()
         val skipped = mode.cloudOrder(complex).mapNotNull { b ->
             val p = providers[b]
@@ -50,7 +50,8 @@ class AiRouter(
             usage.onSent(p.backend)
             val result = withTimeoutOrNull(left) {
                 try {
-                    p.complete(systemInstruction, prompt)
+                    if (tools != null && p is ToolCapable && p.toolsEnabled) p.completeWithTools(systemInstruction, prompt, tools)
+                    else p.complete(systemInstruction, prompt)
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Throwable) {
@@ -62,7 +63,7 @@ class AiRouter(
             if (text != null) {
                 usage.onSuccess(p.backend, ms)
                 attempts += Attempt(p.backend, p.modelId, null, ms)
-                return Outcome(text, p.backend, p.modelId, attempts, skipped)
+                return Outcome(text, p.backend, p.modelId, attempts, skipped, (result as AiResult.Text).evidence)
             }
             val failure = result as? AiResult.Failure ?: AiResult.Failure(FailureKind.EMPTY)
             usage.onFailure(p.backend, failure, ms)

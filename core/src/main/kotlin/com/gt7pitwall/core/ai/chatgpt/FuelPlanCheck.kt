@@ -19,12 +19,10 @@ object FuelPlanCheck {
     /** Faits simulés (scénario d'essai). */
     val facts = AiFacts(
         listOf(
-            "SIMULATION (essai de la connexion, pas une course réelle).",
-            "Course de 12 tours, tour 4 en cours.",
-            "Carburant restant : 38 %.",
-            "Consommation mesurée : 7,1 % par tour sur les 3 derniers tours.",
-            "Arrêt obligatoire : 1, pas encore fait.",
-            "Plan du moteur : arrêt à la fin du tour 6, plein de 85 % pour finir avec 2 % de marge.",
+            "Course : SIMULATION (essai de la connexion, pas une course réelle), 12 tours, tour 4 en cours.",
+            "Carburant : 38 % restant, consommation mesurée de 7,1 % par tour sur les 3 derniers tours (simulation).",
+            "Obligations du règlement : 1 arrêt obligatoire, pas encore fait (simulation).",
+            "Stratégie : plan du moteur, arrêt à la fin du tour 6, plein de 85 % pour finir avec 2 % de marge (simulation).",
         ),
     )
 
@@ -39,6 +37,33 @@ object FuelPlanCheck {
     val prompt: String get() = EngineerPrompt.build(QUESTION, context)
 
     data class Outcome(val answer: String, val fromChatGpt: Boolean, val verdict: String)
+
+    // ------------------------------------------------------------------ #70 : même question, faits SEULEMENT via les outils
+
+    /** Cliché des faits simulés pour les outils de données (lecture seule). */
+    fun snapshot(nowMs: Long): com.gt7pitwall.core.ai.tools.ToolSnapshot =
+        com.gt7pitwall.core.ai.tools.ToolSnapshot.from(facts, telemetryLive = true, lap = 4, observedAtMs = nowMs)
+
+    /** Question sans les faits : pour répondre, le modèle doit appeler les outils (preuve que le forfait les accepte). */
+    val toolsPrompt: String = "CONTEXTE : essai des outils Pitwall (SIMULATION, pas une course réelle). Les faits ne sont PAS dans ce message : " +
+        "appelle les outils du namespace pitwall nécessaires, puis réponds en une ou deux phrases.\n\nLE PILOTE DIT : « $QUESTION »\n\nRÉPONSE :"
+
+    /** Réponse obtenue avec les outils : seuls les faits réellement rendus par les outils sont autorisés. */
+    fun checkWithTools(result: AiResult): Outcome = when (result) {
+        is AiResult.Failure -> Outcome(LOCAL_ANSWER, false, "réponse locale : ${result.kind.label}${result.detail?.let { " ($it)" } ?: ""}")
+        is AiResult.Text -> {
+            if (result.evidence.isBlank()) {
+                Outcome(LOCAL_ANSWER, false, "GPT a répondu SANS appeler d'outil : réponse écartée, réponse locale")
+            } else {
+                val toolFacts = AiFacts(result.evidence.lines().filter { it.isNotBlank() })
+                when (val r = RadioAi.parse(result.text, QUESTION, toolFacts, extraSource = result.evidence)) {
+                    is AiReply.Answer -> Outcome(r.text, true, "réponse ChatGPT vérifiée sur les faits rendus par les outils")
+                    is AiReply.Rejected -> Outcome(LOCAL_ANSWER, false, "réponse ChatGPT écartée (${r.reason}) : réponse locale")
+                    is AiReply.Command -> Outcome(LOCAL_ANSWER, false, "commande proposée ignorée dans ce test : réponse locale")
+                }
+            }
+        }
+    }
 
     /** Contrôle de la réponse du modèle (ou de son échec) ; ne renvoie jamais un chiffre absent des faits. */
     fun check(result: AiResult): Outcome = when (result) {
