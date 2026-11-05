@@ -80,6 +80,8 @@ sealed interface AiResult {
  */
 interface ToolCapable {
     val toolsEnabled: Boolean
+
+    /** [prompt] : question allégée (sans les faits) quand l'appelant en fournit une ; sinon la question complète. */
     suspend fun completeWithTools(systemInstruction: String, prompt: String, snapshot: com.gt7pitwall.core.ai.tools.ToolSnapshot): AiResult
 }
 

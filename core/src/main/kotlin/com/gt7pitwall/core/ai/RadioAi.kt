@@ -33,7 +33,13 @@ data class AiFacts(
 }
 
 /** Sujet d'un fait (outils de données #70). */
-enum class FactTopic { LIVE, RULES, FUEL, TYRES, LAPS, HISTORY, OTHER }
+enum class FactTopic {
+    LIVE, RULES, FUEL, TYRES, LAPS, HISTORY,
+
+    /** V492 : analyses des moteurs locaux (bilan par virage, débrief, gomme de départ, programme Sport en cache). */
+    CORNERS, DEBRIEF, START_TYRE, SPORT,
+    OTHER,
+}
 
 /** D'où vient un fait. [UNKNOWN] en cas de doute : jamais « mesuré » par défaut. */
 enum class FactProvenance(val label: String) {

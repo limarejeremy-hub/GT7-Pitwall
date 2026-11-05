@@ -2424,9 +2424,11 @@ private fun ChatGptCard(cloud: com.gt7pitwall.app.ai.CloudAi, voice: TtsVoiceOut
                 )
             }
             OutlinedButton(onClick = plan::testTools, modifier = Modifier.fillMaxWidth()) { Text("Tester les outils de Véga") }
+            OutlinedButton(onClick = plan::testSport, modifier = Modifier.fillMaxWidth()) { Text("Véga : quelle course Sport cette semaine ?") }
             Text(
-                "Même question, mais les faits ne sont donnés QUE par les outils (simulation). Montre si ton forfait accepte les " +
-                    "outils et quels outils GPT appelle. Aucun outil n'écrit quoi que ce soit.",
+                "Premier essai : question carburant, faits de SIMULATION donnés seulement par les outils. Second essai : la fiche " +
+                    "Sport de la semaine, sur le programme réellement en cache dans Pitwall (aucune PS5 requise). Aucun outil n'écrit " +
+                    "quoi que ce soit ; la latence p50/p95 est mesurée sur le téléphone.",
                 color = PitColors.Muted,
                 style = MaterialTheme.typography.bodySmall,
             )

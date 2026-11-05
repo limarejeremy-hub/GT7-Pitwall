@@ -129,6 +129,8 @@ class PitwallApp : Application() {
         }
         cloudAi = com.gt7pitwall.app.ai.CloudAi(this)
         engine.cloudRouter = cloudAi.router
+        // #70 (V492) : essais de Véga hors course sur les vraies données du moteur (lecture seule).
+        cloudAi.chatgpt.liveSnapshot = { engine.toolSnapshot() }
         engine.onAiTrace = cloudAi::onTrace
         if (cloudAi.mode == com.gt7pitwall.core.ai.AiMode.LOCAL) engine.languageModel = null
         if (settings.aiEnabled) gemini.enable()

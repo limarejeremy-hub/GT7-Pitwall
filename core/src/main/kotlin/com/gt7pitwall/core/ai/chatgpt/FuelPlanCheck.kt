@@ -54,21 +54,8 @@ object FuelPlanCheck {
         "appelle les outils du namespace pitwall nécessaires, puis réponds en une ou deux phrases.\n\nLE PILOTE DIT : « $QUESTION »\n\nRÉPONSE :"
 
     /** Réponse obtenue avec les outils : seuls les faits réellement rendus par les outils sont autorisés. */
-    fun checkWithTools(result: AiResult): Outcome = when (result) {
-        is AiResult.Failure -> Outcome(LOCAL_ANSWER, false, "réponse locale : ${result.kind.label}${result.detail?.let { " ($it)" } ?: ""}")
-        is AiResult.Text -> {
-            if (result.evidence.isBlank()) {
-                Outcome(LOCAL_ANSWER, false, "GPT a répondu SANS appeler d'outil : réponse écartée, réponse locale")
-            } else {
-                val toolFacts = AiFacts(result.evidence.lines().filter { it.isNotBlank() })
-                when (val r = RadioAi.parse(result.text, QUESTION, toolFacts, extraSource = result.evidence)) {
-                    is AiReply.Answer -> Outcome(r.text, true, "réponse ChatGPT vérifiée sur les faits rendus par les outils")
-                    is AiReply.Rejected -> Outcome(LOCAL_ANSWER, false, "réponse ChatGPT écartée (${r.reason}) : réponse locale")
-                    is AiReply.Command -> Outcome(LOCAL_ANSWER, false, "commande proposée ignorée dans ce test : réponse locale")
-                }
-            }
-        }
-    }
+    fun checkWithTools(result: AiResult): Outcome =
+        com.gt7pitwall.core.ai.tools.VegaCheck.withTools(QUESTION, result, LOCAL_ANSWER).let { Outcome(it.answer, it.fromChatGpt, it.verdict) }
 
     /** Contrôle de la réponse du modèle (ou de son échec) ; ne renvoie jamais un chiffre absent des faits. */
     fun check(result: AiResult): Outcome = when (result) {

@@ -250,9 +250,11 @@ class RadioConversation(
      * modèle ne répond pas, le calcul du moteur est dit tel quel.
      */
     private suspend fun converse(router: AiRouter, turn: ConversationRouter.Turn, onThinking: (EngineerMessage) -> Unit, myTurn: Long = this.turn): Converse {
-        val (analysis, ctx) = mutex.withLock {
+        val (analysis, ctx, tools) = mutex.withLock {
             val a = race.engineAnalysis(turn)
-            a to race.conversationContext(turn, a)
+            val c = race.conversationContext(turn, a)
+            // #70 : cliché figé (faits + analyses locales) pour les outils en lecture seule, pris sous le verrou.
+            Triple(a, c, race.toolSnapshot(c.facts, c.lap, System.currentTimeMillis()))
         }
         val session = race.currentSessionId
         router.candidates(turn.complex).firstOrNull()?.let { p ->
@@ -260,9 +262,7 @@ class RadioConversation(
         }
         thinking = true
         val outcome = try {
-            // #70 : cliché figé des faits pour les outils en lecture seule (utilisé seulement si le pilote les a activés).
-            val tools = com.gt7pitwall.core.ai.tools.ToolSnapshot.from(ctx.facts, ctx.telemetryLive, ctx.lap, System.currentTimeMillis())
-            router.complete(EngineerPrompt.system, EngineerPrompt.build(turn.question, ctx), turn.complex, tools)
+            router.complete(EngineerPrompt.system, EngineerPrompt.build(turn.question, ctx), turn.complex, tools, EngineerPrompt.buildForTools(turn.question, ctx))
         } finally {
             thinking = false
         }

@@ -53,3 +53,42 @@ Rien ne donne à GPT un accès automatique au téléphone ni à Internet : c'est
   historique renvoyé sans `previous_response_id`, outil halluciné, boucle infinie coupée, refus serveur, lecture des
   appels dans le flux, outils seulement si activés, chiffre absent rejeté, repli local.
 - **Non vérifié** : acceptation réelle des outils par le forfait sur le Fold, comportement de `gpt-6.1-sol`, latence.
+
+## V492 : analyses locales, fiche Sport, latence (#70 / #68, après la validation sur le Fold du 06/11)
+
+Validé par le pilote sur le Fold (V491) : connexion Plus, `gpt-6.1-sol`, **un vrai appel `get_fuel_strategy`**, réponse
+vérifiée sur la simulation, 8 230 ms ; « Écouter Véga » audible avec la voix Android habituelle (inchangée).
+
+### Nouveaux outils (lecture seule, 10 au total)
+
+| Outil | Moteur local lu (rien n'est recalculé) | Ce qui est dit quand ça manque |
+|---|---|---|
+| `get_corner_comparison` | `CornerReport` (passages du même virage comparés au meilleur), `TyreOrDriving`, motricité | virages à moins de 2 passages : non chiffrés ; secteurs officiels et adversaires : non transmis |
+| `get_driver_debrief` | `RaceReview.lines()` (dernier bilan), constats de pilotage | aucun bilan enregistré ; adversaires non transmis |
+| `get_start_tyre_advice` | `StartTyreAdvisor.Advice` déjà calculé (jamais relancé par l'outil) | aucun conseil calculé ; « options proches » ≠ recommandation |
+| `get_current_sport_events` | programme Sport **en cache** (`ScheduleState` : GTPlanet, Victory, DG EDGE, GridStats) — aucune requête web | champs inconnus, édition hors semaine (heure de Paris), **deux gommes imposées sans arrêt explicite**, contradictions (statut `CONFLICT` → aucune valeur) |
+
+Chaque fait porte provenance, source et fiabilité (« confiance élevée, 6 passages », « édition en cours », statut du champ).
+
+### Latence
+
+- **Question allégée** quand les outils sont actifs (`EngineerPrompt.buildForTools`) : les faits ne sont plus recopiés
+  dans la question ET dans les outils ; restent le contexte, le calcul du moteur (qui fait foi), la mémoire et 3 échanges.
+  Le contrôle des chiffres garde tous les faits et ceux rendus par les outils.
+- Mesures par aller-retour (`ToolLoop.Round` : durée, 1er octet, taille de la requête, appels) et p50/p95 sur le
+  téléphone (`LatencyStats`, en mémoire seulement), affichées après chaque essai.
+- Les alertes critiques (« box ») restent locales et immédiates : aucun outil ni appel réseau sur ce chemin.
+
+### Essai sans PS5
+
+« Véga : quelle course Sport cette semaine ? » interroge GPT sur le **programme réellement en cache** dans Pitwall.
+
+### Exemples reproductibles (`VegaAnalysesTest`, fixtures SIMULÉES)
+
+1. Virage : « pourquoi je perds du temps au virage 5 » → T5 0,60 s, freinage trop tardif ; V9 (1 passage) jamais chiffré.
+2. Gomme de départ : conseil du moteur repris, « options proches » dit comme tel, absence de conseil dite.
+3. Fiche Sport : C en cours 11 tours ×3/×5 ; B « tours » contradictoire sans valeur ; A hors semaine ; gommes imposées
+   sans arrêt explicite signalées.
+4. Débrief : bilan de course repris, aucun adversaire inventé.
+
+**Non vérifié** : ces outils sur le Fold, la latence après allègement, la radio en course.

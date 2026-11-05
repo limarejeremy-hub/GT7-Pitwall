@@ -32,7 +32,14 @@ class AiRouter(
     /** Au moins un modèle cloud peut répondre maintenant. */
     fun available(complex: Boolean = false): Boolean = candidates(complex).isNotEmpty()
 
-    suspend fun complete(systemInstruction: String, prompt: String, complex: Boolean, tools: com.gt7pitwall.core.ai.tools.ToolSnapshot? = null): Outcome {
+    suspend fun complete(
+        systemInstruction: String,
+        prompt: String,
+        complex: Boolean,
+        tools: com.gt7pitwall.core.ai.tools.ToolSnapshot? = null,
+        /** Question allégée pour le chemin avec outils (les faits n'y sont pas recopiés). */
+        toolPrompt: String? = null,
+    ): Outcome {
         val attempts = mutableListOf<Attempt>()
         val skipped = mode.cloudOrder(complex).mapNotNull { b ->
             val p = providers[b]
@@ -50,7 +57,7 @@ class AiRouter(
             usage.onSent(p.backend)
             val result = withTimeoutOrNull(left) {
                 try {
-                    if (tools != null && p is ToolCapable && p.toolsEnabled) p.completeWithTools(systemInstruction, prompt, tools)
+                    if (tools != null && p is ToolCapable && p.toolsEnabled) p.completeWithTools(systemInstruction, toolPrompt ?: prompt, tools)
                     else p.complete(systemInstruction, prompt)
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
