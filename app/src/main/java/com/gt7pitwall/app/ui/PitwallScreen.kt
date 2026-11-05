@@ -241,7 +241,7 @@ fun PitwallScreen(
             listeningOn = micLabel,
         )
         CloudAiCard(cloudAi, onAiMode)
-        ChatGptCard(cloudAi)
+        ChatGptCard(cloudAi, voice)
         HumanRadioCard(engine, settings)
         DrivingCard(engine)
         AiCard(
@@ -315,8 +315,12 @@ fun PitwallScreen(
                 },
                 actions = {
                     TextButton(onClick = { selectedTab = "Atelier" }) {
-                        Text(if (running) "● PS5 active" else "○ Connecter PS5",
-                            color = if (running) PitColors.Green else PitColors.Muted)
+                        // Revue #69 : « PS5 active » seulement quand des paquets arrivent vraiment ; sinon on écoute.
+                        val receiving = connection is ConnectionStatus.Receiving
+                        Text(
+                            when { running && receiving -> "● PS5 active"; running -> "◌ Écoute PS5"; else -> "○ Connecter PS5" },
+                            color = when { running && receiving -> PitColors.Green; running -> PitColors.Yellow; else -> PitColors.Muted },
+                        )
                     }
                     StatusPill(connection)
                 },
@@ -2323,7 +2327,7 @@ private fun CloudAiCard(cloud: com.gt7pitwall.app.ai.CloudAi, onMode: (com.gt7pi
  * consignes d'interface d'OpenAI : « Continue with ChatGPT », message de bienvenue unique, « Gérer l'utilisation ».
  */
 @Composable
-private fun ChatGptCard(cloud: com.gt7pitwall.app.ai.CloudAi) {
+private fun ChatGptCard(cloud: com.gt7pitwall.app.ai.CloudAi, voice: TtsVoiceOutput) {
     val plan = cloud.chatgpt
     // Relu à chaque changement de mode (tick) : l'indicateur suit le choix fait dans la carte de l'IA.
     val tick by cloud.tick.collectAsStateWithLifecycle()
@@ -2346,6 +2350,33 @@ private fun ChatGptCard(cloud: com.gt7pitwall.app.ai.CloudAi) {
             GptState.AVAILABLE -> PitColors.Green
         }
         Text("ChatGPT : ${link.state.label}", color = color, fontWeight = FontWeight.Bold)
+        if (link.state == GptState.AVAILABLE || link.state == GptState.LIMIT) {
+            Text(
+                if (link.gptConfirmed) "Autorisé · GPT réellement interrogé" else "Autorisé · GPT pas encore interrogé (lance le test ci-dessous)",
+                color = if (link.gptConfirmed) PitColors.Green else PitColors.Yellow,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        if (link.trace.entries.isNotEmpty()) {
+            var showSteps by rememberSaveable { mutableStateOf(false) }
+            TextButton(onClick = { showSteps = !showSteps }) {
+                Text((if (showSteps) "Masquer" else "Voir") + " les étapes de connexion" + (link.trace.reached?.let { " (dernière réussie : ${it.label})" } ?: ""))
+            }
+            if (showSteps) {
+                com.gt7pitwall.core.ai.chatgpt.SignInTrace.Step.entries.forEach { st ->
+                    val e = link.trace.entries.lastOrNull { it.step == st }
+                    Text(
+                        (if (e == null) "·  " else if (e.ok) "✓  " else "✗  ") + st.label + (e?.detail?.let { " : $it" } ?: ""),
+                        color = when { e == null -> PitColors.Muted; e.ok -> PitColors.Green; else -> PitColors.Red },
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+                OutlinedButton(onClick = { clipboard.setText(androidx.compose.ui.text.AnnotatedString(plan.diagnostic())) }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Copier le diagnostic (sans secrets)")
+                }
+            }
+        }
         link.account?.let { Text("Compte : $it" + (link.model?.let { m -> " · modèle $m" } ?: ""), style = MaterialTheme.typography.bodySmall) }
         link.detail?.let { Text(it, color = PitColors.Muted, style = MaterialTheme.typography.bodySmall) }
         if (usingPlan && link.state == GptState.AVAILABLE) {
@@ -2363,7 +2394,7 @@ private fun ChatGptCard(cloud: com.gt7pitwall.app.ai.CloudAi) {
                     style = MaterialTheme.typography.bodySmall,
                 )
                 Button(onClick = plan::signIn, modifier = Modifier.fillMaxWidth()) { Text("Continue with ChatGPT") }
-                if (link.detail?.startsWith("Connexion en cours") == true) {
+                if (link.signingIn) {
                     TextButton(onClick = plan::cancelSignIn) { Text("Annuler la connexion") }
                 }
             }
@@ -2384,6 +2415,7 @@ private fun ChatGptCard(cloud: com.gt7pitwall.app.ai.CloudAi) {
                 style = MaterialTheme.typography.bodySmall,
             )
             test?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            VegaListen(plan, voice)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = plan::openUsage, modifier = Modifier.weight(1f)) { Text("Gérer l'utilisation") }
                 OutlinedButton(onClick = plan::signOut, modifier = Modifier.weight(1f)) { Text("Se déconnecter") }
@@ -2393,6 +2425,44 @@ private fun ChatGptCard(cloud: com.gt7pitwall.app.ai.CloudAi) {
             Text("Pour que la radio utilise ChatGPT, choisis « ${com.gt7pitwall.core.ai.AiMode.CHATGPT_PLAN.label} » ci-dessus.", color = PitColors.Muted, style = MaterialTheme.typography.bodySmall)
         }
     }
+}
+
+/**
+ * Revue #69 : « Écouter Véga » lit la réponse DÉJÀ affichée du test (aucune nouvelle requête GPT) avec la voix Android
+ * du téléphone. C'est GPT texte + synthèse vocale locale, pas une voix « GPT Live ». Rien n'est lu sans appui.
+ */
+@Composable
+private fun VegaListen(plan: com.gt7pitwall.app.ai.ChatGptPlan, voice: TtsVoiceOutput) {
+    val answer by plan.lastAnswer.collectAsStateWithLifecycle()
+    val voiceState by voice.state.collectAsStateWithLifecycle()
+    val speaking by voice.speaking.collectAsStateWithLifecycle()
+    val a = answer ?: return
+    val canSpeak = voiceState == VoiceState.READY || voiceState == VoiceState.FRENCH_MISSING
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Button(
+            onClick = {
+                voice.speak(
+                    com.gt7pitwall.core.engineer.EngineerMessage(
+                        a.answer, com.gt7pitwall.core.engineer.Priority.NORMAL, com.gt7pitwall.core.engineer.MessageCategory.ANSWER,
+                        fromAi = a.fromChatGpt, dedupKey = "vega-test-${System.currentTimeMillis()}",
+                    ),
+                )
+            },
+            enabled = canSpeak && !speaking,
+            modifier = Modifier.weight(1f),
+        ) { Text("Écouter Véga") }
+        OutlinedButton(onClick = { voice.stop() }, enabled = speaking, modifier = Modifier.weight(1f)) { Text("Arrêter la lecture") }
+    }
+    Text(
+        when (voiceState) {
+            VoiceState.READY -> "Voix française du téléphone (haut-parleur du Fold, pas Discord)."
+            VoiceState.FRENCH_MISSING -> "Voix française absente : lecture avec la voix par défaut d'Android. Installe une voix française dans les réglages Android (synthèse vocale)."
+            VoiceState.UNAVAILABLE -> "Synthèse vocale Android indisponible sur ce téléphone."
+            VoiceState.INITIALIZING -> "Voix en cours de préparation…"
+        },
+        color = PitColors.Muted,
+        style = MaterialTheme.typography.bodySmall,
+    )
 }
 
 /**

@@ -1,6 +1,6 @@
 # ChatGPT via le forfait du pilote (issue #67, jalon 1)
 
-Prototype **opt-in**, isolé, **non validé sur le Fold**. Le mode par défaut ne change pas ; ChatGPT n'est utilisé que si
+Prototype **opt-in**, isolé. Connexion et réponse GPT texte **confirmées par le pilote sur le Galaxy Fold le 05/11/2026** (V488, modèle `gpt-6.1-sol`, test carburant vérifié en ~4 s) ; la radio (voix, Discord PS5) n'est pas validée. Le mode par défaut ne change pas ; ChatGPT n'est utilisé que si
 le pilote choisit « ChatGPT via ton forfait (Plus), sans clé d'API » dans la carte « IA de l'ingénieur ».
 
 ## Ce qui est utilisé
@@ -18,7 +18,10 @@ inference, Errors and recovery, Preview limitations, UI/UX guidelines).
   contre le JWKS, émetteur `https://auth.openai.com`, audience = client attribué, expiration, `nonce`).
 - Portée `chatgpt.tokens.use.direct` absente de la réponse → état **« Connecté mais quota non autorisé »** : aucune
   requête au modèle.
-- Jetons chiffrés par l'Android Keystore (AES-256-GCM), jamais affichés ni journalisés (`toString()` masqué).
+- Jetons et e-mail chiffrés par l'Android Keystore (AES-256-GCM), jamais affichés ni journalisés (`toString()` masqué).
+  En clair dans les préférences privées : identifiant d'hôte (opaque), client attribué (pas un secret), étapes de connexion
+  (sans secrets), drapeau de bienvenue. (V488 gardait aussi l'e-mail en clair : retiré en V489.) Une erreur de
+  déchiffrement est signalée, jamais une raison d'effacer.
   Rafraîchissement sérialisé près de l'expiration (jeton d'accès 1 h, jeton de rafraîchissement tournant).
   Déconnexion : révocation via le `revocation_endpoint` de la découverte OpenID, puis effacement local.
 - Modèle : premier modèle `visibility: "list"` de `GET /v1/models` pour le compte.
@@ -43,6 +46,23 @@ bascule vers une API payante.
 
 Pour ChatGPT Plus, la limite sur 5 heures est partagée entre toutes les applications qui utilisent le forfait.
 
+## Étapes de connexion (V489, revue #69)
+
+Chaque tentative note : Navigateur lancé → Retour OAuth reçu → Code échangé → ID token vérifié → Permissions accordées →
+Credentials enregistrés → Modèle trouvé → Premier appel GPT confirmé. La carte affiche la dernière étape et l'erreur
+(codes HTTP / OAuth seulement) ; « Copier le diagnostic » produit un texte sans jeton, code, JWT, e-mail, UUID ni
+adresse de retour (`SignInTrace.redact`). « Autorisé » et « GPT réellement interrogé » sont distingués.
+
+Le retour est reçu par `LoopbackReceiver` (core, testé avec de vraies sockets) : écoute ouverte avant le navigateur,
+fermée tout de suite à l'annulation, délai par connexion (une connexion muette ne bloque pas), délai total de 5 min,
+une seule tentative à la fois. Le client attribué est enregistré dès le retour : un `invalid_grant` à l'échange ne
+refait pas une inscription.
+
+## Écouter Véga
+
+« Écouter Véga » lit la réponse déjà affichée du test avec la voix Android du téléphone (haut-parleur du Fold), sans
+nouvelle requête. C'est GPT texte + synthèse vocale locale : pas une voix « GPT Live », pas Discord.
+
 ## Test du jalon
 
 « Tester : Quel est mon plan carburant ? » envoie **une** requête sur des faits de **simulation** (`FuelPlanCheck`,
@@ -51,11 +71,12 @@ réponse locale est donnée.
 
 ## Vérifié / non vérifié
 
-- Vérifié sur PC (tests `ChatGptPlanTest`, 16 tests, aucun appel réseau, jetons et clés simulés) : paramètres d'autorisation,
+- Vérifié sur PC (`ChatGptPlanTest` 16 tests, `ChatGptSignInTest` 8 tests avec sockets réelles, aucun appel réseau, jetons et clés simulés) : paramètres d'autorisation,
   PKCE (vecteur RFC 7636), validation du retour, corps des requêtes de jetons, vérification du jeton d'identité,
   lecture du flux, codes d'erreur officiels, repli local, mode local sans appel.
-- **Non vérifié** : la connexion réelle avec un compte ChatGPT Plus, l'éligibilité réelle du compte pendant l'aperçu,
-  le retour du navigateur vers 127.0.0.1 sur le Fold (Pitwall en arrière-plan pendant la connexion), la latence à la radio.
+- Vérifié par le pilote sur le Fold (V488) : connexion, retour 127.0.0.1, modèle listé, réponse au test carburant.
+- **Non vérifié** : V489 sur le Fold (étapes, Écouter Véga), autres navigateurs, Fold plié/déplié pendant la connexion,
+  redémarrage de l'application, rafraîchissement après 1 h, la radio (voix en course, Discord PS5).
 
 ## Licence
 

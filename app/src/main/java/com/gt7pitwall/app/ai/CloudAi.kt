@@ -109,7 +109,10 @@ class CloudAi(private val context: Context) {
     val flash = CloudModel(AiBackend.FLASH)
 
     /** Issue #67 : ChatGPT avec le forfait du pilote, utilisé seulement en mode « ChatGPT via ton forfait ». */
-    val chatgpt = ChatGptPlan(context, usage)
+    val chatgpt = ChatGptPlan(
+        context, usage,
+        appVersion = runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull().orEmpty(),
+    )
 
     val router = AiRouter(mapOf(AiBackend.FLASH_LITE to lite, AiBackend.FLASH to flash, AiBackend.CHATGPT to chatgpt), usage, store.mode)
 
