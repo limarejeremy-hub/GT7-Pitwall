@@ -108,7 +108,10 @@ class CloudAi(private val context: Context) {
     val lite = CloudModel(AiBackend.FLASH_LITE)
     val flash = CloudModel(AiBackend.FLASH)
 
-    val router = AiRouter(mapOf(AiBackend.FLASH_LITE to lite, AiBackend.FLASH to flash), usage, store.mode)
+    /** Issue #67 : ChatGPT avec le forfait du pilote, utilisé seulement en mode « ChatGPT via ton forfait ». */
+    val chatgpt = ChatGptPlan(context, usage)
+
+    val router = AiRouter(mapOf(AiBackend.FLASH_LITE to lite, AiBackend.FLASH to flash, AiBackend.CHATGPT to chatgpt), usage, store.mode)
 
     init {
         AiBackend.entries.forEach { b -> store.dailyCap(b)?.let { usage.dailyCaps[b] = it } }
@@ -216,7 +219,8 @@ class CloudAi(private val context: Context) {
     /** Appelé après chaque intervention : compteurs sauvegardés, état et trace mis à jour. */
     fun onTrace(t: AiTrace?) {
         t?.let { _trace.value = it }
-        t?.attempts?.lastOrNull()?.failure?.let { f ->
+        // L'état Firebase ne concerne que Gemini : un refus de ChatGPT s'affiche sur sa propre carte.
+        t?.attempts?.lastOrNull()?.takeIf { it.backend != AiBackend.CHATGPT }?.failure?.let { f ->
             if (f.kind == FailureKind.AUTH || f.kind == FailureKind.MODEL_UNAVAILABLE || f.kind == FailureKind.NOT_CONFIGURED) {
                 _status.value = _status.value.copy(link = Link.ERROR, detail = "${f.kind.label}${f.detail?.let { " : $it" } ?: ""}")
             }

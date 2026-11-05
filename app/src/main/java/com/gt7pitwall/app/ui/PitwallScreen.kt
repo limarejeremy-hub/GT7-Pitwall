@@ -1,6 +1,7 @@
 package com.gt7pitwall.app.ui
 
 import android.content.Intent
+import com.gt7pitwall.app.ai.ChatGptPlan.State as GptState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -240,6 +241,7 @@ fun PitwallScreen(
             listeningOn = micLabel,
         )
         CloudAiCard(cloudAi, onAiMode)
+        ChatGptCard(cloudAi)
         HumanRadioCard(engine, settings)
         DrivingCard(engine)
         AiCard(
@@ -2312,6 +2314,83 @@ private fun CloudAiCard(cloud: com.gt7pitwall.app.ai.CloudAi, onMode: (com.gt7pi
                     OutlinedButton(onClick = { cloud.renewDebugSecret() }, modifier = Modifier.weight(1f)) { Text("Nouveau jeton") }
                 }
             }
+        }
+    }
+}
+
+/**
+ * Issue #67 : « Connecter ChatGPT » avec le forfait du pilote (Plus), sans clé d'API. Libellés et parcours d'après les
+ * consignes d'interface d'OpenAI : « Continue with ChatGPT », message de bienvenue unique, « Gérer l'utilisation ».
+ */
+@Composable
+private fun ChatGptCard(cloud: com.gt7pitwall.app.ai.CloudAi) {
+    val plan = cloud.chatgpt
+    // Relu à chaque changement de mode (tick) : l'indicateur suit le choix fait dans la carte de l'IA.
+    val tick by cloud.tick.collectAsStateWithLifecycle()
+    val usingPlan = tick.let { cloud.mode == com.gt7pitwall.core.ai.AiMode.CHATGPT_PLAN }
+    val link by plan.link.collectAsStateWithLifecycle()
+    val welcome by plan.welcome.collectAsStateWithLifecycle()
+    val test by plan.testResult.collectAsStateWithLifecycle()
+    if (welcome) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = plan::dismissWelcome,
+            title = { Text("Tu utilises ton forfait ChatGPT") },
+            text = { Text("Les questions éligibles de Pitwall utilisent ton forfait ChatGPT. Gère l'utilisation dans les réglages de ChatGPT.") },
+            confirmButton = { TextButton(onClick = plan::dismissWelcome) { Text("Compris") } },
+        )
+    }
+    PitCard("ChatGPT (ton forfait)") {
+        val color = when (link.state) {
+            GptState.NOT_CONNECTED -> PitColors.Muted
+            GptState.NO_PLAN, GptState.LIMIT -> PitColors.Yellow
+            GptState.AVAILABLE -> PitColors.Green
+        }
+        Text("ChatGPT : ${link.state.label}", color = color, fontWeight = FontWeight.Bold)
+        link.account?.let { Text("Compte : $it" + (link.model?.let { m -> " · modèle $m" } ?: ""), style = MaterialTheme.typography.bodySmall) }
+        link.detail?.let { Text(it, color = PitColors.Muted, style = MaterialTheme.typography.bodySmall) }
+        if (usingPlan && link.state == GptState.AVAILABLE) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Utilise ton forfait ChatGPT", color = PitColors.Green, style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = plan::openUsage) { Text("Gérer l'utilisation") }
+            }
+        }
+        when (link.state) {
+            GptState.NOT_CONNECTED -> {
+                Text(
+                    "Utilise ton forfait ChatGPT dans Pitwall : les questions libres de la radio passent par ton forfait " +
+                        "(inclus dans ChatGPT Plus), sans clé d'API et sans frais de Pitwall. Le moteur local reste le défaut.",
+                    color = PitColors.Muted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Button(onClick = plan::signIn, modifier = Modifier.fillMaxWidth()) { Text("Continue with ChatGPT") }
+                if (link.detail?.startsWith("Connexion en cours") == true) {
+                    TextButton(onClick = plan::cancelSignIn) { Text("Annuler la connexion") }
+                }
+            }
+            GptState.NO_PLAN -> Button(onClick = plan::signIn, modifier = Modifier.fillMaxWidth()) { Text("Continue with ChatGPT") }
+            GptState.LIMIT -> {
+                Text("Limite d'utilisation atteinte", fontWeight = FontWeight.Bold)
+                Text("Vérifie ton forfait ou la limite de Pitwall dans les réglages de ChatGPT.", style = MaterialTheme.typography.bodySmall)
+                Button(onClick = plan::openUsage, modifier = Modifier.fillMaxWidth()) { Text("Gérer l'utilisation") }
+            }
+            GptState.AVAILABLE -> Unit
+        }
+        if (link.state != GptState.NOT_CONNECTED) {
+            OutlinedButton(onClick = plan::testFuelPlan, modifier = Modifier.fillMaxWidth()) { Text("Tester : « Quel est mon plan carburant ? »") }
+            Text(
+                "Une seule requête, sur des faits de SIMULATION. La réponse n'est gardée que si chaque chiffre vient des faits ; " +
+                    "sinon, ou sans réseau ou forfait, le moteur local répond.",
+                color = PitColors.Muted,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            test?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = plan::openUsage, modifier = Modifier.weight(1f)) { Text("Gérer l'utilisation") }
+                OutlinedButton(onClick = plan::signOut, modifier = Modifier.weight(1f)) { Text("Se déconnecter") }
+            }
+        }
+        if (!usingPlan) {
+            Text("Pour que la radio utilise ChatGPT, choisis « ${com.gt7pitwall.core.ai.AiMode.CHATGPT_PLAN.label} » ci-dessus.", color = PitColors.Muted, style = MaterialTheme.typography.bodySmall)
         }
     }
 }
