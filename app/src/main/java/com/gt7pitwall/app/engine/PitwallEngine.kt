@@ -135,6 +135,8 @@ data class PitwallUiState(
     val edition: Edition? = null,
     /** Informations du règlement utiles à la stratégie qui restent inconnues. */
     val ruleGaps: List<RuleField> = emptyList(),
+    /** Conseil de gomme de départ (issue #65) : conseil seulement, jamais la gomme montée. */
+    val startTyreAdvice: com.gt7pitwall.core.tyres.StartTyreAdvisor.Advice? = null,
     /** Programme Sport connu : fraîcheur, erreur de lecture, péremption. */
     val schedule: ScheduleState? = null,
     /** Stratégies comparées (carburant et pneus) et recommandation. */
@@ -868,6 +870,10 @@ class PitwallEngine(
             localCareer = career,
             edition = race.edition,
             ruleGaps = race.ruleGaps,
+            // Visible en qualification et sur la grille, jamais une fois la course lancée (revue #66).
+            startTyreAdvice = race.startTyreAdvice?.takeIf {
+                com.gt7pitwall.core.tyres.StartTyreAdvisor.showable(snap.packet?.totalLaps, snap.packet?.currentLap)
+            },
             schedule = race.schedule,
             strategy = race.strategy,
             grip = race.engineer.grip,

@@ -331,6 +331,24 @@ private fun Rhythm(state: PitwallUiState, modifier: Modifier, onOpen: () -> Unit
 private fun Strategy(state: PitwallUiState, modifier: Modifier, onOpen: () -> Unit) {
     val lap = (state.snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)
     val stop = state.plan?.nextStop(lap)
+    // Avant le départ (issue #65) : le conseil de gomme, avec son statut ; jamais présenté comme la gomme montée.
+    val advice = state.startTyreAdvice
+    if (advice != null) {
+        Panel(modifier, onOpen) {
+            Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.SpaceBetween) {
+                PanelTitle("⚑", "GOMME DE DÉPART")
+                Value(
+                    advice.recommended?.let { "Conseil : " + it.spoken }
+                        ?: advice.leaning?.let { "Tendance : " + it.spoken }
+                        ?: advice.status.label.replaceFirstChar { it.uppercase() },
+                    18, if (advice.recommended != null) PitColors.Green else white,
+                )
+                Hint(advice.sentence)
+                Hint(advice.status.label + " • conseil seulement, dis ta gomme à la radio", PitColors.Orange)
+            }
+        }
+        return
+    }
     Panel(modifier, onOpen) {
         Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.SpaceBetween) {
             PanelTitle("⚑", "PLAN DE COURSE")
