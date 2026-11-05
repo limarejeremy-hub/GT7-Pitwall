@@ -598,6 +598,7 @@ class RaceController(
             out += drivingReportAtFinish()
         }
         out += briefingIfDue(p)
+        out += startTyreAdviceIfDue(p)
         out += localRulesQuestionIfDue(p)
         out += finalSectorPitCall(p)
         updateMood(events, positionChanges, p)
@@ -1645,6 +1646,11 @@ class RaceController(
         sessionTrackSource = null
         sportCandidate = null
         zeroTouch.newSession()
+        startAdvicePackets = 0
+        startAdviceGrid = null
+        startAdviceGiven = 0
+        startAdviceTyre = null
+        startTyreAdvice = null
         gridProbeDone = false
         gridProbes = 0
         gridProbedX = Float.NaN
@@ -2042,6 +2048,63 @@ class RaceController(
             "Course personnalisée : j'ai en mémoire $what. Toujours valable pour cette course ?",
             Priority.NORMAL, MessageCategory.RADIO, expectsReply = true,
         ))
+    }
+
+    // Issue #65 : conseil de gomme de départ sur la grille.
+    private var startAdvicePackets = 0
+    private var startAdviceGrid: Int? = null
+    private var startAdviceGiven = 0
+    private var startAdviceTyre: com.gt7pitwall.core.strategy.TyreCompound? = null
+
+    /** Dernier conseil de gomme de départ (écran), null avant la grille. */
+    var startTyreAdvice: com.gt7pitwall.core.tyres.StartTyreAdvisor.Advice? = null
+        private set
+
+    /**
+     * Issue #65 : sur la grille, avant les feux, une phrase de conseil de gomme de départ d'après le règlement, l'historique
+     * du pilote et sa place si GT7 la donne (stable). On attend [START_ADVICE_WAIT_PACKETS] la place ; sans elle, conseil
+     * sans place, puis un seul nouveau conseil si la place connue le change. Rien si le pilote a déjà dit sa gomme. Le
+     * conseil n'est jamais enregistré comme gomme montée. GT7 ne dit pas quand le choix des pneus se ferme : à mesurer.
+     */
+    private fun startTyreAdviceIfDue(p: TelemetryPacket): List<EngineerMessage> {
+        if (sessionId == null || replay || sessionFinished || startAdviceGiven >= 2) return emptyList()
+        if (profile.id.kind != SessionKind.RACE || p.totalLaps <= 0 || p.currentLap != 0 || p.speedKmh > 1f || p.isLoading || p.isPaused) return emptyList()
+        if (rules.startTyre != null) return emptyList()
+        val grid = engineer.measured.startPosition?.takeIf { it > 0 }
+        if (startAdviceGiven == 0 && grid == null && ++startAdvicePackets < START_ADVICE_WAIT_PACKETS) return emptyList()
+        if (startAdviceGiven == 1 && (grid == null || startAdviceGrid != null)) return emptyList()
+        val advice = com.gt7pitwall.core.tyres.StartTyreAdvisor.advise(
+            com.gt7pitwall.core.tyres.StartTyreAdvisor.Input(
+                totalLaps = p.totalLaps,
+                allowed = rules.allowedTyres,
+                required = rules.requiredTyres,
+                mandatoryStops = rules.mandatoryStops,
+                tyreLife = rules.tyreStintLaps,
+                book = compoundBook,
+                costs = stopCosts(historyModel, course?.pitLaneDeltaS?.let { it * 1000.0 }),
+                grid = grid?.let { it to engineer.measured.startCars },
+                traffic = runCatching {
+                    com.gt7pitwall.core.tyres.StartTyreAdvisor.TrafficEffect.learn(sessionContext, sessions.values, compoundBook, sessionId)
+                }.getOrDefault(com.gt7pitwall.core.tyres.StartTyreAdvisor.TrafficEffect.NONE),
+            ),
+        )
+        // Second conseil (place connue) seulement s'il change la gomme conseillée.
+        if (startAdviceGiven == 1 && advice.recommended == startAdviceTyre) {
+            startAdviceGrid = grid
+            startTyreAdvice = advice
+            return emptyList()
+        }
+        startAdviceGiven++
+        startAdviceGrid = grid
+        startAdviceTyre = advice.recommended
+        startTyreAdvice = advice
+        milestone(Milestone.START_TYRE_ADVICE, "historique + règlement" + (grid?.let { " + grille P$it" } ?: ""), if (advice.recommended != null) "estimée" else "sans conclusion", advice.recommended?.name)
+        journal.record(
+            JournalType.STRATEGY, JournalSource.ENGINE, "Conseil de gomme de départ : ${advice.sentence}",
+            decision = "conseil seulement, gomme montée non connue tant que tu ne la dis pas",
+            details = mapOf("bases" to advice.basis.joinToString(" ; "), "grille" to (grid?.toString() ?: "non mesurée")),
+        )
+        return listOf(EngineerMessage(advice.sentence, Priority.NORMAL, MessageCategory.FUEL, topic = "start-tyre", dedupKey = "start-tyre:$sessionId:$startAdviceGiven"))
     }
 
     private fun briefingIfDue(p: TelemetryPacket): List<EngineerMessage> {
@@ -3824,6 +3887,9 @@ class RaceController(
         /** Voiture immobile depuis 0,5 s (à 60 paquets/s), à moins de [GRID_STILL_M] près : position de grille examinée. */
         const val GRID_STILL_PACKETS = 30
         const val GRID_STILL_M = 2f
+
+        /** Attente de la place sur la grille avant un conseil de gomme sans place (3 s à 60 paquets/s). */
+        const val START_ADVICE_WAIT_PACKETS = 180
 
         /** Nouvelle position à l'arrêt examinée si elle est à plus de [GRID_REPROBE_M] de la précédente ; au plus [GRID_PROBES] par session. */
         const val GRID_REPROBE_M = 50f

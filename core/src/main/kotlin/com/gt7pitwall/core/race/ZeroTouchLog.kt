@@ -15,6 +15,7 @@ enum class Milestone(val label: String) {
     GRID_DETECTED("grille de départ"),
     RACE_STARTED("course lancée"),
     STRATEGY_READY("stratégie prête"),
+    START_TYRE_ADVICE("conseil de gomme de départ"),
     TYRE_UNCONFIRMED("gomme de départ non confirmée"),
     PIT_VISIT_STARTED("passage aux stands commencé"),
     PIT_VISIT_ENDED("passage aux stands terminé"),
