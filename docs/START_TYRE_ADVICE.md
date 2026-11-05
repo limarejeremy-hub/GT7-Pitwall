@@ -1,4 +1,4 @@
-# Conseil de gomme de départ (issue #65, V486 après la revue #66)
+# Conseil de gomme de départ (issue #65, V487 après les revues #66)
 
 ## Quand
 1. **Dès la qualification**, sans grille. GT7 n'annonce aucun tour ; la course probable vient du programme et de la voiture (#62). Le conseil est calculé avec le règlement de la course et l'historique de **cette** course (jalon `QUALIF_ADVICE_READY`). La place n'est pas fiable en qualification et n'est pas utilisée.
@@ -65,3 +65,17 @@ Avant le départ, le panneau « Plan de course » du Live devient « Gomme de d�
   - programme périmé et course personnalisée non vérifiée ;
   - gomme déjà dite.
 - **Aucun essai PS5.** Le délai réel avant la fermeture du choix des pneus reste à mesurer.
+
+## Revue de suivi (V487)
+- **Carte visible pendant les tours de qualification** : elle s'affiche tant qu'aucun tour n'est annoncé (qualification) ou à la grille (tour 0), et disparaît une fois la course lancée (`StartTyreAdvisor.showable`).
+- **Anti-redite limitée au passage qualification → grille de la même épreuve** : même voiture, même série, mêmes tours, gommes et arrêts imposés, même conclusion **plan compris** (un autre tour d'arrêt est un autre conseil), moins de 30 min. Une autre course n'est jamais dédoublonnée.
+- **Priorité radio haute** pour le conseil. Il passe immédiatement, devant l'annonce de l'épreuve, le briefing et toute annonce en attente. En qualification, l'annonce de l'épreuve est alors raccourcie. Les tests vérifient l'**ordre** des messages, pas seulement leur présence.
+- **Qualification** :
+  - la phrase dit « Si c'est bien la Course Sport C : … » (épreuve candidate, règlement publié), et elle est révisée sur la grille ;
+  - le coût des arrêts vient de l'historique **de la course visée** et de la voie des stands **de son circuit**, jamais de la session en cours ;
+  - l'autonomie est inconnue : « carburant non pris en compte » est écrit dans les bases.
+- **Calcul borné quel que soit le nombre de gommes autorisées** :
+  - les départs légaux sont déduits du règlement, sans énumérer ;
+  - seules les gommes chiffrables, au plus 4, entrent dans la programmation dynamique ;
+  - mesuré sur JVM : 8 gommes autorisées sur 150 tours, environ 80 ms au pire.
+  - Ce calcul est **ponctuel** : il bloque un paquet, au plus 1 à 4 fois par session, jamais à chaque paquet. Il n'est pas garanti sous 16 ms.

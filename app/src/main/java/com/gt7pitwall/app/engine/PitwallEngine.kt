@@ -870,7 +870,10 @@ class PitwallEngine(
             localCareer = career,
             edition = race.edition,
             ruleGaps = race.ruleGaps,
-            startTyreAdvice = race.startTyreAdvice,
+            // Visible en qualification et sur la grille, jamais une fois la course lancée (revue #66).
+            startTyreAdvice = race.startTyreAdvice?.takeIf {
+                com.gt7pitwall.core.tyres.StartTyreAdvisor.showable(snap.packet?.totalLaps, snap.packet?.currentLap)
+            },
             schedule = race.schedule,
             strategy = race.strategy,
             grip = race.engineer.grip,

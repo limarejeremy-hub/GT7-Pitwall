@@ -332,7 +332,7 @@ private fun Strategy(state: PitwallUiState, modifier: Modifier, onOpen: () -> Un
     val lap = (state.snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)
     val stop = state.plan?.nextStop(lap)
     // Avant le départ (issue #65) : le conseil de gomme, avec son statut ; jamais présenté comme la gomme montée.
-    val advice = state.startTyreAdvice?.takeIf { (state.snapshot.packet?.currentLap ?: 0) == 0 }
+    val advice = state.startTyreAdvice
     if (advice != null) {
         Panel(modifier, onOpen) {
             Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.SpaceBetween) {

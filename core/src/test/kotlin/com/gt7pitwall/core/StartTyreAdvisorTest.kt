@@ -171,4 +171,24 @@ class StartTyreAdvisorTest {
             assertTrue(a.basis.any { it.startsWith("exploration de") }, a.basis.toString())
         }
     }
+
+    @Test fun manyAllowedCompoundsStayBounded() {
+        // Course personnalisée : 8 gommes autorisées, 6 chiffrables, 150 tours, 2 arrêts imposés.
+        val many = listOf(TyreCompound.CH, TyreCompound.CM, TyreCompound.CS, TyreCompound.SH, TyreCompound.SM, TyreCompound.SS, RH, RM)
+        val b = CompoundBook(many.take(6).mapIndexed { k, c -> c to perf(c, 90_000.0 - k * 500.0, 40.0 + k * 10.0) }.toMap(), null, 0)
+        var worst = 0.0
+        repeat(3) {
+            val t0 = System.nanoTime()
+            val a = StartTyreAdvisor.advise(StartTyreAdvisor.Input(150, many.toSet(), emptySet(), 2, null, b, costs))
+            worst = maxOf(worst, (System.nanoTime() - t0) / 1e6)
+            assertTrue(a.basis.any { "seules 4 sont comparées" in it }, a.basis.toString())
+        }
+        println("8 gommes autorisées, 150 tours : pire ${"%.1f".format(worst)} ms (calcul ponctuel, pas à chaque paquet)")
+        assertTrue(worst < 1_500.0, "$worst ms")
+    }
+
+    @Test fun anUnknownFuelRangeIsSaid() {
+        val a = StartTyreAdvisor.advise(sportC().copy(fuelKnown = false))
+        assertTrue(a.basis.any { it.startsWith("autonomie inconnue") }, a.basis.toString())
+    }
 }

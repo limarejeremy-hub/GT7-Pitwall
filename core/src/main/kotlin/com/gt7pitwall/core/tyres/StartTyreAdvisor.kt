@@ -102,6 +102,8 @@ object StartTyreAdvisor {
         val fuelStopsMin: Int = 0,
         /** D'où vient le règlement (« fiche de la semaine, probable »…), pour le journal et l'écran. */
         val rulesSource: String? = null,
+        /** L'autonomie est connue (consommation mesurée ou apprise) : sinon le carburant n'entre pas dans le calcul, et c'est dit. */
+        val fuelKnown: Boolean = true,
     )
 
     enum class Status(val label: String) {
@@ -152,19 +154,27 @@ object StartTyreAdvisor {
         if (kMin > kMax) return none(Status.IMPOSSIBLE, "trop d'arrêts imposés pour ${i.totalLaps} tours (ou au-delà de $MAX_STOPS arrêts), pas de conseil.")
         basis += "exploration de $kMin à $kMax arrêt(s), chaque arrêt compté avec changement de pneus" +
             (if (i.fuelStopsMin > 0) ", dont ${i.fuelStopsMin} imposé(s) par le carburant" else "")
+        if (!i.fuelKnown) basis += "autonomie inconnue : le carburant n'est pas pris en compte, plan non optimisé sur l'essence"
         val tyreStop = i.costs?.cost(StopKind.TYRES_ONLY)
         if (tyreStop == null) basis += "coût d'un arrêt inconnu : seuls les plans au nombre minimal d'arrêts sont comparés"
         val zone = i.grid?.first?.let(GridZone::of)
 
-        val legalStarts = mutableSetOf<TyreCompound>()
+        // Départs légaux déduits du règlement, sans énumérer : une gomme autorisée peut partir si les gommes imposées
+        // restantes tiennent dans les relais suivants (au plus kMax arrêts).
+        val legalStarts = candidates.filter { c -> (i.required - c).size <= kMax }.toMutableSet()
+        // Seules les gommes chiffrables entrent dans l'énumération (les autres ne donneraient aucun plan) : au plus
+        // [MAX_COMPOUNDS] suites de longueur kMax + 1, quel que soit le nombre de gommes autorisées.
+        val chiffrable = candidates.filter { c -> i.book[c]?.let { it.paceMs != null && it.slopeMsPerLap != null && it.confidence != Confidence.INSUFFICIENT } == true }
+            .sortedByDescending { it in i.required }.take(MAX_COMPOUNDS)
+        if (chiffrable.size < candidates.count { c -> i.book[c]?.let { it.paceMs != null && it.slopeMsPerLap != null && it.confidence != Confidence.INSUFFICIENT } == true }) {
+            basis += "plus de $MAX_COMPOUNDS gommes chiffrables : seules $MAX_COMPOUNDS sont comparées"
+        }
         val best = mutableMapOf<TyreCompound, Plan>()
         for (k in kMin..kMax) {
             if (k > kMin && tyreStop == null) continue
-            for (seq in sequences(candidates, k + 1)) {
+            for (seq in sequences(chiffrable, k + 1)) {
                 if (!seq.containsAll(i.required)) continue
-                legalStarts += seq.first()
                 val perf = seq.map { i.book[it] }
-                if (perf.any { it?.paceMs == null || it.slopeMsPerLap == null || it.confidence == Confidence.INSUFFICIENT }) continue
                 val plan = bestSplit(seq, perf.map { it!! }, i, zone, k, tyreStop?.ms, tyreStop?.spread) ?: continue
                 val cur = best[seq.first()]
                 if (cur == null || plan.estimatedMs < cur.estimatedMs) best[seq.first()] = plan
@@ -276,7 +286,7 @@ object StartTyreAdvisor {
         return Plan(seq, stopLaps, total.roundToLong(), sqrt(u2).roundToLong())
     }
 
-    /** Suites de [n] gommes prises dans [c] (avec répétition) : au plus 3⁴ = 81. */
+    /** Suites de [n] gommes prises dans [c] (avec répétition) : au plus [MAX_COMPOUNDS]^([MAX_STOPS] + 1). */
     private fun sequences(c: List<TyreCompound>, n: Int): List<List<TyreCompound>> =
         if (n == 0) listOf(emptyList()) else sequences(c, n - 1).flatMap { s -> c.map { s + it } }
 
@@ -292,6 +302,12 @@ object StartTyreAdvisor {
     const val MAX_STOPS = 3
     const val LONG_RACE_LAPS = 40
     const val MIN_GAP_MS = 1_000L
+
+    /** Gommes chiffrables comparées au plus (une course personnalisée peut en autoriser beaucoup plus). */
+    const val MAX_COMPOUNDS = 4
+
+    /** Le conseil s'affiche avant le départ : qualification (aucun tour annoncé) ou grille (tour 0), jamais en course. */
+    fun showable(totalLaps: Int?, currentLap: Int?): Boolean = (totalLaps ?: 0) <= 0 || (currentLap ?: 0) == 0
 
     /** Erreur de modèle par tour roulé sur une gomme différente entre deux plans (trafic, piste, dégradation non linéaire). */
     const val MODEL_MS_PER_LAP = 150.0
