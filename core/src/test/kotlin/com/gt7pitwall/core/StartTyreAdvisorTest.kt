@@ -60,12 +60,12 @@ class StartTyreAdvisorTest {
         assertEquals(front.recommended, back.recommended)
         assertNull(front.recommended, front.sentence)
         assertTrue(back.basis.any { "ne change pas le calcul" in it }, back.basis.toString())
-        // Historique du pilote : partant derrière, les tendres ont perdu 2,5 s par tour sur les trois premiers tours
-        // (trafic), les mediums 0,3 s ; partant devant, ce sont les mediums qui ont perdu 1,5 s par tour. L'ordre s'inverse.
+        // Historique du pilote : partant derrière, les tendres ont perdu 4 s par tour sur les trois premiers tours
+        // (trafic), les mediums 0,3 s ; partant devant, ce sont les mediums qui ont perdu 3 s par tour. L'ordre s'inverse.
         val traffic = TrafficEffect(
             mapOf(
-                (GridZone.BACK to RS) to learned(2_500.0, 300.0, 4), (GridZone.BACK to RM) to learned(300.0, 300.0, 4),
-                (GridZone.FRONT to RS) to learned(0.0, 200.0, 4), (GridZone.FRONT to RM) to learned(1_500.0, 200.0, 4),
+                (GridZone.BACK to RS) to learned(4_000.0, 300.0, 4), (GridZone.BACK to RM) to learned(300.0, 300.0, 4),
+                (GridZone.FRONT to RS) to learned(0.0, 200.0, 4), (GridZone.FRONT to RM) to learned(3_000.0, 200.0, 4),
             ),
         )
         val p2 = StartTyreAdvisor.advise(sportC(grid = 2 to 16, traffic = traffic))
@@ -77,16 +77,18 @@ class StartTyreAdvisorTest {
 
     @Test fun closeOptionsAreSaidAsSuch() {
         val even = CompoundBook(mapOf(RS to perf(RS, 81_000.0, 60.0), RM to perf(RM, 81_000.0, 60.0)), null, 0)
-        val a = StartTyreAdvisor.advise(sportC(b = even))
+        val a = StartTyreAdvisor.advise(sportC(b = even).copy(allowed = setOf(RM, RS)))
         assertNull(a.recommended)
         assertTrue("options proches" in a.sentence, a.sentence)
-        assertTrue(a.sentence.startsWith("Sans place de grille mesurée : "), a.sentence)
+        assertTrue(a.sentence.startsWith("Sans place de grille : "), a.sentence)
+        assertEquals(StartTyreAdvisor.Status.CLOSE, a.status)
     }
 
     @Test fun withoutHistoryOnlyTheLegalChoicesAreSaid() {
         val a = StartTyreAdvisor.advise(sportC(b = CompoundBook.EMPTY))
         assertNull(a.recommended)
-        assertEquals("Sans place de grille mesurée : départ possible en course durs ou course mediums ou course tendres ; historique insuffisant pour en conseiller un.", a.sentence)
+        assertEquals("Sans place de grille : départ possible en course durs ou course mediums ou course tendres ; historique insuffisant pour en conseiller un.", a.sentence)
+        assertEquals(StartTyreAdvisor.Status.NO_HISTORY, a.status)
     }
 
     @Test fun aSingleStintIsNotEnoughForACompound() {
@@ -97,6 +99,7 @@ class StartTyreAdvisorTest {
         val a = StartTyreAdvisor.advise(sportC(b = thin))
         assertNull(a.recommended, "les RM sont imposées mais non chiffrables : aucun plan complet")
         assertTrue(a.bestByStart.isEmpty())
+        assertEquals(StartTyreAdvisor.Status.NO_HISTORY, a.status)
     }
 
     @Test fun hardMandatoryAndNoStopRaces() {
@@ -107,6 +110,7 @@ class StartTyreAdvisorTest {
         assertTrue(hard.bestByStart.values.all { RH in it.compounds }, hard.bestByStart.toString())
         // Aucune obligation, course courte : pas d'arrêt dans le meilleur plan de chaque départ.
         val sprint = StartTyreAdvisor.advise(StartTyreAdvisor.Input(5, setOf(RM, RS), emptySet(), 0, null, book, costs))
+        assertEquals(StartTyreAdvisor.Status.RECOMMENDED, sprint.status, sprint.sentence)
         assertTrue(sprint.bestByStart.values.all { it.stops.isEmpty() }, sprint.bestByStart.toString())
         assertEquals(RS, sprint.recommended, sprint.sentence)
     }
@@ -126,6 +130,45 @@ class StartTyreAdvisorTest {
         a.bestByStart.values.forEach { p ->
             val stints = (listOf(0) + p.stops + 14).zipWithNext { x, y -> y - x }
             assertTrue(stints.all { it <= 5 }, stints.toString())
+        }
+    }
+
+    @Test fun unknownAllowedTyresNeverGiveALegalStartOrAdvice() {
+        // Revue #66 : une gomme roulée hier, ou la seule liste des imposées, ne prouve pas qu'elle est autorisée aujourd'hui.
+        val a = StartTyreAdvisor.advise(sportC().copy(allowed = emptySet()))
+        assertEquals(StartTyreAdvisor.Status.RULES_UNKNOWN, a.status)
+        assertTrue(a.legalStarts.isEmpty())
+        assertNull(a.recommended)
+        assertNull(a.leaning)
+        assertTrue("gommes autorisées inconnues" in a.sentence, a.sentence)
+    }
+
+    @Test fun aLegalButUnquantifiedThirdCompoundBlocksTheRecommendation() {
+        // RH autorisée et légale au départ, mais sans historique : RS/RM seules chiffrées → tendance, jamais « je conseille ».
+        val noHard = CompoundBook(mapOf(RS to perf(RS, 80_000.0, 60.0), RM to perf(RM, 82_000.0, 60.0)), null, 0)
+        val a = StartTyreAdvisor.advise(sportC(b = noHard).copy(required = emptySet()))
+        assertEquals(StartTyreAdvisor.Status.INCOMPLETE, a.status, a.sentence)
+        assertNull(a.recommended)
+        assertEquals(RS, a.leaning)
+        assertTrue("parmi les seules gommes chiffrables" in a.sentence && "course durs sans historique" in a.sentence, a.sentence)
+    }
+
+    @Test fun theGainIsSaidToTheSecondAndQualifyingLapsAreNeverUsed() {
+        val traffic = TrafficEffect(mapOf((GridZone.BACK to RS) to learned(2_500.0, 300.0, 4), (GridZone.BACK to RM) to learned(300.0, 300.0, 4)))
+        val a = StartTyreAdvisor.advise(sportC(grid = 14 to 16, traffic = traffic))
+        assertTrue(Regex("environ \\d+ s de mieux").containsMatchIn(a.sentence), a.sentence)
+        assertTrue(!Regex("\\d,\\d s").containsMatchIn(a.sentence), "pas de dixièmes : ${a.sentence}")
+        assertTrue(a.basis.any { it.startsWith("chronos de qualification non utilisés") }, a.basis.toString())
+    }
+
+    @Test fun longRacesStayCheapAndTheExplorationIsSaidPartial() {
+        for (laps in listOf(40, 80, 150)) {
+            val t0 = System.nanoTime()
+            val a = StartTyreAdvisor.advise(sportC().copy(totalLaps = laps, mandatoryStops = 2))
+            val ms = (System.nanoTime() - t0) / 1e6
+            println("Conseil sur $laps tours : ${"%.1f".format(ms)} ms, ${a.bestByStart.size} départs chiffrés")
+            assertTrue(ms < 1_000.0, "$laps tours : $ms ms")
+            assertTrue(a.basis.any { it.startsWith("exploration de") }, a.basis.toString())
         }
     }
 }
