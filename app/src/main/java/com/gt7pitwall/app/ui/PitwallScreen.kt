@@ -1,6 +1,7 @@
 package com.gt7pitwall.app.ui
 
 import android.content.Intent
+import com.gt7pitwall.app.ai.ChatGptPlan.State as GptState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -240,6 +241,7 @@ fun PitwallScreen(
             listeningOn = micLabel,
         )
         CloudAiCard(cloudAi, onAiMode)
+        ChatGptCard(cloudAi, voice)
         HumanRadioCard(engine, settings)
         DrivingCard(engine)
         AiCard(
@@ -313,8 +315,12 @@ fun PitwallScreen(
                 },
                 actions = {
                     TextButton(onClick = { selectedTab = "Atelier" }) {
-                        Text(if (running) "● PS5 active" else "○ Connecter PS5",
-                            color = if (running) PitColors.Green else PitColors.Muted)
+                        // Revue #69 : « PS5 active » seulement quand des paquets arrivent vraiment ; sinon on écoute.
+                        val receiving = connection is ConnectionStatus.Receiving
+                        Text(
+                            when { running && receiving -> "● PS5 active"; running -> "◌ Écoute PS5"; else -> "○ Connecter PS5" },
+                            color = when { running && receiving -> PitColors.Green; running -> PitColors.Yellow; else -> PitColors.Muted },
+                        )
                     }
                     StatusPill(connection)
                 },
@@ -2314,6 +2320,149 @@ private fun CloudAiCard(cloud: com.gt7pitwall.app.ai.CloudAi, onMode: (com.gt7pi
             }
         }
     }
+}
+
+/**
+ * Issue #67 : « Connecter ChatGPT » avec le forfait du pilote (Plus), sans clé d'API. Libellés et parcours d'après les
+ * consignes d'interface d'OpenAI : « Continue with ChatGPT », message de bienvenue unique, « Gérer l'utilisation ».
+ */
+@Composable
+private fun ChatGptCard(cloud: com.gt7pitwall.app.ai.CloudAi, voice: TtsVoiceOutput) {
+    val plan = cloud.chatgpt
+    // Relu à chaque changement de mode (tick) : l'indicateur suit le choix fait dans la carte de l'IA.
+    val tick by cloud.tick.collectAsStateWithLifecycle()
+    val usingPlan = tick.let { cloud.mode == com.gt7pitwall.core.ai.AiMode.CHATGPT_PLAN }
+    val link by plan.link.collectAsStateWithLifecycle()
+    val welcome by plan.welcome.collectAsStateWithLifecycle()
+    val test by plan.testResult.collectAsStateWithLifecycle()
+    if (welcome) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = plan::dismissWelcome,
+            title = { Text("Tu utilises ton forfait ChatGPT") },
+            text = { Text("Les questions éligibles de Pitwall utilisent ton forfait ChatGPT. Gère l'utilisation dans les réglages de ChatGPT.") },
+            confirmButton = { TextButton(onClick = plan::dismissWelcome) { Text("Compris") } },
+        )
+    }
+    PitCard("ChatGPT (ton forfait)") {
+        val color = when (link.state) {
+            GptState.NOT_CONNECTED -> PitColors.Muted
+            GptState.NO_PLAN, GptState.LIMIT -> PitColors.Yellow
+            GptState.AVAILABLE -> PitColors.Green
+        }
+        Text("ChatGPT : ${link.state.label}", color = color, fontWeight = FontWeight.Bold)
+        if (link.state == GptState.AVAILABLE || link.state == GptState.LIMIT) {
+            Text(
+                if (link.gptConfirmed) "Autorisé · GPT réellement interrogé" else "Autorisé · GPT pas encore interrogé (lance le test ci-dessous)",
+                color = if (link.gptConfirmed) PitColors.Green else PitColors.Yellow,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        if (link.trace.entries.isNotEmpty()) {
+            var showSteps by rememberSaveable { mutableStateOf(false) }
+            TextButton(onClick = { showSteps = !showSteps }) {
+                Text((if (showSteps) "Masquer" else "Voir") + " les étapes de connexion" + (link.trace.reached?.let { " (dernière réussie : ${it.label})" } ?: ""))
+            }
+            if (showSteps) {
+                com.gt7pitwall.core.ai.chatgpt.SignInTrace.Step.entries.forEach { st ->
+                    val e = link.trace.entries.lastOrNull { it.step == st }
+                    Text(
+                        (if (e == null) "·  " else if (e.ok) "✓  " else "✗  ") + st.label + (e?.detail?.let { " : $it" } ?: ""),
+                        color = when { e == null -> PitColors.Muted; e.ok -> PitColors.Green; else -> PitColors.Red },
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+                OutlinedButton(onClick = { clipboard.setText(androidx.compose.ui.text.AnnotatedString(plan.diagnostic())) }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Copier le diagnostic (sans secrets)")
+                }
+            }
+        }
+        link.account?.let { Text("Compte : $it" + (link.model?.let { m -> " · modèle $m" } ?: ""), style = MaterialTheme.typography.bodySmall) }
+        link.detail?.let { Text(it, color = PitColors.Muted, style = MaterialTheme.typography.bodySmall) }
+        if (usingPlan && link.state == GptState.AVAILABLE) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Utilise ton forfait ChatGPT", color = PitColors.Green, style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = plan::openUsage) { Text("Gérer l'utilisation") }
+            }
+        }
+        when (link.state) {
+            GptState.NOT_CONNECTED -> {
+                Text(
+                    "Utilise ton forfait ChatGPT dans Pitwall : les questions libres de la radio passent par ton forfait " +
+                        "(inclus dans ChatGPT Plus), sans clé d'API et sans frais de Pitwall. Le moteur local reste le défaut.",
+                    color = PitColors.Muted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Button(onClick = plan::signIn, modifier = Modifier.fillMaxWidth()) { Text("Continue with ChatGPT") }
+                if (link.signingIn) {
+                    TextButton(onClick = plan::cancelSignIn) { Text("Annuler la connexion") }
+                }
+            }
+            GptState.NO_PLAN -> Button(onClick = plan::signIn, modifier = Modifier.fillMaxWidth()) { Text("Continue with ChatGPT") }
+            GptState.LIMIT -> {
+                Text("Limite d'utilisation atteinte", fontWeight = FontWeight.Bold)
+                Text("Vérifie ton forfait ou la limite de Pitwall dans les réglages de ChatGPT.", style = MaterialTheme.typography.bodySmall)
+                Button(onClick = plan::openUsage, modifier = Modifier.fillMaxWidth()) { Text("Gérer l'utilisation") }
+            }
+            GptState.AVAILABLE -> Unit
+        }
+        if (link.state != GptState.NOT_CONNECTED) {
+            OutlinedButton(onClick = plan::testFuelPlan, modifier = Modifier.fillMaxWidth()) { Text("Tester : « Quel est mon plan carburant ? »") }
+            Text(
+                "Une seule requête, sur des faits de SIMULATION. La réponse n'est gardée que si chaque chiffre vient des faits ; " +
+                    "sinon, ou sans réseau ou forfait, le moteur local répond.",
+                color = PitColors.Muted,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            test?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            VegaListen(plan, voice)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = plan::openUsage, modifier = Modifier.weight(1f)) { Text("Gérer l'utilisation") }
+                OutlinedButton(onClick = plan::signOut, modifier = Modifier.weight(1f)) { Text("Se déconnecter") }
+            }
+        }
+        if (!usingPlan) {
+            Text("Pour que la radio utilise ChatGPT, choisis « ${com.gt7pitwall.core.ai.AiMode.CHATGPT_PLAN.label} » ci-dessus.", color = PitColors.Muted, style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+/**
+ * Revue #69 : « Écouter Véga » lit la réponse DÉJÀ affichée du test (aucune nouvelle requête GPT) avec la voix Android
+ * du téléphone. C'est GPT texte + synthèse vocale locale, pas une voix « GPT Live ». Rien n'est lu sans appui.
+ */
+@Composable
+private fun VegaListen(plan: com.gt7pitwall.app.ai.ChatGptPlan, voice: TtsVoiceOutput) {
+    val answer by plan.lastAnswer.collectAsStateWithLifecycle()
+    val voiceState by voice.state.collectAsStateWithLifecycle()
+    val speaking by voice.speaking.collectAsStateWithLifecycle()
+    val a = answer ?: return
+    val canSpeak = voiceState == VoiceState.READY || voiceState == VoiceState.FRENCH_MISSING
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Button(
+            onClick = {
+                voice.speak(
+                    com.gt7pitwall.core.engineer.EngineerMessage(
+                        a.answer, com.gt7pitwall.core.engineer.Priority.NORMAL, com.gt7pitwall.core.engineer.MessageCategory.ANSWER,
+                        fromAi = a.fromChatGpt, dedupKey = "vega-test-${System.currentTimeMillis()}",
+                    ),
+                )
+            },
+            enabled = canSpeak && !speaking,
+            modifier = Modifier.weight(1f),
+        ) { Text("Écouter Véga") }
+        OutlinedButton(onClick = { voice.stop() }, enabled = speaking, modifier = Modifier.weight(1f)) { Text("Arrêter la lecture") }
+    }
+    Text(
+        when (voiceState) {
+            VoiceState.READY -> "Voix française du téléphone (haut-parleur du Fold, pas Discord)."
+            VoiceState.FRENCH_MISSING -> "Voix française absente : lecture avec la voix par défaut d'Android. Installe une voix française dans les réglages Android (synthèse vocale)."
+            VoiceState.UNAVAILABLE -> "Synthèse vocale Android indisponible sur ce téléphone."
+            VoiceState.INITIALIZING -> "Voix en cours de préparation…"
+        },
+        color = PitColors.Muted,
+        style = MaterialTheme.typography.bodySmall,
+    )
 }
 
 /**

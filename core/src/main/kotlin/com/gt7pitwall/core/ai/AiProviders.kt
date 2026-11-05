@@ -8,6 +8,9 @@ enum class AiBackend(val label: String, val cloud: Boolean) {
     FLASH_LITE("Gemini 3.5 Flash-Lite", cloud = true),
     FLASH("Gemini 3.8 Flash", cloud = true),
     NANO("Gemini Nano (téléphone)", cloud = false),
+
+    /** Issue #67 : ChatGPT avec le forfait du pilote (« Sign in with ChatGPT »), sans clé d'API payante. */
+    CHATGPT("ChatGPT (ton forfait)", cloud = true),
     ENGINE("Moteur Pitwall (sans IA)", cloud = false),
     ;
 
@@ -27,6 +30,9 @@ enum class AiMode(val label: String) {
     FLASH_LITE("Gemini 3.5 Flash-Lite seulement"),
     FLASH("Gemini 3.8 Flash seulement"),
     NANO("Gemini Nano (sur le téléphone)"),
+
+    /** ChatGPT via le forfait du pilote seulement ; aucun autre modèle cloud, repli local s'il ne répond pas. */
+    CHATGPT_PLAN("ChatGPT via ton forfait (Plus), sans clé d'API"),
     LOCAL("Moteur local uniquement (aucune IA)"),
     ;
 
@@ -35,6 +41,7 @@ enum class AiMode(val label: String) {
         AUTO -> if (complex) listOf(AiBackend.FLASH, AiBackend.FLASH_LITE) else listOf(AiBackend.FLASH_LITE)
         FLASH_LITE -> listOf(AiBackend.FLASH_LITE)
         FLASH -> listOf(AiBackend.FLASH)
+        CHATGPT_PLAN -> listOf(AiBackend.CHATGPT)
         NANO, LOCAL -> emptyList()
     }
 
