@@ -260,7 +260,9 @@ class RadioConversation(
         }
         thinking = true
         val outcome = try {
-            router.complete(EngineerPrompt.system, EngineerPrompt.build(turn.question, ctx), turn.complex)
+            // #70 : cliché figé des faits pour les outils en lecture seule (utilisé seulement si le pilote les a activés).
+            val tools = com.gt7pitwall.core.ai.tools.ToolSnapshot.from(ctx.facts, ctx.telemetryLive, ctx.lap, System.currentTimeMillis())
+            router.complete(EngineerPrompt.system, EngineerPrompt.build(turn.question, ctx), turn.complex, tools)
         } finally {
             thinking = false
         }
@@ -272,7 +274,7 @@ class RadioConversation(
         val history = ctx.recent.map { RadioAi.Exchange(it.question, it.answer) }
         val reply = outcome.text?.let {
             RadioAi.parse(
-                it, turn.question, ctx.facts, history, previousAnswers = emptyList(), extraSource = EngineerPrompt.source(ctx),
+                it, turn.question, ctx.facts, history, previousAnswers = emptyList(), extraSource = EngineerPrompt.source(ctx) + "\n" + outcome.evidence,
                 // Question simple : la conclusion seule ; l'explication quand le pilote la demande (essai PS5).
                 maxSentences = if (com.gt7pitwall.core.radio.Brevity.wantsDetail(turn.question)) CLOUD_SENTENCES else com.gt7pitwall.core.radio.Brevity.SIMPLE_SENTENCES,
                 maxChars = CLOUD_CHARS,

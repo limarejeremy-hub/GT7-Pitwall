@@ -67,10 +67,20 @@ enum class FailureKind(val label: String) {
 }
 
 sealed interface AiResult {
-    data class Text(val text: String) : AiResult
+    /** [evidence] : faits rendus par des outils de données pendant la réponse (#70), autorisés au contrôle des chiffres. */
+    data class Text(val text: String, val evidence: String = "") : AiResult
 
     /** [daily] : le message d'erreur parle d'un plafond journalier (sinon : par minute, ou inconnu). */
     data class Failure(val kind: FailureKind, val detail: String? = null, val daily: Boolean = false) : AiResult
+}
+
+/**
+ * Issue #70 : fournisseur capable d'appeler les outils de données en lecture seule. Le routeur lui passe un cliché figé
+ * des faits ; sans cliché (ou outils désactivés par le pilote), [AiProvider.complete] est utilisé.
+ */
+interface ToolCapable {
+    val toolsEnabled: Boolean
+    suspend fun completeWithTools(systemInstruction: String, prompt: String, snapshot: com.gt7pitwall.core.ai.tools.ToolSnapshot): AiResult
 }
 
 /** Un modèle d'IA, cloud ou local. Aucune dépendance Android : le module app fournit Firebase et Gemini Nano. */
