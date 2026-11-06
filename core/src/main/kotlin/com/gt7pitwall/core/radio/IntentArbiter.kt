@@ -21,6 +21,12 @@ object IntentArbiter {
 
         /** Déclaration possible mais transcriptions en désaccord : appliquée seulement après « oui ». */
         data class Clarify(val command: DriverCommand, val reason: String) : Decision
+
+        /**
+         * Revue #74 : les deux transcriptions donnent la même SORTE de modification mais pas la même VALEUR (durs ↔
+         * mediums, P8 ↔ P11, 10 ↔ 11 tours). Rien n'est appliqué, aucune confirmation n'est préparée : le pilote redit.
+         */
+        data class Conflict(val vocab: DriverCommand, val free: DriverCommand, val reason: String) : Decision
     }
 
     enum class Topic { COACHING, TYRES, STRATEGY }
@@ -55,8 +61,22 @@ object IntentArbiter {
      * commande que l'analyseur tire du vocabulaire radio.
      */
     fun decide(vocabText: String, freeText: String?, vocabCmd: DriverCommand?): Decision {
-        val free = freeText?.takeIf { it.isNotBlank() } ?: return Decision.Proceed
-        if (DriverCommandParser.normalize(free) == DriverCommandParser.normalize(vocabText)) return Decision.Proceed
+        val given = freeText?.takeIf { it.isNotBlank() }
+        val single = given == null || DriverCommandParser.normalize(given) == DriverCommandParser.normalize(vocabText)
+        // Revue #74 : une seule transcription (ou deux identiques) qui est une question ou une hypothèse ne devient
+        // jamais une déclaration (« est-ce que je pars en durs ? »).
+        if (single) {
+            val t = given ?: vocabText
+            val n = DriverCommandParser.normalize(t)
+            val m = StatementGuard.mode(t)
+            if (vocabCmd != null && CommandGate.sensitive(vocabCmd) &&
+                (m == StatementGuard.Mode.QUESTION || m == StatementGuard.Mode.HYPOTHETICAL || ANALYSIS_MARKERS.containsMatchIn(n))
+            ) {
+                return Decision.Analysis(t, if (DRIVING.containsMatchIn(n)) Topic.COACHING else if (TYRES.containsMatchIn(n)) Topic.TYRES else Topic.STRATEGY, "question ou hypothèse, pas une déclaration")
+            }
+            return Decision.Proceed
+        }
+        val free = given!!
         val f = DriverCommandParser.normalize(free)
         val words = f.split(' ').filter { it.isNotBlank() }.size
         val mode = StatementGuard.mode(free)
@@ -90,9 +110,45 @@ object IntentArbiter {
         }
         // 4. Modification proposée par le vocabulaire radio, que la phrase libre ne confirme pas : « oui » exigé.
         if (sensitive && vocabCmd != null) {
-            val agree = freeCmd != null && freeCmd::class == vocabCmd::class
-            if (!agree) return Decision.Clarify(vocabCmd, "la phrase libre ne dit pas la même chose (« ${free.take(60)} »)")
+            if (freeCmd == null || !CommandGate.sensitive(freeCmd)) {
+                return Decision.Clarify(vocabCmd, "la phrase libre ne dit pas la même chose (« ${free.take(60)} »)")
+            }
+            // Revue #74 : même sorte de commande ne veut pas dire même valeur.
+            if (key(freeCmd) != key(vocabCmd)) {
+                return Decision.Conflict(vocabCmd, freeCmd, "valeurs différentes : ${describe(vocabCmd)} / ${describe(freeCmd)}")
+            }
         }
         return Decision.Proceed
+    }
+
+    /** Valeur sémantique d'une commande : gomme (dureté et famille), position, tours… jamais le texte brut. */
+    fun key(c: DriverCommand): String = when (c) {
+        is DriverCommand.Tyres -> {
+            val t = DriverCommandParser.normalize(c.text)
+            "Tyres:${com.gt7pitwall.core.strategy.TyreCompound.hardnessIn(t)}:${com.gt7pitwall.core.strategy.TyreCompound.familyIn(t)}"
+        }
+        is DriverCommand.StopAndTyres -> "Stop+" + key(c.tyres)
+        else -> c.toString()
+    }
+
+    /** Valeur dite au pilote (« les durs », « P8 », « 11 tours »). */
+    fun describe(c: DriverCommand): String = when (c) {
+        is DriverCommand.Tyres -> {
+            val t = DriverCommandParser.normalize(c.text)
+            val h = com.gt7pitwall.core.strategy.TyreCompound.hardnessIn(t)
+            val f = com.gt7pitwall.core.strategy.TyreCompound.familyIn(t)
+            listOfNotNull(h?.let { "les ${it.spoken}" }, f?.let { "(${it.spoken})" }).joinToString(" ").ifEmpty { "ces pneus" }
+        }
+        is DriverCommand.StopAndTyres -> "un arrêt avec " + describe(c.tyres)
+        is DriverCommand.ReportPosition -> "P${c.position}"
+        is DriverCommand.SetLaps -> "${c.laps} tours"
+        is DriverCommand.SetMandatoryStops -> "${c.stops} arrêt(s) obligatoire(s)"
+        else -> c.toString().substringBefore('(').substringAfterLast('.').substringAfterLast('$')
+    }
+
+    /** Pour une réponse attendue : la phrase libre est-elle plutôt une question ou une hypothèse ? */
+    fun isQuestionOrHypothesis(text: String): Boolean {
+        val m = StatementGuard.mode(text)
+        return m == StatementGuard.Mode.QUESTION || m == StatementGuard.Mode.HYPOTHETICAL || ANALYSIS_MARKERS.containsMatchIn(DriverCommandParser.normalize(text))
     }
 }

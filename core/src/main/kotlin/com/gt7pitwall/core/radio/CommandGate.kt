@@ -383,10 +383,14 @@ object CommandGate {
 
     /** Question de confirmation courte, à dire à la radio. */
     fun confirmation(command: DriverCommand): String = when (command) {
-        DriverCommand.DeclareStop, is DriverCommand.StopAndTyres -> "Tu confirmes que tu as effectué ton arrêt ?"
+        DriverCommand.DeclareStop -> "Tu confirmes que tu as effectué ton arrêt ?"
+        // Revue #74 : la confirmation répète la valeur EXACTE qui sera appliquée.
+        is DriverCommand.StopAndTyres -> "Tu confirmes ton arrêt avec ${IntentArbiter.describe(command.tyres)} ?"
         DriverCommand.CancelStop -> "Tu confirmes que je retire le dernier arrêt ?"
         DriverCommand.CancelPlannedStop -> "Tu confirmes : on supprime l'arrêt prévu ?"
-        is DriverCommand.Tyres -> if (command.atStart || command.current) "Tu confirmes tes pneus ?" else "Tu confirmes ce changement de pneus ?"
+        is DriverCommand.Tyres -> IntentArbiter.describe(command).let { v ->
+            if (command.atStart || command.current) "Tu confirmes : $v ?" else "Tu confirmes le changement pour $v ?"
+        }
         DriverCommand.TyresChanged -> "Tu confirmes que tu as changé les pneus ?"
         is DriverCommand.TyresKept -> "Tu confirmes que tu as gardé les mêmes pneus ?"
         is DriverCommand.SetLaps -> "Tu confirmes : course de ${command.laps} tours ?"

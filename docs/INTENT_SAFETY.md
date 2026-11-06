@@ -39,3 +39,22 @@ Chaque phrase note : **mode configuré · intention · route · qui a répondu �
   confirmation, mode GPT (GPT réellement appelé, état local), raison affichée en mode local. 846 tests, 0 échec.
 - **Non vérifié** : en course sur la PS5 ; l'audio d'origine de chaque phrase est inconnu.
 - Pas dans cette PR (issue #73) : réconciliation des stands T7 (P0-B), diction « onze » (P1-C), débrief de l'archive.
+
+## V495 : revue #74
+
+- **Même sorte ≠ même valeur** : `IntentArbiter.key` compare la valeur (dureté et famille de gomme, position, tours,
+  arrêts), jamais le texte brut ni la seule classe. « je pars en durs » / « je pars en mediums », P8 / P11, 10 / 11
+  tours, arrêt + durs / arrêt + mediums → `Conflict` : **rien appliqué, aucune confirmation préparée** (un « oui »
+  ensuite n'applique rien) ; « J'ai entendu deux choses différentes : … ou … Je ne change rien : redis-le ».
+- **Confirmation avec la valeur exacte** : « Tu confirmes : les durs ? », « Tu confirmes ton arrêt avec les mediums ? ».
+- **Une seule transcription** (ou deux identiques) qui est une question ou une hypothèse (« est-ce que je pars en
+  durs ») : analyse, jamais une déclaration.
+- **Question pendant une attente** (« Tu as monté quelle gomme ? » puis « est-ce que medium c'est mieux ») : pas la
+  réponse ; la question reste posée. Deux gommes différentes en réponse : rien appliqué. Corrigé aussi dans
+  `RaceController.utterance` (le mot isolé du vocabulaire radio n'est plus lu comme la réponse quand la phrase libre
+  est une question). La réponse simple (« medium ») reste immédiate.
+- **Chaque phrase a sa route**, rattachée à elle (écho, réponse attendue, dialogue, analyseur compris) ; affichée sur la
+  carte « IA de l'ingénieur » avec le **mode choisi**. La carte Nano s'appelle « Gemini Nano (sur le téléphone, hors ligne) ».
+- Mode GPT : une question de pilotage reçoit le cliché des outils (tours mesurés, virages…) — testé avec un
+  fournisseur SIMULÉ, pas un appel réseau réel.
+- `IntentSafetyReviewTest` (8). 854 tests, 0 échec.

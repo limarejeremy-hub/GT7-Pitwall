@@ -846,12 +846,17 @@ class RaceController(
      */
     fun utterance(text: String, original: String = text, source: CommandSource = CommandSource.VOICE): List<EngineerMessage> {
         val echo = EngineerMessage("Toi : $text", Priority.INFO, MessageCategory.DRIVER)
-        // « La C », « B » juste après « Course de 11 tours : B ou C ? » : c'est la réponse.
-        (seriesAnswer(original) ?: seriesAnswer(text))?.let { return listOf(echo) + chooseSeries(it) }
-        // « Course » seul, juste après « tendres : course, sport ou confort ? » : c'est la réponse.
-        tyreFamilyAnswer(original)?.let { return listOf(echo) + voiceCommand(it, it.text, source) }
-        // « Moyens », « medium », « course tendres » juste après « Tu as monté quelle gomme ? » : c'est la réponse.
-        (compoundAnswer(original) ?: compoundAnswer(text))?.let { return listOf(echo) + voiceCommand(it, it.text, source) }
+        // Revue #74 : si la phrase libre est une question ou une hypothèse (« est-ce que medium c'est mieux »), le mot
+        // isolé du vocabulaire radio (« medium ») n'est PAS la réponse à la question en attente.
+        val questionLike = original != text && com.gt7pitwall.core.radio.IntentArbiter.isQuestionOrHypothesis(original)
+        if (!questionLike) {
+            // « La C », « B » juste après « Course de 11 tours : B ou C ? » : c'est la réponse.
+            (seriesAnswer(original) ?: seriesAnswer(text))?.let { return listOf(echo) + chooseSeries(it) }
+            // « Course » seul, juste après « tendres : course, sport ou confort ? » : c'est la réponse.
+            tyreFamilyAnswer(original)?.let { return listOf(echo) + voiceCommand(it, it.text, source) }
+            // « Moyens », « medium », « course tendres » juste après « Tu as monté quelle gomme ? » : c'est la réponse.
+            (compoundAnswer(original) ?: compoundAnswer(text))?.let { return listOf(echo) + voiceCommand(it, it.text, source) }
+        }
         // Question de pilotage reconnue sur la phrase libre quand le vocabulaire radio l'a déformée (26/10 : « est ce
         // quelle tour sont mon » pour « puisque mes tours sont bons »). Seulement une question : jamais une commande.
         val parsed = DriverCommandParser.parse(text)
@@ -4319,6 +4324,9 @@ class RaceController(
      * La phrase répond-elle à une question que l'ingénieur vient de poser (gomme montée, famille de gomme) ? Elle va
      * alors directement au moteur, jamais écartée comme bout de phrase par la conversation (course du 26/10).
      */
+    /** Revue #74 : valeur de la gomme répondue à « Tu as monté quelle gomme ? » (null : pas une réponse de gomme). */
+    fun pendingCompoundKey(text: String): String? = compoundAnswer(text)?.let(com.gt7pitwall.core.radio.IntentArbiter::key)
+
     fun answersPendingQuestion(text: String): Boolean =
         compoundAnswer(text) != null || tyreFamilyAnswer(text) != null || seriesAnswer(text) != null
 

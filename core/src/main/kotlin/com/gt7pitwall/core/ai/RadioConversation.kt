@@ -67,16 +67,21 @@ class RadioConversation(
      * Issue #73 : chemin réellement suivi par la dernière phrase (mode choisi, intention, route, qui a répondu, pourquoi
      * GPT n'a pas été appelé). Affiché et journalisé : « GPT en course » ne se suppose plus, il se lit.
      */
-    data class RouteTrace(val mode: String, val intent: String, val route: String, val provider: String, val reason: String, val atMs: Long) {
-        val text: String get() = "mode $mode · intention $intent · route $route · réponse $provider" + (reason.takeIf { it.isNotBlank() }?.let { " · $it" } ?: "")
+    data class RouteTrace(val mode: String, val intent: String, val route: String, val provider: String, val reason: String, val atMs: Long, val phrase: String = "") {
+        val text: String get() = (phrase.takeIf { it.isNotBlank() }?.let { "« ${it.take(50)} » : " } ?: "") +
+            "mode $mode · intention $intent · route $route · réponse $provider" + (reason.takeIf { it.isNotBlank() }?.let { " · $it" } ?: "")
     }
+
+    /** Phrase en cours de traitement : chaque route est rattachée à la phrase qui l'a produite. */
+    @Volatile
+    private var currentPhrase: String = ""
 
     @Volatile
     var lastRoute: RouteTrace? = null
         private set
 
     private suspend fun noteRoute(intent: String, route: String, provider: String, reason: String) {
-        val r = RouteTrace(cloud?.mode?.name ?: "LOCAL (aucun cloud)", intent, route, provider, reason, clock())
+        val r = RouteTrace(cloud?.mode?.name ?: "LOCAL (aucun cloud)", intent, route, provider, reason, clock(), currentPhrase)
         lastRoute = r
         mutex.withLock {
             runCatching {
@@ -104,10 +109,14 @@ class RadioConversation(
         nearEngineer: Boolean = false,
     ): List<EngineerMessage> {
         mutex.withLock { race.echoSensitive = nearEngineer }
+        currentPhrase = freeText?.takeIf { it.isNotBlank() } ?: text
+        val before = lastRoute
         try {
             return heard(text, freeText, model, onThinking, addressed, nearEngineer)
         } finally {
             mutex.withLock { race.echoSensitive = false }
+            // Revue #74 : toute phrase a sa route, même les retours directs (écho, réponse attendue, dialogue, analyseur).
+            if (lastRoute === before) runCatching { noteRoute("autre", "locale directe", "moteur Pitwall", "analyseur, dialogue ou réponse attendue (GPT non sollicité)") }
         }
     }
 
@@ -128,16 +137,38 @@ class RadioConversation(
             return heard(c.rest, c.rest, model, onThinking, addressed, nearEngineer)
         }
         // Écho de l'ingénieur dans le micro du pilote (issue #45) : écarté sans réponse parlée, avant toute analyse.
-        mutex.withLock { race.echoOfEngineer(heardFree) ?: if (text != heardFree) race.echoOfEngineer(text) else null }?.let { return it }
+        mutex.withLock { race.echoOfEngineer(heardFree) ?: if (text != heardFree) race.echoOfEngineer(text) else null }?.let {
+            noteRoute("écho de l'ingénieur", "écartée", "aucune", "phrase de l'ingénieur entendue par le micro")
+            return it
+        }
         // Réponse à une question en attente (« Tu as monté quelle gomme ? » → « medium ») : au moteur, sans détour.
         // Course du 26/10 : « medium » était écarté comme bout de phrase et la gomme n'était jamais enregistrée.
-        if (mutex.withLock { race.answersPendingQuestion(heardFree) || race.answersPendingQuestion(text) }) {
+        // Revue #74 : une question ou une hypothèse n'est pas une réponse ; deux réponses différentes non plus.
+        if (!com.gt7pitwall.core.radio.IntentArbiter.isQuestionOrHypothesis(heardFree) &&
+            mutex.withLock { race.answersPendingQuestion(heardFree) || race.answersPendingQuestion(text) }
+        ) {
+            val (a, b) = mutex.withLock { race.pendingCompoundKey(text) to race.pendingCompoundKey(heardFree) }
+            if (a != null && b != null && a != b) {
+                noteRoute("réponse attendue", "désaccord, rien appliqué", "moteur Pitwall", "deux gommes différentes entendues")
+                return mutex.withLock { race.localReply(heardFree, "J'ai entendu deux gommes différentes. Redis simplement la gomme montée.") }
+            }
+            noteRoute("réponse à la question en attente", "locale", "moteur Pitwall", "")
             return mutex.withLock { race.utterance(text, heardFree, source) }
         }
         // Issue #73 : la phrase LIBRE décide du sens. Question, hypothèse, comparaison ou pilotage → analyse sans aucune
         // modification ; modification que la phrase libre ne confirme pas → « oui » exigé. Avant tout autre chemin.
         when (val d = com.gt7pitwall.core.radio.IntentArbiter.decide(text, freeText, DriverCommandParser.parse(text))) {
             is com.gt7pitwall.core.radio.IntentArbiter.Decision.Analysis -> return analysis(d, onThinking, myTurn)
+            is com.gt7pitwall.core.radio.IntentArbiter.Decision.Conflict -> {
+                noteRoute("déclaration contradictoire", "rien appliqué", "moteur Pitwall", d.reason)
+                return mutex.withLock {
+                    race.localReply(
+                        heardFree,
+                        "J'ai entendu deux choses différentes : ${com.gt7pitwall.core.radio.IntentArbiter.describe(d.vocab)} ou " +
+                            "${com.gt7pitwall.core.radio.IntentArbiter.describe(d.free)}. Je ne change rien : redis-le simplement.",
+                    )
+                }
+            }
             is com.gt7pitwall.core.radio.IntentArbiter.Decision.Clarify -> {
                 noteRoute("déclaration incertaine", "confirmation demandée", "moteur Pitwall", d.reason)
                 return mutex.withLock { race.utterance(text, heardFree, CommandSource.AMBIGUOUS) }

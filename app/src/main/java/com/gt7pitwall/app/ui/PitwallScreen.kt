@@ -241,7 +241,7 @@ fun PitwallScreen(
             },
             listeningOn = micLabel,
         )
-        CloudAiCard(cloudAi, onAiMode)
+        CloudAiCard(cloudAi, onAiMode, radioRoute)
         ChatGptCard(cloudAi, voice)
         HumanRadioCard(engine, settings)
         DrivingCard(engine)
@@ -258,7 +258,6 @@ fun PitwallScreen(
             onTest = { gemini.selfTest(engine::sayAiTest) },
             onAsk = engine::askAiFromScreen,
             trace = aiTrace,
-            route = radioRoute,
         )
     }
 
@@ -1855,10 +1854,9 @@ private fun AiCard(
     onTest: () -> Unit,
     trace: AiTrace?,
     onAsk: (String) -> Unit,
-    route: String? = null,
 ) {
     var question by rememberSaveable { mutableStateOf("") }
-    PitCard("Ingénieur IA (Gemini Nano)") {
+    PitCard("Gemini Nano (sur le téléphone, hors ligne)") {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("Questions libres à la radio")
@@ -1899,8 +1897,6 @@ private fun AiCard(
                 Button(onClick = { if (question.isNotBlank()) onAsk(question.trim()) }) { Text("Envoyer") }
             }
             testResult?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-            // Issue #73 : chemin réel de la dernière phrase (GPT appelé ou non, et pourquoi).
-            route?.let { Text("Dernière phrase radio : $it", color = PitColors.Muted, style = MaterialTheme.typography.bodySmall) }
             trace?.let { t ->
                 Text("Dernière question : « ${t.question} »", style = MaterialTheme.typography.bodySmall)
                 Text(
@@ -2203,7 +2199,7 @@ internal fun shareExport(
  * dernière erreur et retour au moteur local. Configuration Firebase saisie ici, gardée chiffrée sur le téléphone.
  */
 @Composable
-private fun CloudAiCard(cloud: com.gt7pitwall.app.ai.CloudAi, onMode: (com.gt7pitwall.core.ai.AiMode) -> Unit) {
+private fun CloudAiCard(cloud: com.gt7pitwall.app.ai.CloudAi, onMode: (com.gt7pitwall.core.ai.AiMode) -> Unit, route: String? = null) {
     val status by cloud.status.collectAsStateWithLifecycle()
     val trace by cloud.trace.collectAsStateWithLifecycle()
     val tick by cloud.tick.collectAsStateWithLifecycle()
@@ -2243,6 +2239,9 @@ private fun CloudAiCard(cloud: com.gt7pitwall.app.ai.CloudAi, onMode: (com.gt7pi
         }
         Text(label, color = color, fontWeight = FontWeight.Bold)
         status.detail?.let { Text(it, color = PitColors.Muted, style = MaterialTheme.typography.bodySmall) }
+        // Issue #73 / revue #74 : chemin réel de la DERNIÈRE phrase radio (rattaché à elle), GPT appelé ou non et pourquoi.
+        Text("Mode choisi : ${mode.label}", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+        route?.let { Text("Dernière phrase radio — $it", color = PitColors.Muted, style = MaterialTheme.typography.bodySmall) }
         // Relu à chaque requête (tick) : compteurs réels, jamais un quota supposé.
         tick.let {
             listOf(cloud.lite, cloud.flash).forEach { m ->
