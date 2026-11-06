@@ -96,6 +96,12 @@ enum class CommandSource {
     /** Reconnaissance vocale (Vosk ou Google) puis analyseur. */
     VOICE,
 
+    /**
+     * Issue #73 : la transcription libre et le vocabulaire radio ne disent pas la même chose. Une modification de course
+     * n'est jamais appliquée sans le « oui » du pilote.
+     */
+    AMBIGUOUS,
+
     /** Phrase reformulée par Gemini (« COMMANDE: … ») : jamais exécutée sans confirmation du pilote. */
     GEMINI,
 
@@ -272,7 +278,7 @@ object CommandGate {
         if (source == CommandSource.CONVERSATION && tyreAnswer && v is Vetting.Execute) return v
         val startTyres = command is DriverCommand.Tyres && (command.atStart || command.current) && ctx.noStopYet
         if (source == CommandSource.CONVERSATION && startTyres && v is Vetting.Execute) return v
-        if ((source == CommandSource.GEMINI || source == CommandSource.CONVERSATION) && v is Vetting.Execute) {
+        if ((source == CommandSource.GEMINI || source == CommandSource.CONVERSATION || source == CommandSource.AMBIGUOUS) && v is Vetting.Execute) {
             return Vetting.Confirm(command, confirmation(command))
         }
         // Phrase commencée pendant la voix de l'ingénieur : une modification de course n'est jamais appliquée sans
@@ -377,10 +383,14 @@ object CommandGate {
 
     /** Question de confirmation courte, à dire à la radio. */
     fun confirmation(command: DriverCommand): String = when (command) {
-        DriverCommand.DeclareStop, is DriverCommand.StopAndTyres -> "Tu confirmes que tu as effectué ton arrêt ?"
+        DriverCommand.DeclareStop -> "Tu confirmes que tu as effectué ton arrêt ?"
+        // Revue #74 : la confirmation répète la valeur EXACTE qui sera appliquée.
+        is DriverCommand.StopAndTyres -> "Tu confirmes ton arrêt avec ${IntentArbiter.describe(command.tyres)} ?"
         DriverCommand.CancelStop -> "Tu confirmes que je retire le dernier arrêt ?"
         DriverCommand.CancelPlannedStop -> "Tu confirmes : on supprime l'arrêt prévu ?"
-        is DriverCommand.Tyres -> if (command.atStart || command.current) "Tu confirmes tes pneus ?" else "Tu confirmes ce changement de pneus ?"
+        is DriverCommand.Tyres -> IntentArbiter.describe(command).let { v ->
+            if (command.atStart || command.current) "Tu confirmes : $v ?" else "Tu confirmes le changement pour $v ?"
+        }
         DriverCommand.TyresChanged -> "Tu confirmes que tu as changé les pneus ?"
         is DriverCommand.TyresKept -> "Tu confirmes que tu as gardé les mêmes pneus ?"
         is DriverCommand.SetLaps -> "Tu confirmes : course de ${command.laps} tours ?"
