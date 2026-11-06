@@ -299,6 +299,10 @@ class PitwallEngine(
     /** Dernier échange avec l'IA (diagnostic affiché dans la carte « Ingénieur IA »). */
     val aiTrace: StateFlow<AiTrace?> = _aiTrace.asStateFlow()
 
+    /** Issue #73 : route réellement suivie par la dernière phrase radio (mode, intention, qui a répondu, pourquoi). */
+    private val _radioRoute = MutableStateFlow<String?>(null)
+    val radioRoute: StateFlow<String?> = _radioRoute.asStateFlow()
+
     /**
      * Diagnostic des champs 0x84 / 0x86 (outils de développement) : observe seulement, rien n'est transmis à la
      * stratégie ni annoncé à la radio.
@@ -620,6 +624,7 @@ class PitwallEngine(
                         mutex.withLock { publish(force = true) }
                         val aiTrace = conversation.lastTrace?.takeIf { it !== before }
                         aiTrace?.let { _aiTrace.value = it; journalAi(it); onAiTrace(it) }
+                        conversation.lastRoute?.let { _radioRoute.value = it.text }
                         trace.mark(
                             if (aiTrace?.modelId != null && !aiTrace.fallback) com.gt7pitwall.core.radio.LatencyTrace.Step.AI else com.gt7pitwall.core.radio.LatencyTrace.Step.ENGINE,
                             answeredAt,

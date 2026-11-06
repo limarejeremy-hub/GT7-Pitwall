@@ -96,6 +96,12 @@ enum class CommandSource {
     /** Reconnaissance vocale (Vosk ou Google) puis analyseur. */
     VOICE,
 
+    /**
+     * Issue #73 : la transcription libre et le vocabulaire radio ne disent pas la même chose. Une modification de course
+     * n'est jamais appliquée sans le « oui » du pilote.
+     */
+    AMBIGUOUS,
+
     /** Phrase reformulée par Gemini (« COMMANDE: … ») : jamais exécutée sans confirmation du pilote. */
     GEMINI,
 
@@ -272,7 +278,7 @@ object CommandGate {
         if (source == CommandSource.CONVERSATION && tyreAnswer && v is Vetting.Execute) return v
         val startTyres = command is DriverCommand.Tyres && (command.atStart || command.current) && ctx.noStopYet
         if (source == CommandSource.CONVERSATION && startTyres && v is Vetting.Execute) return v
-        if ((source == CommandSource.GEMINI || source == CommandSource.CONVERSATION) && v is Vetting.Execute) {
+        if ((source == CommandSource.GEMINI || source == CommandSource.CONVERSATION || source == CommandSource.AMBIGUOUS) && v is Vetting.Execute) {
             return Vetting.Confirm(command, confirmation(command))
         }
         // Phrase commencée pendant la voix de l'ingénieur : une modification de course n'est jamais appliquée sans

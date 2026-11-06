@@ -63,6 +63,31 @@ class RadioConversation(
     var thinking: Boolean = false
         private set
 
+    /**
+     * Issue #73 : chemin réellement suivi par la dernière phrase (mode choisi, intention, route, qui a répondu, pourquoi
+     * GPT n'a pas été appelé). Affiché et journalisé : « GPT en course » ne se suppose plus, il se lit.
+     */
+    data class RouteTrace(val mode: String, val intent: String, val route: String, val provider: String, val reason: String, val atMs: Long) {
+        val text: String get() = "mode $mode · intention $intent · route $route · réponse $provider" + (reason.takeIf { it.isNotBlank() }?.let { " · $it" } ?: "")
+    }
+
+    @Volatile
+    var lastRoute: RouteTrace? = null
+        private set
+
+    private suspend fun noteRoute(intent: String, route: String, provider: String, reason: String) {
+        val r = RouteTrace(cloud?.mode?.name ?: "LOCAL (aucun cloud)", intent, route, provider, reason, clock())
+        lastRoute = r
+        mutex.withLock {
+            runCatching {
+                race.journal.record(
+                    com.gt7pitwall.core.race.JournalType.DECISION, com.gt7pitwall.core.race.JournalSource.ENGINE, "Route radio : ${r.text}",
+                    details = mapOf("mode" to r.mode, "intention" to intent, "route" to route, "fournisseur" to provider, "raison" to reason),
+                )
+            }
+        }
+    }
+
     /** Modèles cloud (Flash-Lite, Flash 3.8) ; null ou non configurés : la radio fonctionne comme avant, sans cloud. */
     @Volatile
     var cloud: AiRouter? = null
@@ -109,6 +134,16 @@ class RadioConversation(
         if (mutex.withLock { race.answersPendingQuestion(heardFree) || race.answersPendingQuestion(text) }) {
             return mutex.withLock { race.utterance(text, heardFree, source) }
         }
+        // Issue #73 : la phrase LIBRE décide du sens. Question, hypothèse, comparaison ou pilotage → analyse sans aucune
+        // modification ; modification que la phrase libre ne confirme pas → « oui » exigé. Avant tout autre chemin.
+        when (val d = com.gt7pitwall.core.radio.IntentArbiter.decide(text, freeText, DriverCommandParser.parse(text))) {
+            is com.gt7pitwall.core.radio.IntentArbiter.Decision.Analysis -> return analysis(d, onThinking, myTurn)
+            is com.gt7pitwall.core.radio.IntentArbiter.Decision.Clarify -> {
+                noteRoute("déclaration incertaine", "confirmation demandée", "moteur Pitwall", d.reason)
+                return mutex.withLock { race.utterance(text, heardFree, CommandSource.AMBIGUOUS) }
+            }
+            com.gt7pitwall.core.radio.IntentArbiter.Decision.Proceed -> Unit
+        }
         // Actes de dialogue (oubli, identité, préférence, désaccord, décision, hypothèse) : l'ingénieur répond lui-même.
         val cloudReady = cloud?.let { it.mode.cloudOrder(false).isNotEmpty() && it.available(false) } == true
         mutex.withLock { race.dialogue(heardFree, clock(), cloudReady) }?.let { return it }
@@ -142,8 +177,15 @@ class RadioConversation(
         // (« tu penses que ma stratégie tient la route ? ») : ce ne sont pas des demandes de chiffre.
         val normalized = com.gt7pitwall.core.radio.DriverCommandParser.normalize(heardFree)
         val opinion = OPINION.containsMatchIn(normalized) || IntentClassifier.helpTopic(heardFree) != null
+        // Issue #73 : en mode « ChatGPT via ton forfait », une question d'ANALYSE de pilotage (cause, conseil) va à GPT avec
+        // ses outils ; les questions d'état (carburant, position, plan) restent instantanées et locales.
+        val gptMode = cloud?.let { it.mode == AiMode.CHATGPT_PLAN && it.available(complex = true) } == true
+        if (gptMode && quick is DriverCommand.Ask && quick.query in com.gt7pitwall.core.engineer.DrivingAnalysis.QUERIES) {
+            return analysis(com.gt7pitwall.core.radio.IntentArbiter.Decision.Analysis(heardFree, com.gt7pitwall.core.radio.IntentArbiter.Topic.COACHING, "analyse de pilotage"), onThinking, myTurn)
+        }
         // Une question de pilotage (« tu trouves que je conduis bien ? ») reste mesurée par le moteur, même posée en avis.
         if (quick is DriverCommand.Ask && quick.query in localQueries && (!opinion || quick.query in com.gt7pitwall.core.engineer.DrivingAnalysis.QUERIES)) {
+            noteRoute("question d'état ${quick.query.name.lowercase()}", "locale instantanée", "moteur Pitwall", if (cloud?.mode == AiMode.CHATGPT_PLAN) "état du plan : réponse locale immédiate (pas d'attente GPT)" else "")
             strategyDialogue(text, freeText)?.let { return it }
             return mutex.withLock { race.utterance(text, heardFree, source) }
         }
@@ -173,6 +215,48 @@ class RadioConversation(
             }
         }
         return (listOfNotNull(notice) + legacy(text, freeText, model, onThinking, source))
+    }
+
+    /**
+     * Issue #73 : réponse d'ANALYSE (question, hypothèse, comparaison, pilotage) : GPT avec ses outils quand il est choisi
+     * et disponible, sinon le moteur local. Aucune modification de course sur ce chemin, quelle que soit la phrase.
+     */
+    private suspend fun analysis(d: com.gt7pitwall.core.radio.IntentArbiter.Decision.Analysis, onThinking: (EngineerMessage) -> Unit, myTurn: Long): List<EngineerMessage> {
+        val topic = when (d.topic) {
+            com.gt7pitwall.core.radio.IntentArbiter.Topic.COACHING -> Topic.COACHING
+            com.gt7pitwall.core.radio.IntentArbiter.Topic.TYRES -> Topic.TYRES
+            com.gt7pitwall.core.radio.IntentArbiter.Topic.STRATEGY -> Topic.PLAN
+        }
+        val turn = ConversationRouter.Turn(d.question, topic, complex = true, ask = if (topic == Topic.COACHING) null else StrategyDialogue.Ask.Best)
+        val router = cloud?.takeIf { it.mode.cloudOrder(true).isNotEmpty() }
+        if (router != null && router.available(complex = true)) {
+            when (val r = converse(router, turn, onThinking, myTurn)) {
+                is Converse.Done -> {
+                    noteRoute("analyse (${d.reason})", "IA", lastTrace?.let { if (it.fallback) "moteur Pitwall (repli)" else (it.modelId ?: it.backend.label) } ?: "IA", "")
+                    return r.messages
+                }
+                Converse.Stale -> return emptyList()
+                is Converse.Failed -> Unit
+            }
+        }
+        val why = when {
+            router == null -> "aucun modèle cloud choisi (mode ${cloud?.mode?.name ?: "local"})"
+            !router.available(complex = true) -> router.mode.cloudOrder(true).joinToString(" ; ") { b ->
+                "${b.label} : " + (router.provider(b)?.takeIf { !it.ready }?.status ?: router.usage.blockedReason(b) ?: "indisponible")
+            }
+            else -> "l'IA n'a pas donné de réponse vérifiée"
+        }
+        noteRoute("analyse (${d.reason})", "locale", "moteur Pitwall", "GPT non appelé ou écarté : $why")
+        if (topic == Topic.COACHING) {
+            com.gt7pitwall.core.engineer.DrivingAnalysis.classify(d.question)?.let { q ->
+                return mutex.withLock { race.voiceCommand(DriverCommand.Ask(q), d.question, CommandSource.VOICE) }
+            }
+        }
+        strategyDialogue(d.question, d.question)?.let { return it }
+        return mutex.withLock {
+            val a = race.engineAnalysis(turn)
+            race.localReply(d.question, a ?: "Je ne change rien. Pour te répondre précisément, redis-moi la question en une phrase courte.")
+        }
     }
 
     /** Chemin sans modèle cloud : moteur, analyseur, garde des commandes et Gemini Nano (inchangé). */

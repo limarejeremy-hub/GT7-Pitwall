@@ -155,6 +155,7 @@ fun PitwallScreen(
     val aiDetail by gemini.detail.collectAsStateWithLifecycle()
     val aiTest by gemini.testResult.collectAsStateWithLifecycle()
     val aiTrace by engine.aiTrace.collectAsStateWithLifecycle()
+    val radioRoute by engine.radioRoute.collectAsStateWithLifecycle()
 
     val voiceRadioCard: @Composable () -> Unit = {
         VoiceRadioCard(
@@ -257,6 +258,7 @@ fun PitwallScreen(
             onTest = { gemini.selfTest(engine::sayAiTest) },
             onAsk = engine::askAiFromScreen,
             trace = aiTrace,
+            route = radioRoute,
         )
     }
 
@@ -1853,6 +1855,7 @@ private fun AiCard(
     onTest: () -> Unit,
     trace: AiTrace?,
     onAsk: (String) -> Unit,
+    route: String? = null,
 ) {
     var question by rememberSaveable { mutableStateOf("") }
     PitCard("Ingénieur IA (Gemini Nano)") {
@@ -1896,6 +1899,8 @@ private fun AiCard(
                 Button(onClick = { if (question.isNotBlank()) onAsk(question.trim()) }) { Text("Envoyer") }
             }
             testResult?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            // Issue #73 : chemin réel de la dernière phrase (GPT appelé ou non, et pourquoi).
+            route?.let { Text("Dernière phrase radio : $it", color = PitColors.Muted, style = MaterialTheme.typography.bodySmall) }
             trace?.let { t ->
                 Text("Dernière question : « ${t.question} »", style = MaterialTheme.typography.bodySmall)
                 Text(
