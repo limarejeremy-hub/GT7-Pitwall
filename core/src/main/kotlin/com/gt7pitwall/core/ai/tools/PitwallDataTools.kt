@@ -27,6 +27,10 @@ object PitwallDataTools {
         TYRES("get_tyre_strategy", "Pneus : gomme, âge du train, prochaine gomme, performance estimée des gommes sur l'historique comparable.", FactTopic.TYRES),
         LAPS("get_recent_laps", "Derniers tours mesurés : chrono, carburant consommé, blocages, patinages, vitesse maximale, antipatinage.", FactTopic.LAPS),
         HISTORY("get_session_history", "Historique comparable : sessions archivées, justesse des prévisions, dernier bilan, profil de pilotage.", FactTopic.HISTORY),
+        CORNERS("get_corner_comparison", "Comparaison par virage de la session : temps perdu sur le meilleur passage du même virage, vitesse minimale, blocages, patinages, cause probable et confiance ; pneus ou pilotage ; motricité. Virages non comparables signalés.", FactTopic.CORNERS),
+        DEBRIEF("get_driver_debrief", "Débrief : dernier bilan de course (carburant prévu/mesuré, arrêts, pertes aux stands, places) et constats de pilotage mesurés.", FactTopic.DEBRIEF),
+        START_TYRE("get_start_tyre_advice", "Conseil de gomme de départ déjà calculé par le moteur (statut, base, départs permis). Aucun conseil inventé s'il n'existe pas.", FactTopic.START_TYRE),
+        SPORT("get_current_sport_events", "Courses Sport A/B/C de la semaine depuis le cache local du programme : dates, circuit, tours, pneus autorisés/imposés, arrêts, multiplicateurs, BoP, avec source et statut de chaque champ. Aucune recherche web.", FactTopic.SPORT),
         ;
 
         companion object {
@@ -126,8 +130,13 @@ class ToolSnapshot(
     private val byTopic: Map<FactTopic, List<ToolFact>>,
     private val conflicts: List<String> = emptyList(),
     private val maxAgeMs: Long = MAX_AGE_MS,
+    /** V492 : sections d'analyse (virages, débrief, gomme de départ, Sport), déjà étiquetées par [AnalysisFacts]. */
+    private val sections: Map<FactTopic, AnalysisFacts.Section> = emptyMap(),
 ) {
     fun facts(t: FactTopic): List<ToolFact> = byTopic[t].orEmpty()
+
+    /** V493 : règles Sport structurées du cliché, pour le contrôle du sens des réponses. */
+    val sportRules: List<AnalysisFacts.SportRule> get() = sections[FactTopic.SPORT]?.sportRules.orEmpty()
 
     /** Phrases sans étiquette (provenance inconnue) : jamais servies, comptées pour le diagnostic. */
     val untagged: Int get() = facts(FactTopic.OTHER).size
@@ -136,6 +145,13 @@ class ToolSnapshot(
         val topic = tool.topic ?: return ToolResult.unknown(tool.toolName, observedAtMs)
         if (nowMs - observedAtMs > maxAgeMs) {
             return ToolResult(tool.toolName, true, observedAtMs, telemetryLive, lap, emptyList(), listOf("cliché périmé : repose la question"), emptyList(), stale = true)
+        }
+        sections[topic]?.let { sec ->
+            val missing = sec.missing + if (sec.facts.isEmpty()) listOf("aucun fait disponible sur ce sujet") else emptyList()
+            return ToolResult(tool.toolName, true, observedAtMs, telemetryLive, lap, sec.facts, missing.distinct(), sec.conflicts)
+        }
+        if (topic in ANALYSIS_TOPICS) {
+            return ToolResult(tool.toolName, true, observedAtMs, telemetryLive, lap, emptyList(), listOf("analyse non fournie pour cette question"), emptyList())
         }
         val f = facts(topic)
         val missing = buildList {
@@ -150,8 +166,15 @@ class ToolSnapshot(
     companion object {
         /** Au-delà, le cliché ne vaut plus pour la question (la radio écarte de toute façon une réponse tardive). */
         const val MAX_AGE_MS = 60_000L
+        private val ANALYSIS_TOPICS = setOf(FactTopic.CORNERS, FactTopic.DEBRIEF, FactTopic.START_TYRE, FactTopic.SPORT)
 
-        fun from(facts: AiFacts, telemetryLive: Boolean, lap: Int?, observedAtMs: Long): ToolSnapshot {
+        fun from(
+            facts: AiFacts,
+            telemetryLive: Boolean,
+            lap: Int?,
+            observedAtMs: Long,
+            sections: Map<FactTopic, AnalysisFacts.Section> = emptyMap(),
+        ): ToolSnapshot {
             val map = linkedMapOf<FactTopic, MutableList<ToolFact>>()
             val byText = facts.tagged.associateBy { it.text }
             for (line in facts.lines) {
@@ -161,7 +184,7 @@ class ToolSnapshot(
             }
             // Constats de pilotage : calculés par le moteur à partir de la télémétrie des tours.
             facts.observations.forEach { o -> map.getOrPut(FactTopic.LAPS) { mutableListOf() } += ToolFact(o.text, FactProvenance.CALCULATED, "constats de pilotage (télémétrie des tours)") }
-            return ToolSnapshot(observedAtMs, telemetryLive, lap, map, facts.conflicts)
+            return ToolSnapshot(observedAtMs, telemetryLive, lap, map, facts.conflicts, sections = sections)
         }
     }
 }

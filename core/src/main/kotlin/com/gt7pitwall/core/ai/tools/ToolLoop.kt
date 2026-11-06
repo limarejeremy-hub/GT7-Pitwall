@@ -22,7 +22,19 @@ class ToolLoop(
 ) {
     data class Call(val name: String, val known: Boolean)
 
-    data class Outcome(val result: AiResult, val calls: List<Call>, val rounds: Int) {
+    /** Un aller-retour : durée totale, premier octet, taille de la requête (caractères), appels demandés. */
+    data class Round(val ms: Long, val ttfbMs: Long?, val requestChars: Int, val calls: Int)
+
+    data class Outcome(val result: AiResult, val calls: List<Call>, val rounds: Int, val stats: List<Round> = emptyList()) {
+        val totalMs: Long get() = stats.sumOf { it.ms }
+
+        /** Résumé lisible (latence par aller-retour), sans aucun contenu. */
+        val timing: String
+            get() = stats.mapIndexed { i, r ->
+                "aller-retour ${i + 1} : ${r.ms} ms" + (r.ttfbMs?.let { " (1er octet $it ms)" } ?: "") + ", ${r.requestChars} car." +
+                    (if (r.calls > 0) ", ${r.calls} outil(s)" else "")
+            }.joinToString(" ; ")
+
         /** Le serveur a refusé la requête AVEC outils : à retenter sans outils. */
         val toolsRejected: Boolean get() = rounds == 1 && calls.isEmpty() && (result as? AiResult.Failure)?.kind == FailureKind.NOT_CONFIGURED
     }
@@ -32,16 +44,20 @@ class ToolLoop(
         val tools = JSONArray().put(PitwallDataTools.namespace())
         val evidence = StringBuilder()
         val calls = mutableListOf<Call>()
+        val stats = mutableListOf<Round>()
         for (round in 1..maxRounds) {
-            val turn = send(ResponsesStream.requestBody(model, instructions, input, tools))
-            turn.failure?.let { return Outcome(it, calls, round) }
+            val body = ResponsesStream.requestBody(model, instructions, input, tools)
+            val t0 = clock()
+            val turn = send(body)
+            stats += Round(clock() - t0, turn.ttfbMs, body.length, turn.calls.size)
+            turn.failure?.let { return Outcome(it, calls, round, stats) }
             if (turn.calls.isEmpty()) {
                 val text = turn.text.trim()
                 val r = if (text.isEmpty()) AiResult.Failure(FailureKind.EMPTY) else AiResult.Text(text, evidence.toString().trim())
-                return Outcome(r, calls, round)
+                return Outcome(r, calls, round, stats)
             }
             for (fc in turn.calls) {
-                if (calls.size >= maxCalls) return Outcome(AiResult.Failure(FailureKind.OTHER, "trop d'appels d'outils (${calls.size})"), calls, round)
+                if (calls.size >= maxCalls) return Outcome(AiResult.Failure(FailureKind.OTHER, "trop d'appels d'outils (${calls.size})"), calls, round, stats)
                 val res = PitwallDataTools.call(fc.name, snapshot, clock())
                 input.put(fc.toInputItem())
                 input.put(JSONObject().put("type", "function_call_output").put("call_id", fc.callId).put("output", res.toJson()))
@@ -49,7 +65,7 @@ class ToolLoop(
                 calls += Call(fc.name.take(60), res.known)
             }
         }
-        return Outcome(AiResult.Failure(FailureKind.OTHER, "trop d'allers-retours d'outils ($maxRounds)"), calls, maxRounds)
+        return Outcome(AiResult.Failure(FailureKind.OTHER, "trop d'allers-retours d'outils ($maxRounds)"), calls, maxRounds, stats)
     }
 
     companion object {

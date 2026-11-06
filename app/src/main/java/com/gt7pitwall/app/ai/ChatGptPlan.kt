@@ -128,6 +128,19 @@ class ChatGptPlan(private val context: Context, private val usage: AiUsage, priv
     @Volatile
     private var receiver: LoopbackReceiver? = null
 
+    /** V492 : latence bout en bout mesurée sur le téléphone (en mémoire seulement), avec et sans outils. */
+    val toolLatency = com.gt7pitwall.core.ai.tools.LatencyStats()
+    val plainLatency = com.gt7pitwall.core.ai.tools.LatencyStats()
+
+    fun latencySummary(): String = listOfNotNull(
+        toolLatency.summary()?.let { "avec outils $it" },
+        plainLatency.summary()?.let { "sans outils $it" },
+    ).joinToString(" · ").ifEmpty { "aucune mesure encore" }
+
+    /** V492 : faits et analyses réels du moteur (programme Sport en cache…), fournis par l'application. */
+    @Volatile
+    var liveSnapshot: (suspend () -> com.gt7pitwall.core.ai.tools.ToolSnapshot)? = null
+
     /** #70 : derniers outils appelés par GPT (noms seulement), pour la carte. */
     private val _lastTools = MutableStateFlow<String?>(null)
     val lastTools: StateFlow<String?> = _lastTools.asStateFlow()
@@ -153,6 +166,7 @@ class ChatGptPlan(private val context: Context, private val usage: AiUsage, priv
         allowPlainFallback: Boolean,
     ): AiResult =
         withContext(Dispatchers.IO) {
+            val t0 = System.currentTimeMillis()
             val r = try {
                 toolLoop(systemInstruction, prompt, snapshot, allowPlainFallback)
             } catch (e: CancellationException) {
@@ -162,6 +176,7 @@ class ChatGptPlan(private val context: Context, private val usage: AiUsage, priv
             } catch (e: IOException) {
                 AiResult.Failure(FailureKind.NETWORK)
             }
+            if (r is AiResult.Text) toolLatency.record(System.currentTimeMillis() - t0)
             onResult(r)
             r
         }
@@ -173,6 +188,7 @@ class ChatGptPlan(private val context: Context, private val usage: AiUsage, priv
         val out = com.gt7pitwall.core.ai.tools.ToolLoop({ body -> streamTurn(c, body) }).run(model, instructions, prompt, snapshot)
         _lastTools.value = if (out.calls.isEmpty()) "aucun outil appelé" else
             "${out.calls.size} outil(s) : " + out.calls.joinToString { it.name + if (it.known) "" else " (inconnu, refusé)" }
+        if (out.stats.isNotEmpty()) _lastTools.value = "${_lastTools.value} · ${out.timing}"
         if (out.toolsRejected) {
             val why = SignInTrace.redact((out.result as? AiResult.Failure)?.detail ?: "HTTP 400")
             if (!allowPlainFallback) {
@@ -192,35 +208,74 @@ class ChatGptPlan(private val context: Context, private val usage: AiUsage, priv
             .header("Accept", "text/event-stream")
             .post(body.toRequestBody(JSON))
             .build()
+        val t0 = System.currentTimeMillis()
         return execute(http.newCall(req)) { resp ->
             if (!resp.isSuccessful) return@execute ResponsesStream.Turn("", emptyList(), ResponsesStream.httpFailure(resp.code, resp.body.string().take(4000)))
             val reader = ResponsesStream.Reader()
             val source = resp.body.source()
-            while (true) reader.line(source.readUtf8Line() ?: break)
+            var ttfb: Long? = null
+            while (true) {
+                val l = source.readUtf8Line() ?: break
+                if (ttfb == null) ttfb = System.currentTimeMillis() - t0
+                reader.line(l)
+            }
             reader.end()
-            reader.turn
+            reader.turn.copy(ttfbMs = ttfb)
         }
     }
 
     /** #70 : même question, faits SEULEMENT via les outils (simulation) : prouve que le forfait accepte les outils. */
-    fun testTools() {
+    fun testTools() = runToolTest(
+        label = "Essai des outils : « ${FuelPlanCheck.QUESTION} » (faits de simulation, via outils seulement)",
+        question = FuelPlanCheck.QUESTION,
+        prompt = FuelPlanCheck.toolsPrompt,
+        snapshot = { FuelPlanCheck.snapshot(now()) },
+        local = { FuelPlanCheck.LOCAL_ANSWER },
+    )
+
+    /** V492 : « Quelle course Sport cette semaine ? » sur le VRAI programme en cache du téléphone (aucune PS5 requise). */
+    fun testSport() {
+        val live = liveSnapshot ?: run {
+            _testResult.value = "Données Pitwall indisponibles pour l'essai."
+            return
+        }
+        runToolTest(
+            label = "Essai sur tes données : « ${com.gt7pitwall.core.ai.tools.VegaCheck.SPORT_QUESTION} » (programme Sport en cache)",
+            question = com.gt7pitwall.core.ai.tools.VegaCheck.SPORT_QUESTION,
+            prompt = com.gt7pitwall.core.ai.tools.VegaCheck.sportPrompt,
+            snapshot = live,
+            local = { snap -> com.gt7pitwall.core.ai.tools.VegaCheck.sportLocalAnswer(snap) },
+            semantic = { snap, ans -> com.gt7pitwall.core.ai.tools.SportSemantics.problem(ans, snap.sportRules) },
+        )
+    }
+
+    private fun runToolTest(
+        label: String,
+        question: String,
+        prompt: String,
+        snapshot: suspend () -> com.gt7pitwall.core.ai.tools.ToolSnapshot,
+        local: (com.gt7pitwall.core.ai.tools.ToolSnapshot) -> String,
+        semantic: (com.gt7pitwall.core.ai.tools.ToolSnapshot, String) -> String? = { _, _ -> null },
+    ) {
         scope.launch {
             _lastTools.value = null
-            _testResult.value = "Essai des outils : « ${FuelPlanCheck.QUESTION} » (faits de simulation, via outils seulement)…"
+            _testResult.value = "$label…"
             val t0 = System.currentTimeMillis()
             var asked = false
+            val snap = snapshot()
             val r = if (!ready || !usage.canSend(backend)) {
                 AiResult.Failure(FailureKind.NOT_CONFIGURED, status)
             } else {
                 asked = true
                 usage.onSent(backend)
-                (withTimeoutOrNull(TEST_TIMEOUT_MS) { completeWithTools(FuelPlanCheck.instructions, FuelPlanCheck.toolsPrompt, FuelPlanCheck.snapshot(now()), allowPlainFallback = false) }
+                (withTimeoutOrNull(TEST_TIMEOUT_MS) { completeWithTools(FuelPlanCheck.instructions, prompt, snap, allowPlainFallback = false) }
                     ?: AiResult.Failure(FailureKind.TIMEOUT)).also { res ->
                     val ms = System.currentTimeMillis() - t0
                     if (res is AiResult.Failure) usage.onFailure(backend, res, ms) else usage.onSuccess(backend, ms)
                 }
             }
-            val o = FuelPlanCheck.checkWithTools(r)
+            val v = com.gt7pitwall.core.ai.tools.VegaCheck.withTools(question, r, local(snap)) { ans -> semantic(snap, ans) }
+            val o = FuelPlanCheck.Outcome(v.answer, v.fromChatGpt, v.verdict)
             _lastAnswer.value = o
             val unsupported = _lastTools.value?.startsWith("mode outils non pris en charge") == true
             val who = when {
@@ -229,7 +284,7 @@ class ChatGptPlan(private val context: Context, private val usage: AiUsage, priv
                 asked -> "GPT interrogé, outils non utilisés ou réponse écartée → secours local"
                 else -> "GPT non interrogé → secours local"
             }
-            _testResult.value = "$who : « ${o.answer} »\n${o.verdict} · ${_lastTools.value ?: "aucun outil"} · ${System.currentTimeMillis() - t0} ms"
+            _testResult.value = "$who : « ${o.answer} »\n${o.verdict} · ${_lastTools.value ?: "aucun outil"} · ${System.currentTimeMillis() - t0} ms\nLatence : ${latencySummary()}"
         }
     }
 
@@ -245,6 +300,7 @@ class ChatGptPlan(private val context: Context, private val usage: AiUsage, priv
         }
 
     override suspend fun complete(systemInstruction: String, prompt: String): AiResult = withContext(Dispatchers.IO) {
+        val t0 = System.currentTimeMillis()
         val r = try {
             infer(systemInstruction, prompt)
         } catch (e: CancellationException) {
@@ -254,6 +310,7 @@ class ChatGptPlan(private val context: Context, private val usage: AiUsage, priv
         } catch (e: IOException) {
             AiResult.Failure(FailureKind.NETWORK)
         }
+        if (r is AiResult.Text) plainLatency.record(System.currentTimeMillis() - t0)
         onResult(r)
         r
     }

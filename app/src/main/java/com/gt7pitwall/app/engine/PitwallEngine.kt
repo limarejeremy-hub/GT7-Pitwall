@@ -223,6 +223,14 @@ class PitwallEngine(
     var languageModel: LanguageModel? = null
 
     /** Modèles cloud (Gemini Flash-Lite, Flash 3.8) ; null ou non configurés : la radio fonctionne sans cloud. */
+    /**
+     * #70 (V492) : cliché des faits et analyses pour un essai de Véga hors course (réglages), pris sous le verrou de la
+     * course comme pour la radio. Lecture seule : rien n'est modifié ni téléchargé.
+     */
+    suspend fun toolSnapshot(): com.gt7pitwall.core.ai.tools.ToolSnapshot = mutex.withLock {
+        race.toolSnapshot(race.aiFacts(), race.snapshot.packet?.currentLap, System.currentTimeMillis())
+    }
+
     var cloudRouter: com.gt7pitwall.core.ai.AiRouter?
         get() = conversation.cloud
         set(value) {

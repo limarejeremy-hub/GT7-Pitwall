@@ -1133,6 +1133,24 @@ class RaceController(
         return AiFacts(lines, CoachingObservations.from(snap.laps, snap.packet), tagged, conflicts)
     }
 
+    /**
+     * #70 / #68 (V492) : cliché pour les outils de Véga, à prendre sous le verrou de la course. Les analyses viennent des
+     * moteurs existants (bilan par virage, pneus ou pilotage, motricité, bilan de course, conseil de gomme de départ,
+     * programme Sport en cache) : rien n'est recalculé ni téléchargé ici.
+     */
+    fun toolSnapshot(facts: AiFacts, lap: Int?, nowMs: Long): com.gt7pitwall.core.ai.tools.ToolSnapshot {
+        val A = com.gt7pitwall.core.ai.tools.AnalysisFacts
+        val sections = mapOf(
+            FactTopic.CORNERS to runCatching {
+                A.corners(cornerReport(), tyreOrDriving().takeIf { it.verdict != com.gt7pitwall.core.tyres.TyreOrDriving.Verdict.UNKNOWN }?.text, tractionReport())
+            }.getOrElse { diagnostic("outil virages", it); com.gt7pitwall.core.ai.tools.AnalysisFacts.Section.EMPTY },
+            FactTopic.DEBRIEF to runCatching { A.debrief(lastReview, cornerFindings()) }.getOrElse { diagnostic("outil débrief", it); com.gt7pitwall.core.ai.tools.AnalysisFacts.Section.EMPTY },
+            FactTopic.START_TYRE to A.startTyre(startTyreAdvice),
+            FactTopic.SPORT to runCatching { A.sport(schedule, nowMs) }.getOrElse { diagnostic("outil Sport", it); com.gt7pitwall.core.ai.tools.AnalysisFacts.Section.EMPTY },
+        )
+        return com.gt7pitwall.core.ai.tools.ToolSnapshot.from(facts, telemetryLive(), lap, nowMs, sections)
+    }
+
     /** L'ingénieur attend un oui / non (arrêt à confirmer, pneus changés ?) : la réponse n'est pas pour l'IA. */
     val awaitingDriverAnswer: Boolean get() = awaitingAnswer
 

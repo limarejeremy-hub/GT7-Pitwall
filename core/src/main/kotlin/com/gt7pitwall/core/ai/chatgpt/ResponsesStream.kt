@@ -42,7 +42,13 @@ object ResponsesStream {
     }
 
     /** Un tour du flux : texte, appels d'outils, ou échec. */
-    data class Turn(val text: String, val calls: List<FunctionCall>, val failure: AiResult.Failure?)
+    data class Turn(
+        val text: String,
+        val calls: List<FunctionCall>,
+        val failure: AiResult.Failure?,
+        /** Délai jusqu'au premier octet de la réponse (mesuré par le transport), pour la latence (V492). */
+        val ttfbMs: Long? = null,
+    )
 
     /** Modèles affichables du compte (visibility « list »), dans l'ordre du serveur : (slug, nom affiché). */
     fun listedModels(json: String): List<Pair<String, String>> {

@@ -78,6 +78,27 @@ object EngineerPrompt {
         append("LE PILOTE DIT : « ").append(question.trim()).append(" »\n\nRÉPONSE :")
     }
 
+    /**
+     * V492 (latence, #70) : question ALLÉGÉE quand les outils sont actifs. Les faits ne sont pas recopiés (le modèle les
+     * demande aux outils pitwall) ; restent le contexte, le calcul du moteur sur la question, la mémoire et les derniers
+     * échanges. Le contrôle des chiffres garde tous les faits et ceux rendus par les outils.
+     */
+    fun buildForTools(question: String, c: Context): String = buildString {
+        append("CONTEXTE : ")
+        append(if (c.telemetryLive) "course suivie en direct" + (c.lap?.let { ", tour $it" } ?: "") + ". Réponse courte, le pilote conduit." else "pas de télémétrie GT7 en ce moment.")
+        append("\nSUJET EN COURS : ").append(c.topic.label).append('\n')
+        c.mood?.let { append(Persona.moodLine(it)).append('\n') }
+        append("FAITS : non recopiés ici. Appelle seulement les outils pitwall utiles à la question (souvent un seul), puis réponds.\n\n")
+        c.analysis?.let { append("CALCUL DU MOTEUR SUR CETTE QUESTION (fait foi) :\n").append(it).append("\n\n") }
+        if (c.memory.isNotBlank()) append("MÉMOIRE DE LA COURSE :\n").append(c.memory).append('\n')
+        if (c.recent.isNotEmpty()) {
+            append("ÉCHANGES RÉCENTS :\n")
+            c.recent.takeLast(3).forEach { e -> append("- Tour ${e.lap}, pilote : ").append(e.question).append("\n  Ingénieur : ").append(e.answer).append('\n') }
+            append('\n')
+        }
+        append("LE PILOTE DIT : « ").append(question.trim()).append(" »\n\nRÉPONSE :")
+    }
+
     /** Tout ce que le modèle a reçu : les chiffres de sa réponse doivent s'y trouver. */
     fun source(c: Context): String = listOfNotNull(
         c.facts.text, c.facts.observations.joinToString("\n") { it.text }, c.analysis, c.memory,
