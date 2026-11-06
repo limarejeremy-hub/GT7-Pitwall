@@ -135,6 +135,9 @@ class ToolSnapshot(
 ) {
     fun facts(t: FactTopic): List<ToolFact> = byTopic[t].orEmpty()
 
+    /** V493 : règles Sport structurées du cliché, pour le contrôle du sens des réponses. */
+    val sportRules: List<AnalysisFacts.SportRule> get() = sections[FactTopic.SPORT]?.sportRules.orEmpty()
+
     /** Phrases sans étiquette (provenance inconnue) : jamais servies, comptées pour le diagnostic. */
     val untagged: Int get() = facts(FactTopic.OTHER).size
 

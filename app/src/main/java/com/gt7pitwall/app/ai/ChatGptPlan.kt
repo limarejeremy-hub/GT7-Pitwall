@@ -245,6 +245,7 @@ class ChatGptPlan(private val context: Context, private val usage: AiUsage, priv
             prompt = com.gt7pitwall.core.ai.tools.VegaCheck.sportPrompt,
             snapshot = live,
             local = { snap -> com.gt7pitwall.core.ai.tools.VegaCheck.sportLocalAnswer(snap) },
+            semantic = { snap, ans -> com.gt7pitwall.core.ai.tools.SportSemantics.problem(ans, snap.sportRules) },
         )
     }
 
@@ -254,6 +255,7 @@ class ChatGptPlan(private val context: Context, private val usage: AiUsage, priv
         prompt: String,
         snapshot: suspend () -> com.gt7pitwall.core.ai.tools.ToolSnapshot,
         local: (com.gt7pitwall.core.ai.tools.ToolSnapshot) -> String,
+        semantic: (com.gt7pitwall.core.ai.tools.ToolSnapshot, String) -> String? = { _, _ -> null },
     ) {
         scope.launch {
             _lastTools.value = null
@@ -272,7 +274,7 @@ class ChatGptPlan(private val context: Context, private val usage: AiUsage, priv
                     if (res is AiResult.Failure) usage.onFailure(backend, res, ms) else usage.onSuccess(backend, ms)
                 }
             }
-            val v = com.gt7pitwall.core.ai.tools.VegaCheck.withTools(question, r, local(snap))
+            val v = com.gt7pitwall.core.ai.tools.VegaCheck.withTools(question, r, local(snap)) { ans -> semantic(snap, ans) }
             val o = FuelPlanCheck.Outcome(v.answer, v.fromChatGpt, v.verdict)
             _lastAnswer.value = o
             val unsupported = _lastTools.value?.startsWith("mode outils non pris en charge") == true

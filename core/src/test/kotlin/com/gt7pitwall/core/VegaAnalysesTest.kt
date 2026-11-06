@@ -122,12 +122,12 @@ class VegaAnalysesTest {
         val b = edition(Series.DAILY_B, today.minusDays(1), Sourced(null, FieldStatus.CONFLICT, listOf(gtp), "10 ou 12"), null, stops = 0)
         val old = edition(Series.DAILY_A, today.minusDays(20), Sourced(8, FieldStatus.PROBABLE, listOf(gtp)), null, stops = null)
         val sec = AnalysisFacts.sport(ScheduleState(mapOf(Series.DAILY_A to old, Series.DAILY_B to b, Series.DAILY_C to c), emptyList(), now - 3_600_000, null, stale = false), now)
-        val cText = sec.facts.single { it.text.startsWith("Course Sport C") }.text
+        val cText = sec.facts.single { it.text.startsWith("Course Sport C (") }.text
         assertTrue("11 tours [confirmé]" in cText && "×3" in cText && "×5" in cText && "en cours" in cText, cText)
-        assertTrue(sec.missing.any { "Course Sport C" in it && "aucun arrêt obligatoire explicite" in it }, "deux gommes imposées ≠ un arrêt")
+        assertTrue(sec.facts.any { it.text.startsWith("Course Sport C : les gommes") && "OBLIGATOIRES" in it.text && "même si aucun arrêt obligatoire n'est écrit" in it.text })
         assertTrue(sec.conflicts.any { "Course Sport B" in it && "tours" in it })
-        assertFalse(sec.facts.single { it.text.startsWith("Course Sport B") }.text.contains("tours ["), "un champ contradictoire n'a pas de valeur")
-        assertTrue(sec.facts.single { it.text.startsWith("Course Sport A") }.text.contains("PAS la semaine en cours"))
+        assertTrue(sec.facts.single { it.text.startsWith("Course Sport B (") }.text.contains("tours contradictoire entre sources"), "un champ contradictoire n'a pas de valeur")
+        assertTrue(sec.facts.single { "Course Sport A" in it.text }.text.startsWith("SEMAINE ANCIENNE"))
         assertTrue(sec.facts.all { it.provenance == FactProvenance.PUBLISHED })
         val rules = snapshot(mapOf(FactTopic.SPORT to sec)).result(PitwallDataTools.Tool.SPORT)
         assertTrue(rules.confidence.startsWith("faible"), "contradiction : confiance faible")

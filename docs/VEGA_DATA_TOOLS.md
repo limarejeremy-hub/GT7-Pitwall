@@ -92,3 +92,22 @@ Chaque fait porte provenance, source et fiabilité (« confiance élevée, 6 pas
 4. Débrief : bilan de course repris, aucun adversaire inventé.
 
 **Non vérifié** : ces outils sur le Fold, la latence après allègement, la radio en course.
+
+## V493 : sens des règles Sport (revue #72, essai Fold du 06/11)
+
+Essai réel V492 : `get_current_sport_events` appelé une fois, semaine 02/11–09/11 citée, 7 997 ms (2 allers-retours).
+**Faute relevée** : « C … RH et RM autorisés » alors que GTPlanet et DG EDGE donnent RH **et** RM **obligatoires**.
+
+- La fiche Sport dit « pneus OBLIGATOIRES » (plus « imposés ») et, si au moins deux gommes sont obligatoires, une
+  phrase explicite : « il faut utiliser chacune d'elles : au moins un passage aux stands pour changer de gomme, même si
+  aucun arrêt obligatoire n'est écrit ».
+- Obligation inconnue ou contradictoire → « obligation de gommes NON VÉRIFIÉE : ne rien conclure ».
+- Chaque champ est toujours affiché : valeur [statut], « inconnu », ou « contradictoire entre sources (non appliqué) ».
+  Un circuit absent du cache est dit « inconnu », jamais deviné (le circuit C manquait dans la réponse).
+- **Contrôle du sens** (`SportSemantics`), en plus du contrôle des chiffres, à la radio comme dans l'essai : une
+  réponse qui présente des gommes obligatoires comme seulement « autorisées », ou qui affirme une obligation non
+  vérifiée, est écartée → réponse locale (qui dit l'obligation).
+- Semaine ancienne ou programme périmé : « SEMAINE ANCIENNE, ne vaut pas pour aujourd'hui » ; jamais repris comme la
+  course du jour (test au 09/11 : l'édition du 02/11 est ancienne).
+- La fiche dit « actualisé par le téléphone le … à …h… (cache local, pas une recherche web) ».
+- p50/p95 : « trop peu de mesures pour un p95 fiable » sous 10 mesures.

@@ -280,6 +280,13 @@ class RadioConversation(
                 maxChars = CLOUD_CHARS,
             )
         }
+        // V493 (revue #72) : contrôle du SENS des règles Sport (gommes obligatoires) ; une réponse fautive est écartée.
+        val semanticProblem = (reply as? AiReply.Answer)?.let { com.gt7pitwall.core.ai.tools.SportSemantics.problem(it.text, tools.sportRules) }
+        if (semanticProblem != null) {
+            lastTrace = AiTrace(turn.question, outcome.text, "réponse écartée (sens : $semanticProblem)", outcome.attempts.sumOf { it.latencyMs }, outcome.backend ?: AiBackend.ENGINE, outcome.modelId, outcome.attempts, fallback = true)
+            return analysis?.let { Converse.Done(race.conversationReply(turn, it, RaceMemory.ENGINE, it, fromAi = false, notice = "règle Sport mal formulée par l'IA → réponse du moteur local.")) }
+                ?: Converse.Failed(EngineerMessage("Je préfère vérifier le règlement avant de te répondre.", Priority.HIGH, MessageCategory.ANSWER))
+        }
         val latency = outcome.attempts.sumOf { it.latencyMs }
         val failure = outcome.failure
         val verdict = when {

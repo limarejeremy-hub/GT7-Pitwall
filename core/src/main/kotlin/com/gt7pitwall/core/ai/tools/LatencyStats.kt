@@ -16,6 +16,11 @@ class LatencyStats(private val capacity: Int = 50) {
     @get:Synchronized
     val count: Int get() = samples.size
 
+    companion object {
+        /** En dessous, un p95 n'est qu'une indication (revue #72 : un p95 de n=1 n'est pas un indicateur). */
+        const val MIN_FOR_P95 = 10
+    }
+
     /** Percentile au plus proche rang (0 < [p] ≤ 100) ; null sans mesure. */
     @Synchronized
     fun percentile(p: Int): Long? {
@@ -30,6 +35,7 @@ class LatencyStats(private val capacity: Int = 50) {
         val n = count
         if (n == 0) return null
         fun s(ms: Long) = String.format(java.util.Locale.FRANCE, "%.1f s", ms / 1000.0)
-        return "p50 ${s(percentile(50)!!)} · p95 ${s(percentile(95)!!)} ($n mesure${if (n > 1) "s" else ""})"
+        val note = if (n < MIN_FOR_P95) " : trop peu de mesures pour un p95 fiable (il en faut $MIN_FOR_P95)" else ""
+        return "p50 ${s(percentile(50)!!)} · p95 ${s(percentile(95)!!)} ($n mesure${if (n > 1) "s" else ""}$note)"
     }
 }

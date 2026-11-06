@@ -12,7 +12,13 @@ import com.gt7pitwall.core.ai.RadioAi
 object VegaCheck {
     data class Outcome(val answer: String, val fromChatGpt: Boolean, val verdict: String)
 
-    fun withTools(question: String, result: AiResult, localAnswer: String): Outcome = when (result) {
+    fun withTools(
+        question: String,
+        result: AiResult,
+        localAnswer: String,
+        /** Contrôle du SENS (V493, règlement Sport) : renvoie un problème, ou null. */
+        semantic: (String) -> String? = { null },
+    ): Outcome = when (result) {
         is AiResult.Failure -> Outcome(localAnswer, false, "réponse locale : ${result.kind.label}${result.detail?.let { " ($it)" } ?: ""}")
         is AiResult.Text -> {
             if (result.evidence.isBlank()) {
@@ -20,7 +26,8 @@ object VegaCheck {
             } else {
                 val toolFacts = AiFacts(result.evidence.lines().filter { it.isNotBlank() })
                 when (val r = RadioAi.parse(result.text, question, toolFacts, extraSource = result.evidence)) {
-                    is AiReply.Answer -> Outcome(r.text, true, "réponse ChatGPT vérifiée sur les faits rendus par les outils")
+                    is AiReply.Answer -> semantic(r.text)?.let { p -> Outcome(localAnswer, false, "réponse ChatGPT écartée (sens : $p) : réponse locale") }
+                        ?: Outcome(r.text, true, "réponse ChatGPT vérifiée sur les faits rendus par les outils (chiffres et règles)")
                     is AiReply.Rejected -> Outcome(localAnswer, false, "réponse ChatGPT écartée (${r.reason}) : réponse locale")
                     is AiReply.Command -> Outcome(localAnswer, false, "commande proposée ignorée dans cet essai : réponse locale")
                 }
@@ -33,7 +40,11 @@ object VegaCheck {
 
     fun sportLocalAnswer(snapshot: ToolSnapshot): String {
         val r = snapshot.result(PitwallDataTools.Tool.SPORT)
-        return r.facts.firstOrNull { it.text.startsWith("Course Sport") && "en cours" in it.text }?.text
+        // Fiches de la semaine en cours, puis leurs gommes obligatoires (jamais une semaine ancienne).
+        val current = r.facts.filter { it.text.startsWith("Course Sport") && "semaine du" in it.text && "en cours" in it.text }.map { it.text }
+        val currentSeries = current.map { it.substringBefore(" (") }.toSet()
+        val obligations = r.facts.filter { f -> "OBLIGATOIRE" in f.text && f.text.substringBefore(" :") in currentSeries }.map { it.text }
+        return (current + obligations).joinToString(" ").ifBlank { null }
             ?: r.missing.firstOrNull()?.let { "Programme Sport : $it." }
             ?: "Programme Sport inconnu."
     }
