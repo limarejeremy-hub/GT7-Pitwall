@@ -32,6 +32,11 @@ data class PitStopRecord(
     val tyres: TyreService = TyreService.UNKNOWN,
     /** Diagnostic thermique Tyre Change Hunter de ce passage (indice expérimental, jamais une preuve), s'il a été fait. */
     val thermal: String? = null,
+    /**
+     * Tour où le pilote a confirmé ou déclaré ce passage, s'il diffère du tour du passage [lap] (#73 : passage détecté au
+     * tour 7, déclaré au tour 9). La source d'un événement ne devient jamais le moment où il a eu lieu.
+     */
+    val declaredLap: Int? = null,
 ) {
     /** Ravitaillement mesuré (le niveau d'essence a monté). */
     val refuelled: Boolean get() = (fuelAdded ?: 0f) > 0f
@@ -43,8 +48,12 @@ data class PitStopRecord(
  */
 data class TyreStint(val startLap: Int, val age: Int, val compound: TyreCompound?, val certain: Boolean, val fromStart: Boolean)
 
-/** Arrêt possible (sans ravitaillement) en attente de confirmation du pilote. */
-data class StopCandidate(val lap: Int, val locationKnown: Boolean)
+/**
+ * Arrêt possible (sans ravitaillement) en attente de confirmation du pilote. [contested] : les indices se contredisent
+ * (détecteur « arrêt en piste » mais arrêt prévu ou exigé à ce moment, #73) — passage au stand PROBABLE, gomme NON
+ * confirmée ; aucun nouvel arrêt n'est annoncé tant que le pilote n'a pas tranché.
+ */
+data class StopCandidate(val lap: Int, val locationKnown: Boolean, val contested: Boolean = false, val stoppedSeconds: Float? = null)
 
 /** Changement de pneus déclaré au tour [lap] (gomme inconnue si le pilote ne l'a pas précisée). */
 data class TyreChange(val lap: Int, val compound: TyreCompound?)
@@ -101,14 +110,17 @@ class PitLedger {
         return add(lap, StopEvidence.REFUEL, amount)
     }
 
-    fun propose(lap: Int, locationKnown: Boolean): StopCandidate =
-        StopCandidate(lap, locationKnown).also { pending = it }
+    fun propose(lap: Int, locationKnown: Boolean, contested: Boolean = false, stoppedSeconds: Float? = null): StopCandidate =
+        StopCandidate(lap, locationKnown, contested, stoppedSeconds).also { pending = it }
 
-    /** Le pilote confirme l'arrêt proposé. null si rien n'était en attente. */
-    fun confirmPending(): PitStopRecord? {
+    /**
+     * Le pilote confirme l'arrêt proposé (au tour [atLap], si on le connaît). L'arrêt garde le tour du PASSAGE ; le tour
+     * de la confirmation est noté à part s'il diffère. null si rien n'était en attente.
+     */
+    fun confirmPending(atLap: Int? = null): PitStopRecord? {
         val c = pending ?: return null
         pending = null
-        return add(c.lap, StopEvidence.DRIVER_CONFIRMED, null)
+        return add(c.lap, StopEvidence.DRIVER_CONFIRMED, null, declaredLap = atLap?.takeIf { it - c.lap > 1 })
     }
 
     fun rejectPending(): Boolean {
@@ -118,7 +130,19 @@ class PitLedger {
     }
 
     /** « J'ai fait mon arrêt » : confirme l'arrêt en attente, sinon l'enregistre comme déclaré. */
-    fun declare(lap: Int): PitStopRecord = confirmPending() ?: add(lap, StopEvidence.DRIVER_DECLARED, null)
+    fun declare(lap: Int): PitStopRecord = confirmPending(lap) ?: add(lap, StopEvidence.DRIVER_DECLARED, null)
+
+    /**
+     * Tour où un changement de pneus déclaré maintenant a réellement eu lieu : le premier tour après le dernier passage aux
+     * stands enregistré, si aucun changement n'a encore été noté pour ce passage (#73 : « j'ai déjà mis les durs » dit au
+     * tour 9 pour le passage du tour 7). On ne change de pneus qu'à un arrêt. null : pas de tel passage, tour courant.
+     */
+    fun passageLapForLateTyres(currentLap: Int): Int? {
+        val s = stops.lastOrNull() ?: return null
+        if (s.tyres == TyreService.NOT_CHANGED || currentLap - s.lap <= 1) return null
+        if (tyreChanges.any { it.lap >= s.lap }) return null
+        return s.lap + 1
+    }
 
     /** « Annule l'arrêt » : retire le dernier arrêt (ou l'arrêt en attente). */
     fun cancelLast(): PitStopRecord? {
@@ -206,10 +230,11 @@ class PitLedger {
 
     fun missingRequired(rules: RaceRules): Set<TyreCompound> = rules.requiredTyres - tyresUsed(rules.startTyre)
 
-    private fun add(lap: Int, evidence: StopEvidence, amount: Float?): PitStopRecord =
+    private fun add(lap: Int, evidence: StopEvidence, amount: Float?, declaredLap: Int? = null): PitStopRecord =
         // Un changement déjà déclaré pour ce passage (« pneus changés » avant la détection du plein) est gardé.
         PitStopRecord(
             stops.size + 1, lap, evidence, amount,
             tyres = if (tyreChanges.any { it.lap - lap in 0..2 }) TyreService.CHANGED else TyreService.UNKNOWN,
+            declaredLap = declaredLap,
         ).also { stops += it }
 }

@@ -35,6 +35,7 @@ import com.gt7pitwall.core.radio.DriverQuery
 import com.gt7pitwall.core.radio.EchoFilter
 import com.gt7pitwall.core.session.LapRecord
 import com.gt7pitwall.core.session.PitAssessment
+import com.gt7pitwall.core.session.PitDetector
 import com.gt7pitwall.core.session.SessionEvent
 import com.gt7pitwall.core.session.SessionSnapshot
 import com.gt7pitwall.core.session.SessionTracker
@@ -534,6 +535,8 @@ class RaceController(
                 lastAiAnswerMs = null
                 tyreLifeAsked = false
                 pendingTyreFamily = null
+                contestedReminded = false
+                planHeldForContest = false
             }
             out += learn(events)
             if (!sessionFinished) out += coachLaps(events)
@@ -541,6 +544,7 @@ class RaceController(
             journalEvents(events)
             if (events.any { it is SessionEvent.RaceFinished }) sessionFinished = true
             if (events.any { it is SessionEvent.LapCompleted }) out += rulesReminder()
+            if (!sessionFinished) out += contestedReminder(events)
             for (e in events) {
                 if (e is SessionEvent.LapCompleted && plan?.stops?.any { it.endOfLap == e.lap.lapNumber } == true) {
                     pitWindowPackets = PIT_WINDOW_PACKETS
@@ -687,7 +691,8 @@ class RaceController(
                 pendingConfirmation = null
                 val suspect = pendingStopTyreSuspect
                 pendingStopTyreSuspect = false
-                val confirmed = ledger.confirmPending()
+                val confirmed = ledger.confirmPending(lap)
+                contestedReminded = false
                 out += answer(
                     when {
                         // Arrêt proposé sur une signature thermique : « oui » répondait à « tu as changé les pneus ? ».
@@ -713,7 +718,7 @@ class RaceController(
                 }
                 out += answer(
                     when {
-                        ledger.rejectPending() -> if (pendingStopTyreSuspect) {
+                        ledger.rejectPending().also { if (it) contestedReminded = false } -> if (pendingStopTyreSuspect) {
                             pendingStopTyreSuspect = false
                             labelThermal(changed = false)
                             listOf("D'accord, pas de changement de pneus : je ne compte pas cet arrêt. Dis « arrêt fait » si c'en était un.")
@@ -2438,6 +2443,19 @@ class RaceController(
             return emptyList()
         }
         replanDeferred = false
+        // #73 : passage au stand probable mais contesté. Tant que le pilote n'a pas tranché, aucun plan recalculé ni
+        // annoncé (avant : « arrêt au tour 10, gain 6,7 s » sur un historique faux). Alertes carburant : toujours locales.
+        ledger.pending?.takeIf { it.contested }?.let { c ->
+            if (!planHeldForContest) {
+                planHeldForContest = true
+                journal.record(
+                    JournalType.STRATEGY, JournalSource.ENGINE, "Plan suspendu : arrêt du tour ${c.lap} à confirmer",
+                    decision = "aucun nouvel arrêt annoncé sur un historique contradictoire", lap = p.currentLap,
+                )
+            }
+            return emptyList()
+        }
+        planHeldForContest = false
         // Never optimize stops using the wrong weekly regulations (e.g. Sport A
         // selected while actual GT7 race has 14 laps, corresponding to Sport C).
         // Telemetry fuel is still monitored independently and the event can be
@@ -3842,8 +3860,12 @@ class RaceController(
             journal.record(JournalType.PIT, JournalSource.TELEMETRY, "Passage ignoré : course terminée (tour ${v.lap})", lap = v.lap)
             return emptyList()
         }
-        val thermal = tyreHunter.conclude(v.lap, v.assessment)
-        lastThermal = thermal.takeIf { v.assessment != PitAssessment.TRACK_STOP }
+        // #73 (Watkins Glen, 06/11) : arrêt prévu fin du tour 6, passage au tour 7, immobile 4,8 s, mais détecteur
+        // « arrêt en piste » ; Pitwall l'écartait puis reproposait un arrêt au tour 10. Un seul indice expérimental ne
+        // l'emporte plus sur le plan et le règlement : passage PROBABLE, gomme NON confirmée, une question courte.
+        val contested = contestedTrackStop(v)
+        val thermal = tyreHunter.conclude(v.lap, if (contested) PitAssessment.PIT_LIKE_STOP else v.assessment)
+        lastThermal = thermal.takeIf { v.assessment != PitAssessment.TRACK_STOP || contested }
         journal.record(
             JournalType.DECISION, JournalSource.ENGINE, "Tyre Change Hunter, tour ${v.lap} : ${thermal.verdict.label}",
             decision = thermal.reason,
@@ -3903,12 +3925,68 @@ class RaceController(
             } else {
                 emptyList()
             }
-            PitAssessment.TRACK_STOP -> if (hasObligations) {
-                info(listOf("Arrêt en piste : je ne le compte pas comme un passage aux stands. Dis « arrêt fait » si je me trompe."), Priority.NORMAL)
-            } else {
-                emptyList()
+            PitAssessment.TRACK_STOP -> when {
+                contested -> {
+                    ledger.propose(v.lap, v.locationKnown, contested = true, stoppedSeconds = v.stoppedSeconds)
+                    pendingStopTyreSuspect = false
+                    contestedReminded = false
+                    val planned = plan?.stops?.firstOrNull { v.lap - it.endOfLap in 0..1 }
+                    journal.record(
+                        JournalType.DECISION, JournalSource.ENGINE,
+                        "Indices contradictoires au tour ${v.lap} : passage au stand probable, gomme non confirmée",
+                        decision = "question au pilote ; aucun arrêt compté, aucun nouvel arrêt annoncé avant sa réponse",
+                        details = listOfNotNull(
+                            "detecteur" to "arrêt en piste (${v.trackReason?.label ?: "indice inconnu"})",
+                            planned?.let { "plan" to "arrêt prévu fin du tour ${it.endOfLap}" },
+                            "immobile_s" to String.format(java.util.Locale.ROOT, "%.1f", v.stoppedSeconds),
+                            "tyre_change_hunter" to thermal.verdict.name,
+                            "statut" to "STAND_PROBABLE / TYRES_UNCONFIRMED",
+                        ).toMap(),
+                        lap = v.lap,
+                    )
+                    listOf(
+                        EngineerMessage(
+                            "Tour ${v.lap} : arrêt de ${v.stoppedSeconds.roundToInt()} secondes, mes indices se contredisent. C'était ton arrêt au stand ?",
+                            Priority.CRITICAL, MessageCategory.ALERT, expectsReply = true, dedupKey = "confirm-stop:${v.lap}",
+                        ),
+                    )
+                }
+                hasObligations -> info(listOf("Arrêt en piste : je ne le compte pas comme un passage aux stands. Dis « arrêt fait » si je me trompe."), Priority.NORMAL)
+                else -> emptyList()
             }
         }
+    }
+
+    /**
+     * Arrêt classé « en piste » par le détecteur alors que le plan prévoyait un passage aux stands à ce moment (fin du
+     * tour précédent ou de ce tour) et qu'un arrêt reste à faire (arrêts obligatoires, gommes imposées à monter — deux
+     * gommes imposées exigent au moins un arrêt même si « arrêts obligatoires » vaut 0 —, ou arrêt carburant/pneus du
+     * plan). Un choc avant l'arrêt reste un arrêt en piste ; ailleurs dans la course, un arrêt en piste n'est pas mis en
+     * doute (pas de question à chaque tête-à-queue).
+     */
+    private fun contestedTrackStop(v: PitDetector.Visit): Boolean {
+        if (v.assessment != PitAssessment.TRACK_STOP || v.trackReason == PitDetector.TrackReason.VIOLENT) return false
+        return plan?.stops?.any { v.lap - it.endOfLap in 0..1 } == true
+    }
+
+    /** Question de l'arrêt contesté déjà rappelée une fois (au tour suivant). */
+    private var contestedReminded = false
+
+    /** Plan suspendu (journalisé une fois) tant qu'un arrêt contesté attend la réponse du pilote. */
+    private var planHeldForContest = false
+
+    /** Arrêt contesté sans réponse au tour suivant : un seul rappel, court, puis on attend sans rien annoncer. */
+    private fun contestedReminder(events: List<SessionEvent>): List<EngineerMessage> {
+        val c = ledger.pending?.takeIf { it.contested } ?: return emptyList()
+        val done = events.filterIsInstance<SessionEvent.LapCompleted>().lastOrNull() ?: return emptyList()
+        if (contestedReminded || done.lap.lapNumber <= c.lap) return emptyList()
+        contestedReminded = true
+        return listOf(
+            EngineerMessage(
+                "Sans réponse : tour ${c.lap}, c'était ton arrêt au stand ? Je n'annonce pas d'autre arrêt d'ici là.",
+                Priority.HIGH, MessageCategory.ALERT, expectsReply = true, dedupKey = "confirm-stop-rappel:${c.lap}",
+            ),
+        )
     }
 
     private fun stopRecorded(rec: PitStopRecord): List<String> {
@@ -3918,8 +3996,14 @@ class RaceController(
             StopEvidence.DRIVER_DECLARED -> "déclaré par toi"
         }
         val sb = StringBuilder("Arrêt ${rec.number} enregistré : $proof.")
+        // Tour du PASSAGE, distinct du tour de la déclaration (#73 : passage au tour 7, déclaré au tour 9).
+        if (rec.declaredLap != null) {
+            sb.append(" C'est le passage du tour ${rec.lap}")
+            plan?.stops?.firstOrNull { rec.lap - it.endOfLap == 1 }?.let { sb.append(", prévu fin du tour ${it.endOfLap}") }
+            sb.append(".")
+        }
         raceMemory.fact(
-            rec.lap, clock(), "arrêt ${rec.number} au tour ${rec.lap} ($proof)",
+            rec.lap, clock(), "arrêt ${rec.number} au tour ${rec.lap} ($proof" + (rec.declaredLap?.let { ", dit au tour $it" } ?: "") + ")",
             if (rec.evidence == StopEvidence.REFUEL) Provenance.MEASURED else Provenance.DRIVER,
         )
         if (rules.mandatoryStops > 0) {
@@ -4204,8 +4288,10 @@ class RaceController(
         // « Je suis en medium » après une signature thermique n'est PAS une correction du pneu de départ.
         // La déclaration explicite d'une nouvelle gomme par le pilote confirme le candidat observé
         // (et lui seul). Le train commence au premier tour APRÈS le passage aux stands.
+        // Arrêt contesté (#73) : la déclaration de pneus le confirme même plusieurs tours plus tard (on ne change de pneus
+        // qu'à un arrêt, et aucun autre passage n'a eu lieu depuis).
         val recentCandidate = ledger.pending?.takeIf {
-            c.current && !c.atStart && lap - it.lap in 0..2 &&
+            !c.atStart && ((c.current && lap - it.lap in 0..2) || (it.contested && lap >= it.lap)) &&
                 ledger.currentTyre(rules.startTyre) != compound
         }
         val atStart = c.atStart || lap < 1 ||
@@ -4216,13 +4302,15 @@ class RaceController(
             out += "Noté : départ en ${compound.spoken}."
         } else {
             val confirmedStop = recentCandidate?.let { candidate ->
-                ledger.confirmPending()?.also { rec ->
+                ledger.confirmPending(lap)?.also { rec ->
                     pendingStopTyreSuspect = false
+                    contestedReminded = false
                     ledger.setThermal(rec.lap, lastThermal?.verdict?.name ?: TyreChangeVerdict.SUSPECTED.name)
                     out += "Arrêt au tour ${rec.lap} confirmé par ta déclaration de pneus."
                 }
             }
-            val effectiveLap = confirmedStop?.lap?.plus(1) ?: lap
+            // Passage déjà enregistré sans gomme notée, pneus déclarés plus tard : le train date du passage, pas de la phrase.
+            val effectiveLap = confirmedStop?.lap?.plus(1) ?: ledger.passageLapForLateTyres(lap) ?: lap
             val passage = ledger.changeForPassage(effectiveLap)
             val replaced = ledger.fitTyres(effectiveLap, compound)
             labelThermal(changed = true)
