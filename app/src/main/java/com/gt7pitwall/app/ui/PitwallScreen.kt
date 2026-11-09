@@ -3,6 +3,8 @@ package com.gt7pitwall.app.ui
 import android.content.Intent
 import com.gt7pitwall.app.ai.ChatGptPlan.State as GptState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -156,6 +158,7 @@ fun PitwallScreen(
     val aiTest by gemini.testResult.collectAsStateWithLifecycle()
     val aiTrace by engine.aiTrace.collectAsStateWithLifecycle()
     val radioRoute by engine.radioRoute.collectAsStateWithLifecycle()
+    val telemetryBoard by engine.telemetryBoard.collectAsStateWithLifecycle()
 
     val voiceRadioCard: @Composable () -> Unit = {
         VoiceRadioCard(
@@ -342,10 +345,11 @@ fun PitwallScreen(
                     .padding(horizontal = 6.dp, vertical = 7.dp),
                 horizontalArrangement = Arrangement.spacedBy(3.dp),
             ) {
-                listOf("Live", "Briefing", "Analyse", "Historique", "Atelier").forEach { tab ->
+                listOf("Live", "Télémétrie", "Briefing", "Analyse", "Historique", "Atelier").forEach { tab ->
                     val active = selectedTab == tab
                     val symbol = when (tab) {
                         "Live" -> "◉"
+                        "Télémétrie" -> "▦"
                         "Briefing" -> "▤"
                         "Analyse" -> "▥"
                         "Historique" -> "◷"
@@ -380,14 +384,28 @@ fun PitwallScreen(
                 .consumeWindowInsets(padding),
         ) {
             val wide = maxWidth >= 600.dp
+            // Écran 1 « Live » et écran 2 « Télémétrie » : glisser horizontalement pour passer de l'un à l'autre.
+            val swipe = Modifier.pointerInput(selectedTab) {
+                var total = 0f
+                detectHorizontalDragGestures(
+                    onDragStart = { total = 0f },
+                    onDragEnd = {
+                        if (total < -SWIPE_PX && selectedTab == "Live") selectedTab = "Télémétrie"
+                        else if (total > SWIPE_PX && selectedTab == "Télémétrie") selectedTab = "Live"
+                    },
+                ) { _, dx -> total += dx }
+            }
             when (selectedTab) {
-                "Live" -> PitwallLiveDashboard(
-                    state = state,
-                    messages = radio,
-                    onBriefing = { selectedTab = "Briefing" },
-                    onAnalysis = { selectedTab = "Analyse" },
-                    onAtelier = { selectedTab = "Atelier" },
-                )
+                "Live" -> Box(swipe) {
+                    PitwallLiveDashboard(
+                        state = state,
+                        messages = radio,
+                        onBriefing = { selectedTab = "Briefing" },
+                        onAnalysis = { selectedTab = "Analyse" },
+                        onAtelier = { selectedTab = "Atelier" },
+                    )
+                }
+                "Télémétrie" -> TelemetryScreen(telemetryBoard, swipe)
                 "Briefing" -> ScrollColumn(Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
                     Text("PRÉPARE TA COURSE", fontSize = 22.sp, fontWeight = FontWeight.Bold,
                         color = PitColors.Orange)
@@ -2537,3 +2555,6 @@ private fun buildLabel(): String? {
         }.getOrNull()
     }
 }
+
+/** Glissement horizontal minimum (px) pour changer d'écran entre Live et Télémétrie. */
+private const val SWIPE_PX = 120f
