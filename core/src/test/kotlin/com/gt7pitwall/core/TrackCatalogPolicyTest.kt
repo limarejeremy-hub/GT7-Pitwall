@@ -56,4 +56,14 @@ class TrackCatalogPolicyTest {
         assertTrue(sigs.isNotEmpty() && sigs.all { it.officialId?.length == 6 }, sigs.filter { it.officialId == null }.map { it.name }.toString())
         assertEquals("c272b2", sigs.first { it.name.startsWith("24 Heures") }.officialId)
     }
+
+    @Test fun aTrackWithoutSignatureIsFoundByItsExactName() {
+        val gb = TrackCatalogPolicy.parseCatalog(
+            """var e={"4414cb":{baseId:`fd167d`,cornerCount:9,countryName:`Japan`,elevationGap_v:.02,id:`4414cb`,length_v:1.39,nameBase:`Suzuka Circuit`,nameLong:`Suzuka Circuit East Course`,straight_v:.2},""" +
+                """"6e378b":{baseId:`fd167d`,cornerCount:20,countryName:`Japan`,id:`6e378b`,nameBase:`Suzuka Circuit`,nameLong:`Suzuka Circuit`}};""",
+        )
+        assertEquals("4414cb", TrackCatalogPolicy.idByName(gb, "Suzuka Circuit East Course"))
+        assertEquals("6e378b", TrackCatalogPolicy.idByName(gb, "Suzuka Circuit"))
+        assertNull(TrackCatalogPolicy.idByName(gb, "Suzuka"), "nom partiel : rien n'est deviné")
+    }
 }

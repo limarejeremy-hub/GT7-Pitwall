@@ -45,6 +45,15 @@ data class SportCard(
     val sources: List<String>,
     /** Identifiant du tracé dans le catalogue officiel GT7 (fiche et logo du site), null sans signature. */
     val officialTrackId: String? = null,
+    /**
+     * Voitures : ce que dit CHAQUE source quand elles ne s'accordent pas (« GTPlanet » → « Gr.4 », « Victory » →
+     * « Gr.4 Cars »). Vide si les sources concordent ou si le détail n'est pas connu.
+     */
+    val carsBySource: List<Pair<String, String>> = emptyList(),
+    /** Sources en désaccord sur l'écriture mais toutes d'accord sur la catégorie : le badge est montré quand même. */
+    val classesAgreeDespiteConflict: Boolean = false,
+    /** Nom du circuit tel que dans la base (sans « (inversé) »), pour retrouver sa fiche officielle sans signature. */
+    val trackLookupName: String? = null,
 ) {
     /** Deux gommes obligatoires ou plus : passage aux stands nécessaire pour changer de gomme. */
     val tyreChangeNeeded: Boolean get() = (requiredTyres?.size ?: 0) >= 2
@@ -68,6 +77,9 @@ data class SportCard(
             val sig = ed.trackId?.let { id -> db.geometrySignatures.firstOrNull { it.course == id || it.reverseCourse == id } }
             val carsText = ed.cars.value?.takeIf { ed.cars.known }
             val car = carsText?.let { matchCar(it, db) }
+            // Désaccord : le détail par source est dans la note du champ (« GTPlanet : X / Victory : Y »).
+            val bySource = if (ed.cars.status == FieldStatus.CONFLICT) conflictValues(ed.cars.note) else emptyList()
+            val sharedClasses = bySource.map { classes(it.second).toSet() }.distinct().singleOrNull()?.takeIf { it.isNotEmpty() }
             return SportCard(
                 series = ed.series,
                 letter = ed.series.letter,
@@ -81,7 +93,7 @@ data class SportCard(
                 laps = ed.laps.value?.takeIf { ed.laps.known },
                 carsText = carsText,
                 carsStatus = ed.cars.status,
-                classes = carsText?.let(::classes).orEmpty(),
+                classes = carsText?.let(::classes) ?: sharedClasses?.toList().orEmpty(),
                 carCode = car?.id,
                 carName = car?.fullName,
                 allowedTyres = ed.allowedTyres.value?.takeIf { ed.allowedTyres.known },
@@ -91,8 +103,18 @@ data class SportCard(
                 tyreMultiplier = ed.tyreMultiplier.value?.takeIf { ed.tyreMultiplier.known },
                 sources = ed.sources.map { it.name }.distinct(),
                 officialTrackId = sig?.officialId,
+                carsBySource = bySource,
+                classesAgreeDespiteConflict = carsText == null && sharedClasses != null,
+                trackLookupName = course?.name ?: ed.trackName.value?.takeIf { ed.trackName.known },
             )
         }
+
+        /** Valeurs par source d'une note de conflit « Source : valeur / Source : valeur ». */
+        fun conflictValues(note: String?): List<Pair<String, String>> =
+            note?.split(" / ")?.mapNotNull { part ->
+                val i = part.indexOf(" : ")
+                if (i <= 0) null else part.substring(0, i).trim() to part.substring(i + 3).trim()
+            }?.filter { it.second.isNotBlank() }.orEmpty()
 
         /** « Gr.3 », « Gr.4 », « Gr.B », « N300 » cités dans le texte des voitures. */
         fun classes(text: String): List<String> {

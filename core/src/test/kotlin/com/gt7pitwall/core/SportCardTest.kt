@@ -80,4 +80,17 @@ class SportCardTest {
         assertEquals(listOf('A', 'C'), cards.map { it.letter })
         assertFalse(cards.any { it.current }, "semaine terminée")
     }
+
+    @Test fun conflictingCarsShowEachSourceAndAgreeingClassesKeepTheBadge() {
+        val sameClass = Sourced<String>(null, FieldStatus.CONFLICT, listOf(gtp), "GTPlanet : Gr.4 / Victory : Gr.4 Cars (BoP) / DG EDGE : Group 4")
+        val c = SportCard.of(edition(Series.DAILY_A, 847, ok("Dragon Trail - Gardens"), sameClass, 7), db, wednesday)
+        assertEquals(3, c.carsBySource.size)
+        assertEquals("Victory" to "Gr.4 Cars (BoP)", c.carsBySource[1])
+        assertEquals(listOf("Gr.4"), c.classes, "toutes les sources disent Gr.4 : badge")
+        assertTrue(c.classesAgreeDespiteConflict)
+        val different = Sourced<String>(null, FieldStatus.CONFLICT, listOf(gtp), "GTPlanet : Gr.3 / Victory : Gr.4")
+        val d = SportCard.of(edition(Series.DAILY_A, 847, ok("Dragon Trail - Gardens"), different, 7), db, wednesday)
+        assertTrue(d.classes.isEmpty(), "Gr.3 contre Gr.4 : aucun badge deviné")
+        assertEquals(2, d.carsBySource.size)
+    }
 }

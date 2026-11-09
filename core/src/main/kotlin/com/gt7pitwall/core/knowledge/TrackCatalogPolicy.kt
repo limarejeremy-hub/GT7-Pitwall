@@ -75,6 +75,17 @@ object TrackCatalogPolicy {
         return out
     }
 
+    private fun key(s: String) = s.lowercase().replace(Regex("[^a-z0-9]+"), "")
+
+    /**
+     * Tracé du catalogue (anglais : mêmes noms que la base gt7info) portant exactement ce nom ; null si aucun ou plusieurs.
+     * Sert quand Pitwall n'a pas de signature du circuit (Suzuka East…).
+     */
+    fun idByName(entries: Map<String, Entry>, name: String?): String? {
+        val k = key(name ?: return null).takeIf { it.isNotEmpty() } ?: return null
+        return entries.values.filter { key(it.name) == k }.map { it.id }.distinct().singleOrNull()
+    }
+
     /** Redirection acceptée seulement en HTTPS vers le site officiel. */
     fun redirectAllowed(location: String?): Boolean = CarImagePolicy.redirectAllowed(location)
 }

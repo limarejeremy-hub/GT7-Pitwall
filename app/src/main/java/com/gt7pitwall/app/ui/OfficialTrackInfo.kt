@@ -44,11 +44,12 @@ import java.util.Locale
  * Échec ou version de diffusion : rien n'est affiché (le tracé dessiné reste).
  */
 @Composable
-fun OfficialTrackInfo(officialId: String?) {
+fun OfficialTrackInfo(officialId: String?, trackName: String? = null) {
     val context = LocalContext.current
     val debug = (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
-    val loaded = produceState<Pair<TrackCatalogPolicy.Entry?, Bitmap?>>(null to null, officialId, debug) {
-        value = if (officialId == null || !debug) null to null else withContext(Dispatchers.IO) { TrackCatalogLoader.load(context, officialId) }
+    val loaded = produceState<Pair<TrackCatalogPolicy.Entry?, Bitmap?>>(null to null, officialId, trackName, debug) {
+        value = if ((officialId == null && trackName == null) || !debug) null to null
+        else withContext(Dispatchers.IO) { TrackCatalogLoader.load(context, officialId, trackName) }
     }.value
     val entry = loaded.first ?: return
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -57,11 +58,14 @@ fun OfficialTrackInfo(officialId: String?) {
                 Image(bitmap = bmp.asImageBitmap(), contentDescription = "Logo officiel du circuit", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxWidth())
             }
         }
+        // 2 × 2 : libellés et pays entiers, même dans une carte étroite (capture du 09/11 : « Virag / es », « État »).
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            entry.country?.let { Fact("Pays", it, Modifier.weight(1.3f)) }
-            entry.corners?.let { Fact("Virages", "$it", Modifier.weight(1f)) }
-            entry.elevationM?.let { Fact("Dénivelé", String.format(Locale.FRANCE, "%.0f m", it), Modifier.weight(1f)) }
-            entry.straightM?.let { Fact("Ligne droite", String.format(Locale.FRANCE, "%.0f m", it), Modifier.weight(1.2f)) }
+            Fact("Pays", entry.country ?: "—", Modifier.weight(1f))
+            Fact("Virages", entry.corners?.toString() ?: "—", Modifier.weight(1f))
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Fact("Dénivelé", entry.elevationM?.let { String.format(Locale.FRANCE, "%.0f m", it) } ?: "—", Modifier.weight(1f))
+            Fact("Plus longue ligne droite", entry.straightM?.let { String.format(Locale.FRANCE, "%.0f m", it) } ?: "—", Modifier.weight(1f))
         }
         Text("Fiche officielle gran-turismo.com", color = PitColors.Muted, fontSize = 10.sp)
     }
@@ -70,8 +74,8 @@ fun OfficialTrackInfo(officialId: String?) {
 @Composable
 private fun Fact(label: String, value: String, modifier: Modifier) {
     Column(modifier.background(Color(0xFF1B2129), RoundedCornerShape(10.dp)).padding(horizontal = 8.dp, vertical = 6.dp)) {
-        Text(label, color = PitColors.Muted, fontSize = 10.sp)
-        Text(value, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1)
+        Text(label, color = PitColors.Muted, fontSize = 10.sp, maxLines = 1)
+        Text(value, fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 2)
     }
 }
 
@@ -83,14 +87,20 @@ object TrackCatalogLoader {
     @Volatile
     private var logoModules: Map<String, String> = emptyMap()
 
+    /** Catalogue anglais (mêmes noms que la base) : retrouve un tracé sans signature par son nom exact. */
+    @Volatile
+    private var catalogGb: Map<String, TrackCatalogPolicy.Entry>? = null
+
     @Volatile
     private var failedAt = 0L
 
     private val lock = Any()
 
-    fun load(context: Context, officialId: String): Pair<TrackCatalogPolicy.Entry?, Bitmap?> = synchronized(lock) {
+    fun load(context: Context, officialId: String?, trackName: String?): Pair<TrackCatalogPolicy.Entry?, Bitmap?> = synchronized(lock) {
         val app = context.applicationContext
-        val entry = catalog(app)?.get(officialId) ?: return null to null
+        val fr = catalog(app) ?: return null to null
+        val id = officialId ?: TrackCatalogPolicy.idByName(catalogGb.orEmpty(), trackName) ?: return null to null
+        val entry = fr[id] ?: return null to null
         entry to logo(app, entry.baseId)
     }
 
@@ -100,12 +110,14 @@ object TrackCatalogLoader {
         catalog?.let { return it }
         val now = System.currentTimeMillis()
         val catFile = File(dir(context), "tracks.fr.js")
+        val gbFile = File(dir(context), "tracks.gb.js")
         val idxFile = File(dir(context), "index.js")
-        if (catFile.isFile && idxFile.isFile && now - catFile.lastModified() < TrackCatalogPolicy.CATALOG_MAX_AGE_MS) {
+        if (catFile.isFile && gbFile.isFile && idxFile.isFile && now - catFile.lastModified() < TrackCatalogPolicy.CATALOG_MAX_AGE_MS) {
             runCatching {
                 val c = TrackCatalogPolicy.parseCatalog(catFile.readText())
                 if (c.isNotEmpty()) {
                     logoModules = TrackCatalogPolicy.logoModules(idxFile.readText())
+                    catalogGb = TrackCatalogPolicy.parseCatalog(gbFile.readText())
                     catalog = c
                     return c
                 }
@@ -120,8 +132,11 @@ object TrackCatalogLoader {
             val catUrl = TrackCatalogPolicy.catalogModule(idx) ?: error("catalogue introuvable")
             val cat = text(catUrl) ?: error("catalogue")
             val c = TrackCatalogPolicy.parseCatalog(cat).takeIf { it.isNotEmpty() } ?: error("catalogue vide")
+            val gb = TrackCatalogPolicy.catalogModule(idx, "gb")?.let(::text).orEmpty()
             idxFile.writeText(idx)
             catFile.writeText(cat)
+            gbFile.writeText(gb)
+            catalogGb = TrackCatalogPolicy.parseCatalog(gb)
             logoModules = TrackCatalogPolicy.logoModules(idx)
             catalog = c
             c

@@ -113,7 +113,7 @@ private fun SportRaceCard(c: SportCard) {
         )
         c.lengthM?.let { Text(String.format(Locale.FRANCE, "%.3f km", it / 1000.0), color = PitColors.Muted, fontSize = 12.sp) }
         // Logo officiel du circuit et sa fiche (APK de débogage, catalogue gran-turismo.com en cache).
-        OfficialTrackInfo(c.officialTrackId)
+        OfficialTrackInfo(c.officialTrackId, c.trackLookupName)
 
         // Voiture : photo officielle (APK de débogage) pour une voiture précise, badge pour une catégorie.
         when {
@@ -130,13 +130,24 @@ private fun SportRaceCard(c: SportCard) {
                         Text(cls, color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp)
                     }
                 }
-                Text(c.carsText.orEmpty().takeIf { it.length > 6 } ?: "Catégorie", color = PitColors.Muted, fontSize = 12.sp, maxLines = 2)
+                Text(
+                    if (c.classesAgreeDespiteConflict) "toutes les sources s'accordent sur la catégorie" else c.carsText.orEmpty().takeIf { it.length > 6 } ?: "Catégorie",
+                    color = PitColors.Muted, fontSize = 12.sp, maxLines = 2,
+                )
             }
             c.carsText != null -> Text("Voitures : ${c.carsText}", fontWeight = FontWeight.Bold, fontSize = 15.sp)
             else -> Text(
-                if (c.carsStatus == FieldStatus.CONFLICT) "Voitures : sources contradictoires" else "Voitures : inconnu",
+                if (c.carsStatus == FieldStatus.CONFLICT) "Voitures : les sources ne disent pas la même chose" else "Voitures : inconnu",
                 color = PitColors.Yellow, fontSize = 13.sp,
             )
+        }
+        // Désaccord : ce que dit chaque source (rien n'est choisi à la place du pilote).
+        if (c.carsBySource.isNotEmpty() && !c.classesAgreeDespiteConflict) {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                c.carsBySource.forEach { (source, value) ->
+                    Text("$source : $value", color = Color(0xFFE8ECF2), fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
+            }
         }
 
         // Gommes : autorisées (anneaux de couleur), obligatoires mises en avant.
