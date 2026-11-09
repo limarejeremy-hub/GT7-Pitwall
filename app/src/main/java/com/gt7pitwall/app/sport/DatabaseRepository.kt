@@ -139,6 +139,7 @@ class DatabaseRepository(context: Context, private val database: Gt7Database, pr
         const val GROUPS = "cargrp.csv"
         const val SIGNATURES = "track_signatures.json"
         const val CORNERS = "track_corners.json"
+        const val OUTLINES = "track_outlines.json"
         /** En dessous, le fichier de catégories téléchargé est jugé incomplet (507 lignes le 27/10/2026). */
         const val MIN_GROUPS = 400
         const val REFRESH_MS = 24 * 3_600_000L
@@ -166,6 +167,7 @@ class DatabaseRepository(context: Context, private val database: Gt7Database, pr
                 ?: runCatching { Gt7Database.parseGroups(asset(GROUPS)) }.getOrDefault(emptyMap())
             // Signatures géométriques des circuits (livrées avec l'APK ; données CC0, voir assets/licenses).
             base.trackSignatures = runCatching { TrackSignature.parseAll(asset(SIGNATURES)) }.getOrDefault(emptyList())
+            base.trackOutlines = runCatching { com.gt7pitwall.core.knowledge.TrackOutline.parseAll(asset(OUTLINES)) }.getOrDefault(emptyList())
             base.numberedCorners = runCatching { com.gt7pitwall.core.analysis.NumberedCorners.parseAll(asset(CORNERS)) }.getOrDefault(emptyMap())
             // Notes officielles de mise à jour (SUGO en 1.72) : circuits pas encore dans la base communautaire.
             base.updates = runCatching { com.gt7pitwall.core.knowledge.OfficialUpdates.parse(asset(UPDATES)) }.getOrNull()
