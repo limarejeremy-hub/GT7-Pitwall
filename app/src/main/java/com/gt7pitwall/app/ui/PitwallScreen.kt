@@ -298,6 +298,7 @@ fun PitwallScreen(
             },
             voiceState = voiceState,
             onTestVoice = engine::testVoice,
+            onTestDiction = engine::testDiction,
         )
     }
 
@@ -595,6 +596,7 @@ private fun ConnectionCard(
     onVoiceChange: (Boolean) -> Unit,
     voiceState: VoiceState,
     onTestVoice: () -> Unit,
+    onTestDiction: () -> Unit = {},
 ) {
     PitCard("Connexion PS5") {
         Text(describe(connection), style = MaterialTheme.typography.bodyMedium)
@@ -644,6 +646,8 @@ private fun ConnectionCard(
             TextButton(onClick = onTestVoice) { Text("Tester") }
             Switch(checked = voiceOn, onCheckedChange = onVoiceChange)
         }
+        // #73 P1-C : « onze », « douze », « seize », « zéro », /s/ /z/ en début et fin de phrase, sur la sortie active.
+        TextButton(onClick = onTestDiction) { Text("Test de diction (onze, douze, seize, zéro…)") }
         when (voiceState) {
             VoiceState.FRENCH_MISSING -> Text(
                 "Voix française non installée : Paramètres Android > Gestion globale > Synthèse vocale.",

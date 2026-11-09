@@ -656,8 +656,10 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
         val key = "$speechRate|$text"
         phrases[key]?.let { return it }
         speech.speechRate = speechRate
-        val pcm = speech.synthesize(text) ?: return null
-        val frames = OpusFrames.encode(pcm)
+        // #73 P1-C : texte de synthèse normalisé (audio seulement) et silence autour de la phrase (début et fin de mot
+        // non tronqués par l'ouverture du salon et le délai de l'encodeur Opus). Même voix, même débit.
+        val pcm = speech.synthesize(com.gt7pitwall.core.radio.SpokenFrench.forAudio(text)) ?: return null
+        val frames = OpusFrames.encode(com.gt7pitwall.core.radio.SpokenFrench.padded(pcm, OpusFrames.SAMPLE_RATE))
         if (frames.isEmpty()) return null
         if (text.length <= CACHEABLE_CHARS) phrases[key] = frames
         return frames
