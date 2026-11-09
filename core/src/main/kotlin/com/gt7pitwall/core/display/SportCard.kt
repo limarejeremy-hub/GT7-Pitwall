@@ -56,6 +56,9 @@ data class SportCard(
     val trackLookupName: String? = null,
     /** Tracé reconstitué d'un relevé de bords (pas une signature complète) : dit sous le dessin. */
     val outlineRebuilt: Boolean = false,
+    /** Nombre de tours : statut, et ce que dit chaque source en cas de désaccord (capture du 09/11 : course B vide). */
+    val lapsStatus: FieldStatus = FieldStatus.UNKNOWN,
+    val lapsBySource: List<Pair<String, String>> = emptyList(),
 ) {
     /** Deux gommes obligatoires ou plus : passage aux stands nécessaire pour changer de gomme. */
     val tyreChangeNeeded: Boolean get() = (requiredTyres?.size ?: 0) >= 2
@@ -96,6 +99,8 @@ data class SportCard(
                 lengthM = course?.lengthM ?: sig?.lengthM,
                 outline = sig?.let { normalize(it.path) } ?: drawn?.let { normalize(it.path) },
                 outlineRebuilt = drawn != null,
+                lapsStatus = ed.laps.status,
+                lapsBySource = if (ed.laps.status == FieldStatus.CONFLICT) conflictValues(ed.laps.note) else emptyList(),
                 laps = ed.laps.value?.takeIf { ed.laps.known },
                 carsText = carsText,
                 carsStatus = ed.cars.status,

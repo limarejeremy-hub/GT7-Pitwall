@@ -89,12 +89,19 @@ private fun SportRaceCard(c: SportCard) {
                     color = if (c.current) PitColors.Green else PitColors.Yellow, fontSize = 12.sp,
                 )
             }
-            c.laps?.let {
-                Column(horizontalAlignment = Alignment.End) {
-                    Text("$it", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 26.sp)
-                    Text("tours", color = PitColors.Muted, fontSize = 11.sp)
-                }
+            Column(horizontalAlignment = Alignment.End) {
+                Text(c.laps?.toString() ?: "?", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 26.sp,
+                    color = if (c.laps == null) PitColors.Yellow else Color(0xFFE8ECF2))
+                Text("tours", color = PitColors.Muted, fontSize = 11.sp)
             }
+        }
+        // Tours inconnus ou contradictoires : dit clairement, avec ce que donne chaque source.
+        if (c.laps == null) {
+            Text(
+                if (c.lapsBySource.isNotEmpty()) "Tours : " + c.lapsBySource.joinToString(" · ") { (s, v) -> "$s $v" } + " (les sources diffèrent)"
+                else "Tours : aucune source ne les donne (course au temps possible)",
+                color = PitColors.Yellow, fontSize = 12.sp,
+            )
         }
 
         // Circuit : tracé dessiné (captures CC0), nom et longueur.

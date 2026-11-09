@@ -103,4 +103,13 @@ class SportCardTest {
         assertEquals("4414cb", c.officialTrackId)
         assertTrue(db.geometrySignatures.none { it.officialId == "4414cb" }, "jamais utilisé pour la reconnaissance")
     }
+
+    @Test fun conflictingLapsShowEachSource() {
+        val e = edition(Series.DAILY_B, 1292, ok("Grand Valley - Highway 1"), ok("Gr.3"), 6)
+            .copy(laps = Sourced(null, FieldStatus.CONFLICT, listOf(gtp), "GTPlanet : 6 / Victory : 7"))
+        val c = SportCard.of(e, db, wednesday)
+        assertNull(c.laps, "aucun nombre choisi à la place du pilote")
+        assertEquals(listOf("GTPlanet" to "6", "Victory" to "7"), c.lapsBySource)
+        assertEquals(FieldStatus.CONFLICT, c.lapsStatus)
+    }
 }
