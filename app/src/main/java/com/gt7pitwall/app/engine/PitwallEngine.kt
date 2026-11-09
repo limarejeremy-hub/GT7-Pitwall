@@ -299,6 +299,10 @@ class PitwallEngine(
     /** Dernier échange avec l'IA (diagnostic affiché dans la carte « Ingénieur IA »). */
     val aiTrace: StateFlow<AiTrace?> = _aiTrace.asStateFlow()
 
+    /** Écran 2 « Télémétrie » : chronos, secteurs colorés, pneus, carburant, relais (recalculé à chaque rafraîchissement). */
+    private val _telemetryBoard = MutableStateFlow<com.gt7pitwall.core.display.TelemetryBoard?>(null)
+    val telemetryBoard: StateFlow<com.gt7pitwall.core.display.TelemetryBoard?> = _telemetryBoard.asStateFlow()
+
     /** Issue #73 : route réellement suivie par la dernière phrase radio (mode, intention, qui a répondu, pourquoi). */
     private val _radioRoute = MutableStateFlow<String?>(null)
     val radioRoute: StateFlow<String?> = _radioRoute.asStateFlow()
@@ -779,6 +783,7 @@ class PitwallEngine(
         if (!force && now - lastPublishMs < UI_REFRESH_MS) return
         lastPublishMs = now
         val snap = race.snapshot
+        _telemetryBoard.value = runCatching { com.gt7pitwall.core.display.TelemetryBoard.of(race) }.getOrNull()
         // Voiture absente de la base (nouvelle voiture du jeu) : la base est relue sans attendre.
         race.displayCarCode?.takeIf { race.carName == null }?.let { onUnknownCar() }
         _rules.value = race.rules
