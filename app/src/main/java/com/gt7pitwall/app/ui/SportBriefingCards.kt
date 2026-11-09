@@ -112,6 +112,8 @@ private fun SportRaceCard(c: SportCard) {
             color = if (c.trackName == null) PitColors.Yellow else Color(0xFFE8ECF2),
         )
         c.lengthM?.let { Text(String.format(Locale.FRANCE, "%.3f km", it / 1000.0), color = PitColors.Muted, fontSize = 12.sp) }
+        // Logo officiel du circuit et sa fiche (APK de débogage, catalogue gran-turismo.com en cache).
+        OfficialTrackInfo(c.officialTrackId)
 
         // Voiture : photo officielle (APK de débogage) pour une voiture précise, badge pour une catégorie.
         when {

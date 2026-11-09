@@ -43,6 +43,8 @@ data class SportCard(
     val fuelMultiplier: Int?,
     val tyreMultiplier: Int?,
     val sources: List<String>,
+    /** Identifiant du tracé dans le catalogue officiel GT7 (fiche et logo du site), null sans signature. */
+    val officialTrackId: String? = null,
 ) {
     /** Deux gommes obligatoires ou plus : passage aux stands nécessaire pour changer de gomme. */
     val tyreChangeNeeded: Boolean get() = (requiredTyres?.size ?: 0) >= 2
@@ -88,6 +90,7 @@ data class SportCard(
                 fuelMultiplier = ed.fuelMultiplier.value?.takeIf { ed.fuelMultiplier.known },
                 tyreMultiplier = ed.tyreMultiplier.value?.takeIf { ed.tyreMultiplier.known },
                 sources = ed.sources.map { it.name }.distinct(),
+                officialTrackId = sig?.officialId,
             )
         }
 

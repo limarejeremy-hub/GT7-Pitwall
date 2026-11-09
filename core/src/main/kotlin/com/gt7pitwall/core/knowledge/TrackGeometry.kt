@@ -29,6 +29,8 @@ class TrackSignature(
     val venueIncomplete: Boolean = false,
     /** « survey » (relevé CC0) ou « capture » (zetetos/gt-telemetry, MIT), d'après la source. */
     val provenance: String? = null,
+    /** Identifiant du tracé dans le catalogue officiel GT7 (« c272b2 » = Le Mans), pour sa fiche et le logo du site. */
+    val officialId: String? = null,
 ) {
     /** Source et licence de cette signature, pour le journal. */
     val sourceLabel: String get() = when (provenance) {
@@ -40,7 +42,7 @@ class TrackSignature(
     val points: Int get() = path.size / 2
 
     /** Même signature rattachée au circuit [course] (issue #58 : SUGO absent de la base communautaire). */
-    fun resolved(course: Int, by: String) = TrackSignature(name, course, reverseCourse, lengthM, minX, maxX, minZ, maxZ, path, by, venueIncomplete, provenance)
+    fun resolved(course: Int, by: String) = TrackSignature(name, course, reverseCourse, lengthM, minX, maxX, minZ, maxZ, path, by, venueIncomplete, provenance, officialId)
 
     companion object {
         fun parseAll(json: String): List<TrackSignature> {
@@ -62,6 +64,7 @@ class TrackSignature(
                     path = FloatArray(p.length()) { p.getDouble(it).toFloat() },
                     venueIncomplete = r.optBoolean("venue_incomplete", false),
                     provenance = r.optString("provenance", "").ifEmpty { null },
+                    officialId = r.optString("official_id", "").takeIf { Regex("^[0-9a-f]{6}$").matches(it) },
                 )
             }
         }

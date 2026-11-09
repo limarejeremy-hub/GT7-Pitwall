@@ -21,3 +21,19 @@ Un champ inconnu ou contradictoire est affiché comme tel (jamais deviné). Le d
 depuis l'environnement de développement) ; le tracé dessiné ne pose aucune question de droits.
 
 `SportCardTest` (4) sur la vraie base de l'APK. Non vérifié sur le Fold.
+
+## V498 : logo officiel et fiche du circuit
+
+Accès à www.gran-turismo.com autorisé par le pilote le 09/11. Structure du catalogue « tracklist » vérifiée sur le
+site (voir `TrackCatalogPolicy`) : 122 tracés, 42 logos de sites ; les 72 tracés de `track_signatures.json` y sont
+tous, par leur `official_id`. Chaque carte affiche, sous le tracé dessiné :
+
+- le **logo officiel** du site (ex. Circuit de Spa-Francorchamps) ;
+- la **fiche officielle** : pays, nombre de virages, dénivelé, plus longue ligne droite (catalogue en français).
+
+Même règle que la photo des voitures : contenus de Sony / Polyphony, **APK de débogage seulement**, rien dans le dépôt,
+catalogue relu au plus une fois par semaine, un logo par site en cache 30 jours, site officiel seulement. En cas
+d'échec, rien n'est affiché (le tracé dessiné reste). Au passage : l'adresse des photos de voitures
+(`car_thumbnails/carNNNN.png`) est **confirmée** (HTTP 200, Audi TT Cup '16).
+
+`TrackCatalogPolicyTest` (4, extraits synthétiques), lecture validée sur les vrais fichiers du site (non versionnés).
