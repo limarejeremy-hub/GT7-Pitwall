@@ -7,6 +7,7 @@ import android.speech.tts.UtteranceProgressListener
 import com.gt7pitwall.core.engineer.EngineerMessage
 import com.gt7pitwall.core.engineer.Priority
 import com.gt7pitwall.core.radio.SpeechStyle
+import com.gt7pitwall.core.radio.SpokenFrench
 import com.gt7pitwall.core.radio.VoiceOutput
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -121,13 +122,19 @@ class TtsVoiceOutput(context: Context) : VoiceOutput, TextToSpeech.OnInitListene
                     inFlight += id
                     messages[id] = message
                     val mode = if (flush && i == 0) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
-                    if (tts.speak(part, mode, null, id) != TextToSpeech.SUCCESS) finished(id)
+                    // #73 P1-C : texte de synthèse seulement (« P11 » → « P onze », ponctuation finale) ; écran et journal inchangés.
+                    if (tts.speak(SpokenFrench.forAudio(part), mode, null, id) != TextToSpeech.SUCCESS) finished(id)
                     if (i < parts.lastIndex) {
                         val gap = "$GAP_PREFIX${ids.incrementAndGet()}"
                         inFlight += gap
                         if (tts.playSilentUtterance(SpeechStyle.GAP_MS, TextToSpeech.QUEUE_ADD, gap) != TextToSpeech.SUCCESS) finished(gap)
                     }
                 }
+                // Court silence après le message : la sortie audio reste ouverte le temps que la dernière consonne
+                // (« onze », /s/, /z/) soit jouée en entier, au lieu d'être coupée par la fermeture de la sortie.
+                val tail = "$TAIL_PREFIX${ids.incrementAndGet()}"
+                inFlight += tail
+                if (tts.playSilentUtterance(TAIL_MS, TextToSpeech.QUEUE_ADD, tail) != TextToSpeech.SUCCESS) finished(tail)
             }
         }
     }
@@ -156,5 +163,7 @@ class TtsVoiceOutput(context: Context) : VoiceOutput, TextToSpeech.OnInitListene
 
     private companion object {
         const val GAP_PREFIX = "pitwall-gap-"
+        const val TAIL_PREFIX = "pitwall-tail-"
+        const val TAIL_MS = 150L
     }
 }

@@ -691,6 +691,16 @@ class PitwallEngine(
         voice.speak(EngineerMessage("Radio check. Ici ton ingénieur, je te reçois cinq sur cinq.", Priority.HIGH, MessageCategory.RADIO))
     }
 
+    /**
+     * #73 P1-C : échantillons de diction (« onze », /s/, /z/) par la sortie active (Fold ou Discord), même voix. Sert
+     * à l'écoute avec le pilote : un test de texte ne prouve pas la prononciation.
+     */
+    fun testDiction() {
+        com.gt7pitwall.core.radio.DictionSamples.LINES.forEach {
+            voice.speak(EngineerMessage(it, Priority.NORMAL, MessageCategory.RADIO, dedupKey = "diction-${System.nanoTime()}"))
+        }
+    }
+
     /** Mesures préalables à la Black Box (Atelier) : rien n'est enregistré, seulement mesuré. */
     val blackBox = com.gt7pitwall.core.telemetry.BlackBoxProbe()
     private val _blackBoxReport = MutableStateFlow(listOf("Mesure arrêtée."))
