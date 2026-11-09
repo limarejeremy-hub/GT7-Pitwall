@@ -28,7 +28,7 @@ data class SportCard(
     val trackStatus: FieldStatus,
     val lengthM: Int?,
     /** Tracé normalisé dans [0,1]² (x0, y0, x1, y1…), proportions conservées ; null sans signature du circuit. */
-    val outline: FloatArray?,
+    val outline: TrackShape?,
     val laps: Int?,
     val carsText: String?,
     val carsStatus: FieldStatus,
@@ -63,14 +63,18 @@ data class SportCard(
     /** Deux gommes obligatoires ou plus : passage aux stands nécessaire pour changer de gomme. */
     val tyreChangeNeeded: Boolean get() = (requiredTyres?.size ?: 0) >= 2
 
-    override fun equals(other: Any?) = other is SportCard && other.series == series && other.validFrom == validFrom && other.trackName == trackName &&
-        other.carsText == carsText && other.laps == laps && other.current == current && other.outline.contentEqualsNullable(outline)
-    override fun hashCode() = listOf(series, validFrom, trackName, carsText, laps, current).hashCode()
+    // Égalité : celle de la data class, sur TOUS les champs affichés (revue #76 du 09/11 : l'ancienne comparaison manuelle
+    // ignorait gommes, multiplicateurs, conflits, sources… et pouvait masquer une mise à jour). Le tracé compare son contenu.
 
     companion object {
         private val PARIS: ZoneId = ZoneId.of("Europe/Paris")
 
-        private fun FloatArray?.contentEqualsNullable(o: FloatArray?) = if (this == null) o == null else o != null && contentEquals(o)
+        /**
+         * Clé de recalcul des cartes à l'écran : programme, version de la base (circuits ou voitures ajoutés après le
+         * programme) et jour à Paris (semaine qui change écran ouvert : la carte n'est plus « en cours »).
+         */
+        fun refreshKey(state: ScheduleState?, db: Gt7Database, nowMs: Long): Triple<ScheduleState?, Long, LocalDate> =
+            Triple(state, db.revision, Instant.ofEpochMilli(nowMs).atZone(PARIS).toLocalDate())
 
         /** Les cartes A, B, C de l'état du programme (dans l'ordre). */
         fun all(state: ScheduleState?, db: Gt7Database, nowMs: Long): List<SportCard> =
@@ -97,7 +101,7 @@ data class SportCard(
                 trackName = course?.label ?: ed.trackName.value?.takeIf { ed.trackName.known },
                 trackStatus = ed.trackName.status,
                 lengthM = course?.lengthM ?: sig?.lengthM,
-                outline = sig?.let { normalize(it.path) } ?: drawn?.let { normalize(it.path) },
+                outline = (sig?.let { normalize(it.path) } ?: drawn?.let { normalize(it.path) })?.let(::TrackShape),
                 outlineRebuilt = drawn != null,
                 lapsStatus = ed.laps.status,
                 lapsBySource = if (ed.laps.status == FieldStatus.CONFLICT) conflictValues(ed.laps.note) else emptyList(),
@@ -165,4 +169,11 @@ data class SportCard(
             }
         }
     }
+}
+
+/** Tracé normalisé : tableau comparé par son contenu (une data class compare un FloatArray par identité). */
+class TrackShape(val points: FloatArray) {
+    override fun equals(other: Any?) = other is TrackShape && points.contentEquals(other.points)
+    override fun hashCode() = points.contentHashCode()
+    override fun toString() = "TrackShape(${points.size / 2} points)"
 }

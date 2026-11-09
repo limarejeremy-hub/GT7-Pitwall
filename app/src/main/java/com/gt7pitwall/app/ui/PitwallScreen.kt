@@ -413,8 +413,17 @@ fun PitwallScreen(
                         color = PitColors.Muted, style = MaterialTheme.typography.bodySmall)
                     // Courses Sport A/B/C de la semaine, lisibles d'un coup d'œil (circuit, voiture ou catégorie, gommes).
                     Text("COURSES SPORT DE LA SEMAINE", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = PitColors.Muted, letterSpacing = 1.sp)
-                    val sportCards = remember(state.schedule) {
-                        com.gt7pitwall.core.display.SportCard.all(state.schedule, engine.database, System.currentTimeMillis())
+                    // Recalcul quand le programme change, quand la base (circuits, voitures) est actualisée après lui, et quand
+                    // le jour change écran ouvert (revue #76) : horloge relue chaque minute, cartes recalculées seulement si la clé change.
+                    val briefingNow by androidx.compose.runtime.produceState(System.currentTimeMillis()) {
+                        while (true) {
+                            kotlinx.coroutines.delay(60_000L)
+                            value = System.currentTimeMillis()
+                        }
+                    }
+                    val sportKey = com.gt7pitwall.core.display.SportCard.refreshKey(state.schedule, engine.database, briefingNow)
+                    val sportCards = remember(sportKey) {
+                        com.gt7pitwall.core.display.SportCard.all(state.schedule, engine.database, briefingNow)
                     }
                     SportWeekCards(sportCards)
                     Gt7CareerPanel(gt7Profile, editable = false, localCareer = state.localCareer)

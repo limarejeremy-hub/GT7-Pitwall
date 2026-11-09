@@ -43,6 +43,18 @@ class Gt7Database(cars: Map<Int, Car>, courses: List<Course>) {
     var cars: Map<Int, Car> = cars
         private set
 
+    /**
+     * Version du contenu : augmente à chaque changement (base remplacée, circuit appris, notes officielles, catégories,
+     * tracés, signatures). Sert de clé aux écrans qui dérivent un affichage de la base (cartes Sport du Briefing).
+     */
+    @Volatile
+    var revision: Long = 0L
+        private set
+
+    private fun bump() {
+        revision++
+    }
+
     @Volatile
     private var official: List<Course> = courses
 
@@ -90,6 +102,10 @@ class Gt7Database(cars: Map<Int, Car>, courses: List<Course>) {
      */
     @Volatile
     var carGroups: Map<Int, String> = emptyMap()
+        set(value) {
+            field = value
+            bump()
+        }
 
     /** Virages numérotés par circuit (fichier `track_corners.json`, source communautaire CC0) ; vide : virages estimés. */
     @Volatile
@@ -98,6 +114,10 @@ class Gt7Database(cars: Map<Int, Car>, courses: List<Course>) {
     /** Tracés d'affichage des configurations sans signature (`track_outlines.json`) : Briefing seulement. */
     @Volatile
     var trackOutlines: List<TrackOutline> = emptyList()
+        set(value) {
+            field = value
+            bump()
+        }
 
     /** Signatures géométriques des circuits (fichier `track_signatures.json`) ; vide : reconnaissance par la longueur seule. */
     @Volatile
@@ -127,6 +147,7 @@ class Gt7Database(cars: Map<Int, Car>, courses: List<Course>) {
             }.singleOrNull()
             if (c == null) sig else sig.resolved(c.id, c.source ?: "base communautaire")
         }
+        bump()
     }
 
     /** Catégorie GT7 de la voiture [code] (« 3 » pour Gr.3, « N » pour les voitures de route), si la base la donne. */
@@ -141,6 +162,7 @@ class Gt7Database(cars: Map<Int, Car>, courses: List<Course>) {
     /** Nouvelle version de la base communautaire : remplace voitures et circuits officiels, garde les circuits appris. */
     fun replace(fresh: Gt7Database) {
         cars = fresh.cars
+        bump()
         if (fresh.carGroups.isNotEmpty()) carGroups = fresh.carGroups
         official = fresh.official
         recompute()

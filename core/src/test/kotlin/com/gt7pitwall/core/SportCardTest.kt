@@ -48,7 +48,7 @@ class SportCardTest {
         assertTrue(c.classes.isEmpty())
         assertTrue(c.current)
         assertTrue(c.tyreChangeNeeded)
-        val o = c.outline
+        val o = c.outline?.points
         assertNotNull(o, "tracé dessiné à partir des captures CC0")
         assertTrue(o.all { it in 0f..1f })
         assertEquals(11, c.laps)
@@ -97,7 +97,7 @@ class SportCardTest {
 
     @Test fun suzukaEastGetsItsRebuiltOutlineAndOfficialId() {
         val c = SportCard.of(edition(Series.DAILY_A, 442, ok("Suzuka Circuit East Course"), ok("Gr.4"), 7), db, wednesday)
-        val o = c.outline
+        val o = c.outline?.points
         assertNotNull(o, "tracé reconstitué des relevés (Suzuka East n'a pas de signature)")
         assertTrue(c.outlineRebuilt)
         assertEquals("4414cb", c.officialTrackId)
@@ -111,5 +111,61 @@ class SportCardTest {
         assertNull(c.laps, "aucun nombre choisi à la place du pilote")
         assertEquals(listOf("GTPlanet" to "6", "Victory" to "7"), c.lapsBySource)
         assertEquals(FieldStatus.CONFLICT, c.lapsStatus)
+    }
+
+    // ---- Revue #76 (09/11) : l'égalité des cartes couvre tout ce qui est affiché ----
+
+    private fun base() = edition(Series.DAILY_B, 1292, ok("Grand Valley - Highway 1"), ok("Gr.3"), 6, setOf(TyreCompound.RH, TyreCompound.RM))
+
+    @Test fun identicalCardsStayEqualEvenWithDistinctOutlineArrays() {
+        val a = SportCard.of(base(), db, wednesday)
+        val b = SportCard.of(base(), db, wednesday)
+        assertNotNull(a.outline)
+        assertTrue(a.outline!!.points !== b.outline!!.points, "deux tableaux distincts")
+        assertEquals(a, b, "même contenu : cartes égales")
+        assertEquals(a.hashCode(), b.hashCode())
+    }
+
+    @Test fun sameTrackCarLapsButOtherRulesIsADifferentCard() {
+        val ref = SportCard.of(base(), db, wednesday)
+        val variants = mapOf(
+            "gommes obligatoires" to base().copy(requiredTyres = ok(setOf(TyreCompound.RS, TyreCompound.RM))),
+            "gommes autorisées" to base().copy(allowedTyres = ok(setOf(TyreCompound.RH))),
+            "multiplicateur carburant" to base().copy(fuelMultiplier = ok(4)),
+            "multiplicateur pneus" to base().copy(tyreMultiplier = ok(7)),
+            "arrêts obligatoires" to base().copy(mandatoryStops = ok(1)),
+            "fin de validité" to base().copy(validTo = monday.plusDays(8)),
+            "sources" to base().copy(sources = listOf(gtp, SourceRef("Victory", null, 0))),
+            "statut des voitures" to base().copy(cars = Sourced("Gr.3", FieldStatus.PROBABLE, listOf(gtp))),
+        )
+        for ((what, ed) in variants) {
+            val c = SportCard.of(ed, db, wednesday)
+            assertEquals(ref.trackName, c.trackName); assertEquals(ref.laps, c.laps)
+            assertTrue(c != ref, "$what changé : la carte doit être redessinée")
+        }
+    }
+
+    @Test fun differentConflictValuesAreDifferentCards() {
+        fun withLaps(note: String) = SportCard.of(base().copy(laps = Sourced(null, FieldStatus.CONFLICT, listOf(gtp), note)), db, wednesday)
+        val a = withLaps("GTPlanet : 4 / Victory : 6")
+        val b = withLaps("GTPlanet : 6 / Victory : 6 / DG EDGE : 6")
+        assertTrue(a != b, "détail du conflit changé : nouvel affichage")
+        fun withCars(note: String) = SportCard.of(base().copy(cars = Sourced(null, FieldStatus.CONFLICT, listOf(gtp), note)), db, wednesday)
+        assertTrue(withCars("GTPlanet : Gr.3 / Victory : Gr.4") != withCars("GTPlanet : Gr.3 / Victory : Gr.3"))
+    }
+
+    @Test fun cardsAreRecomputedWhenTheDatabaseOrTheDayChanges() {
+        val state = ScheduleState(mapOf(Series.DAILY_B to base()), emptyList(), null, null, stale = false)
+        val k1 = SportCard.refreshKey(state, db, wednesday)
+        assertEquals(k1, SportCard.refreshKey(state, db, wednesday + 60_000L), "même jour, même base : pas de recalcul")
+        // Base actualisée après le programme (nouvelle version de la base communautaire) : clé différente.
+        db.replace(Gt7Database.parse(File(dir, "cars.csv").readText(), File(dir, "maker.csv").readText(), File(dir, "course.csv").readText()))
+        val k2 = SportCard.refreshKey(state, db, wednesday)
+        assertTrue(k1 != k2, "base actualisée : cartes recalculées")
+        // Semaine terminée écran ouvert : le jour change, la carte n'est plus « en cours ».
+        val nextWeek = monday.plusDays(7).atTime(9, 0).atZone(paris).toInstant().toEpochMilli()
+        assertTrue(SportCard.refreshKey(state, db, nextWeek) != k2)
+        assertTrue(SportCard.all(state, db, wednesday).single().current)
+        assertFalse(SportCard.all(state, db, nextWeek).single().current)
     }
 }

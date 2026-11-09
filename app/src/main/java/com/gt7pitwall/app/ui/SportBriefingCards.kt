@@ -107,7 +107,7 @@ private fun SportRaceCard(c: SportCard) {
         // Circuit : tracé dessiné (captures CC0), nom et longueur.
         Box(Modifier.fillMaxWidth().height(150.dp).background(Color(0xFF0E1218), RoundedCornerShape(14.dp)), contentAlignment = Alignment.Center) {
             val outline = c.outline
-            if (outline != null) TrackOutline(outline, if (dim) PitColors.Muted else PitColors.Orange)
+            if (outline != null) TrackOutline(outline.points, if (dim) PitColors.Muted else PitColors.Orange)
             else Text("Tracé non disponible", color = PitColors.Muted, fontSize = 12.sp)
         }
         Text(

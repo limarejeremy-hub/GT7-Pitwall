@@ -50,3 +50,28 @@ Résultat (`assets/gt7db/track_outlines.json`) : Suzuka East 2 236 m (officiel 2
 End, Red Bull Ring Short Track. Mention « Tracé reconstitué d'un relevé de bords » sous le dessin. **Jamais utilisé pour
 reconnaître le circuit** (affichage seulement ; `track_signatures.json` inchangé). Toujours sans tracé : Barcelona
 National et Rallycross, Spa 24h, Streets of Willow Springs, Northern Isle (pas de relevé exploitable).
+
+## V501 : nombre de tours par source
+
+Course sans nombre de tours sûr : « ? » jaune et ce que dit chaque source (« GTPlanet 4 · Victory 6 · DG EDGE 6 »), ou
+« aucune source ne les donne (course au temps possible) ». Aucun nombre n'est choisi à la place du pilote. Le site
+officiel gran-turismo.com ne publie pas les courses du jour A/B/C (vérifié le 09/11 : seule la liste des
+contre-la-montre est accessible sans compte) ; en course, le nombre de tours lu par la PS5 fait foi.
+
+## V502 : le Briefing se met réellement à jour (revue #76 du 09/11)
+
+- **Égalité des cartes.** L'ancienne comparaison manuelle de `SportCard` ne regardait que série, date, circuit,
+  voitures, tours, « en cours » et tracé : à circuit, voiture et tours identiques, un changement de gommes
+  obligatoires, de multiplicateur, d'arrêts, de statut, de détail d'un conflit ou de sources pouvait être jugé « égal ».
+  Elle est supprimée : l'égalité est celle de la data class, sur tous les champs. Le tracé est un `TrackShape` comparé
+  par son contenu (un `FloatArray` serait comparé par identité). Constat statique, pas un bug reproduit sur le Fold.
+- **Clé de recalcul.** Le Briefing recalculait les cartes seulement quand le programme changeait. Clé désormais :
+  programme + `Gt7Database.revision` (augmente à chaque changement de la base : nouvelle version, circuit appris, notes
+  officielles, catégories, tracés) + jour à Paris (horloge relue chaque minute ; cartes recalculées seulement si la
+  clé change). Une base actualisée après le programme, ou une semaine qui se termine écran ouvert, redessine les cartes.
+- **Tests** (`SportCardTest`, 11) : deux cartes identiques (tableaux de tracé distincts) restent égales ; huit
+  variantes à circuit/voiture/tours identiques (gommes obligatoires, gommes autorisées, deux multiplicateurs, arrêts,
+  fin de validité, sources, statut) donnent une carte différente ; détail d'un conflit (tours, voitures) différent ;
+  clé changée par une base actualisée et par le changement de semaine.
+- **Non vérifié :** disposition étroite (Fold plié) et large (déplié) — pas d'environnement Android ici, **Fold non
+  vérifié** ; à regarder sur le téléphone.
