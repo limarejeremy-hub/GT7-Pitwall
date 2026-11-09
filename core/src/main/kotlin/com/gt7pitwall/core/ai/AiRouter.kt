@@ -19,7 +19,16 @@ class AiRouter(
     data class Attempt(val backend: AiBackend, val modelId: String, val failure: AiResult.Failure?, val latencyMs: Long)
 
     /** Résultat : texte du modèle qui a répondu (ou null), et tous les essais pour le journal et l'écran. */
-    data class Outcome(val text: String?, val backend: AiBackend?, val modelId: String?, val attempts: List<Attempt>, val skipped: List<String>, val evidence: String = "") {
+    data class Outcome(
+        val text: String?,
+        val backend: AiBackend?,
+        val modelId: String?,
+        val attempts: List<Attempt>,
+        val skipped: List<String>,
+        val evidence: String = "",
+        /** Outils de données appelés par le modèle qui a répondu (noms seuls, pour le journal). */
+        val tools: List<String> = emptyList(),
+    ) {
         val failure: AiResult.Failure? get() = attempts.lastOrNull()?.failure
     }
 
@@ -70,7 +79,7 @@ class AiRouter(
             if (text != null) {
                 usage.onSuccess(p.backend, ms)
                 attempts += Attempt(p.backend, p.modelId, null, ms)
-                return Outcome(text, p.backend, p.modelId, attempts, skipped, (result as AiResult.Text).evidence)
+                return Outcome(text, p.backend, p.modelId, attempts, skipped, (result as AiResult.Text).evidence, result.tools)
             }
             val failure = result as? AiResult.Failure ?: AiResult.Failure(FailureKind.EMPTY)
             usage.onFailure(p.backend, failure, ms)

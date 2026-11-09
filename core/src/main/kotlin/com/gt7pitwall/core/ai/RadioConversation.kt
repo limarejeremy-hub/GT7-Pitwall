@@ -28,6 +28,8 @@ data class AiTrace(
     val attempts: List<AiRouter.Attempt> = emptyList(),
     /** La réponse dite vient du moteur local, pas de l'IA. */
     val fallback: Boolean = false,
+    /** Outils de données appelés par le modèle (noms seuls). */
+    val tools: List<String> = emptyList(),
 )
 
 /**
@@ -67,9 +69,24 @@ class RadioConversation(
      * Issue #73 : chemin réellement suivi par la dernière phrase (mode choisi, intention, route, qui a répondu, pourquoi
      * GPT n'a pas été appelé). Affiché et journalisé : « GPT en course » ne se suppose plus, il se lit.
      */
-    data class RouteTrace(val mode: String, val intent: String, val route: String, val provider: String, val reason: String, val atMs: Long, val phrase: String = "") {
+    data class RouteTrace(
+        val mode: String,
+        val intent: String,
+        val route: String,
+        val provider: String,
+        val reason: String,
+        val atMs: Long,
+        val phrase: String = "",
+        /** Outils de données appelés (null : chemin sans IA ; vide : IA sans appel d'outil). */
+        val tools: List<String>? = null,
+        /** Délai de la réponse IA (tous essais), si l'IA a été appelée. */
+        val latencyMs: Long? = null,
+    ) {
         val text: String get() = (phrase.takeIf { it.isNotBlank() }?.let { "« ${it.take(50)} » : " } ?: "") +
-            "mode $mode · intention $intent · route $route · réponse $provider" + (reason.takeIf { it.isNotBlank() }?.let { " · $it" } ?: "")
+            "mode $mode · intention $intent · route $route · réponse $provider" +
+            (tools?.let { " · outils " + (it.joinToString(", ").ifEmpty { "aucun" }) } ?: "") +
+            (latencyMs?.let { " · $it ms" } ?: "") +
+            (reason.takeIf { it.isNotBlank() }?.let { " · $it" } ?: "")
     }
 
     /** Phrase en cours de traitement : chaque route est rattachée à la phrase qui l'a produite. */
@@ -80,14 +97,19 @@ class RadioConversation(
     var lastRoute: RouteTrace? = null
         private set
 
-    private suspend fun noteRoute(intent: String, route: String, provider: String, reason: String) {
-        val r = RouteTrace(cloud?.mode?.name ?: "LOCAL (aucun cloud)", intent, route, provider, reason, clock(), currentPhrase)
+    private suspend fun noteRoute(intent: String, route: String, provider: String, reason: String, tools: List<String>? = null, latencyMs: Long? = null) {
+        val r = RouteTrace(cloud?.mode?.name ?: "LOCAL (aucun cloud)", intent, route, provider, reason, clock(), currentPhrase, tools, latencyMs)
         lastRoute = r
         mutex.withLock {
             runCatching {
+                // Aucun secret : mode, intention, route, fournisseur, noms d'outils et délai seulement.
                 race.journal.record(
                     com.gt7pitwall.core.race.JournalType.DECISION, com.gt7pitwall.core.race.JournalSource.ENGINE, "Route radio : ${r.text}",
-                    details = mapOf("mode" to r.mode, "intention" to intent, "route" to route, "fournisseur" to provider, "raison" to reason),
+                    details = listOfNotNull(
+                        "mode" to r.mode, "intention" to intent, "route" to route, "fournisseur" to provider, "raison" to reason,
+                        tools?.let { "outils" to it.joinToString(",").ifEmpty { "aucun" } },
+                        latencyMs?.let { "delai_ms" to it.toString() },
+                    ).toMap(),
                 )
             }
         }
@@ -175,6 +197,20 @@ class RadioConversation(
             }
             com.gt7pitwall.core.radio.IntentArbiter.Decision.Proceed -> Unit
         }
+        // Consigne 09/11 (point 3) : en mode « ChatGPT via ton forfait », une comparaison ou une demande d'avis (« était-il
+        // préférable… », « vaut-il mieux… ») va à GPT avec ses outils, même si les deux transcriptions concordent et
+        // qu'aucune commande n'y est lue. Jamais si une modification y est lue (elle garde le garde et le « oui »).
+        if (cloud?.let { it.mode == AiMode.CHATGPT_PLAN && it.available(complex = true) } == true &&
+            com.gt7pitwall.core.radio.IntentArbiter.analysisQuestion(heardFree)
+        ) {
+            val parsed = DriverCommandParser.parse(text)
+            if (parsed == null || parsed is DriverCommand.Ask) {
+                return analysis(
+                    com.gt7pitwall.core.radio.IntentArbiter.Decision.Analysis(heardFree, com.gt7pitwall.core.radio.IntentArbiter.topicOf(heardFree), "comparaison ou demande d'avis"),
+                    onThinking, myTurn,
+                )
+            }
+        }
         // Actes de dialogue (oubli, identité, préférence, désaccord, décision, hypothèse) : l'ingénieur répond lui-même.
         val cloudReady = cloud?.let { it.mode.cloudOrder(false).isNotEmpty() && it.available(false) } == true
         mutex.withLock { race.dialogue(heardFree, clock(), cloudReady) }?.let { return it }
@@ -261,9 +297,13 @@ class RadioConversation(
         val turn = ConversationRouter.Turn(d.question, topic, complex = true, ask = if (topic == Topic.COACHING) null else StrategyDialogue.Ask.Best)
         val router = cloud?.takeIf { it.mode.cloudOrder(true).isNotEmpty() }
         if (router != null && router.available(complex = true)) {
-            when (val r = converse(router, turn, onThinking, myTurn)) {
+            when (val r = converse(router, turn, onThinking, myTurn, analysisOnly = true)) {
                 is Converse.Done -> {
-                    noteRoute("analyse (${d.reason})", "IA", lastTrace?.let { if (it.fallback) "moteur Pitwall (repli)" else (it.modelId ?: it.backend.label) } ?: "IA", "")
+                    val t = lastTrace
+                    noteRoute(
+                        "analyse (${d.reason})", "IA", t?.let { if (it.fallback) "moteur Pitwall (repli)" else (it.modelId ?: it.backend.label) } ?: "IA",
+                        t?.takeIf { it.fallback }?.verdict ?: "", tools = t?.tools ?: emptyList(), latencyMs = t?.latencyMs,
+                    )
                     return r.messages
                 }
                 Converse.Stale -> return emptyList()
@@ -364,7 +404,14 @@ class RadioConversation(
      * mémoire. La réponse est vérifiée (chiffres, autres voitures, conseils) ; une commande passe par le garde. Si le
      * modèle ne répond pas, le calcul du moteur est dit tel quel.
      */
-    private suspend fun converse(router: AiRouter, turn: ConversationRouter.Turn, onThinking: (EngineerMessage) -> Unit, myTurn: Long = this.turn): Converse {
+    private suspend fun converse(
+        router: AiRouter,
+        turn: ConversationRouter.Turn,
+        onThinking: (EngineerMessage) -> Unit,
+        myTurn: Long = this.turn,
+        /** Question d'analyse (#73) : l'IA explique, elle ne modifie rien ; une commande qu'elle proposerait est écartée. */
+        analysisOnly: Boolean = false,
+    ): Converse {
         val (analysis, ctx, tools) = mutex.withLock {
             val a = race.engineAnalysis(turn)
             val c = race.conversationContext(turn, a)
@@ -409,13 +456,23 @@ class RadioConversation(
             failure != null -> "échec : ${failure.kind.label}"
             else -> "aucun modèle disponible"
         }
-        val answered = reply is AiReply.Answer || reply is AiReply.Command
+        // Question d'analyse : une commande proposée par l'IA n'est ni appliquée ni proposée au pilote (#73, consigne 09/11).
+        val commandOnAnalysis = analysisOnly && reply is AiReply.Command
+        val answered = reply is AiReply.Answer || (reply is AiReply.Command && !commandOnAnalysis)
         lastTrace = AiTrace(
-            turn.question, outcome.text, verdict, latency, outcome.backend ?: AiBackend.ENGINE, outcome.modelId, outcome.attempts, fallback = !answered,
+            turn.question, outcome.text, if (commandOnAnalysis) "commande de l'IA écartée (question d'analyse)" else verdict,
+            latency, outcome.backend ?: AiBackend.ENGINE, outcome.modelId, outcome.attempts, fallback = !answered, tools = outcome.tools,
         )
-        val why = if (reply == null) "IA cloud : ${failure?.kind?.label ?: "pas de réponse"}" else "IA cloud : réponse écartée ($verdict)"
+        val why = when {
+            reply == null -> "IA cloud : ${failure?.kind?.label ?: "pas de réponse"}"
+            commandOnAnalysis -> "IA cloud : commande écartée sur une question"
+            else -> "IA cloud : réponse écartée ($verdict)"
+        }
         return mutex.withLock {
             when {
+                commandOnAnalysis -> analysis?.let {
+                    Converse.Done(race.conversationReply(turn, it, RaceMemory.ENGINE, it, fromAi = false, notice = "$why → réponse du moteur local."))
+                } ?: Converse.Failed(EngineerMessage("$why → moteur local.", Priority.INFO, MessageCategory.DRIVER))
                 reply is AiReply.Answer -> Converse.Done(
                     race.conversationReply(turn, Persona.polish(reply.text, ctx.recent.map { it.answer }).ifBlank { reply.text }, outcome.modelId ?: "IA", analysis, fromAi = true),
                 )
