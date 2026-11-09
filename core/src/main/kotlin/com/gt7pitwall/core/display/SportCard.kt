@@ -54,6 +54,8 @@ data class SportCard(
     val classesAgreeDespiteConflict: Boolean = false,
     /** Nom du circuit tel que dans la base (sans « (inversé) »), pour retrouver sa fiche officielle sans signature. */
     val trackLookupName: String? = null,
+    /** Tracé reconstitué d'un relevé de bords (pas une signature complète) : dit sous le dessin. */
+    val outlineRebuilt: Boolean = false,
 ) {
     /** Deux gommes obligatoires ou plus : passage aux stands nécessaire pour changer de gomme. */
     val tyreChangeNeeded: Boolean get() = (requiredTyres?.size ?: 0) >= 2
@@ -75,6 +77,9 @@ data class SportCard(
             val today = Instant.ofEpochMilli(nowMs).atZone(PARIS).toLocalDate()
             val course = ed.trackId?.let(db::course)
             val sig = ed.trackId?.let { id -> db.geometrySignatures.firstOrNull { it.course == id || it.reverseCourse == id } }
+            // Sans signature : tracé d'affichage reconstitué des relevés (Suzuka East…), retrouvé par le nom exact.
+            val lookup = course?.name ?: ed.trackName.value?.takeIf { ed.trackName.known }
+            val drawn = if (sig == null && lookup != null) db.trackOutlines.firstOrNull { nameKey(it.name) == nameKey(lookup) } else null
             val carsText = ed.cars.value?.takeIf { ed.cars.known }
             val car = carsText?.let { matchCar(it, db) }
             // Désaccord : le détail par source est dans la note du champ (« GTPlanet : X / Victory : Y »).
@@ -89,7 +94,8 @@ data class SportCard(
                 trackName = course?.label ?: ed.trackName.value?.takeIf { ed.trackName.known },
                 trackStatus = ed.trackName.status,
                 lengthM = course?.lengthM ?: sig?.lengthM,
-                outline = sig?.let { normalize(it.path) },
+                outline = sig?.let { normalize(it.path) } ?: drawn?.let { normalize(it.path) },
+                outlineRebuilt = drawn != null,
                 laps = ed.laps.value?.takeIf { ed.laps.known },
                 carsText = carsText,
                 carsStatus = ed.cars.status,
@@ -102,12 +108,14 @@ data class SportCard(
                 fuelMultiplier = ed.fuelMultiplier.value?.takeIf { ed.fuelMultiplier.known },
                 tyreMultiplier = ed.tyreMultiplier.value?.takeIf { ed.tyreMultiplier.known },
                 sources = ed.sources.map { it.name }.distinct(),
-                officialTrackId = sig?.officialId,
+                officialTrackId = sig?.officialId ?: drawn?.officialId,
                 carsBySource = bySource,
                 classesAgreeDespiteConflict = carsText == null && sharedClasses != null,
                 trackLookupName = course?.name ?: ed.trackName.value?.takeIf { ed.trackName.known },
             )
         }
+
+        private fun nameKey(s: String) = s.lowercase().replace(Regex("[^a-z0-9]+"), "")
 
         /** Valeurs par source d'une note de conflit « Source : valeur / Source : valeur ». */
         fun conflictValues(note: String?): List<Pair<String, String>> =

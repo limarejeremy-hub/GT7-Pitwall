@@ -25,6 +25,7 @@ class SportCardTest {
     private val dir = File("../app/src/main/assets/gt7db")
     private val db = Gt7Database.parse(File(dir, "cars.csv").readText(), File(dir, "maker.csv").readText(), File(dir, "course.csv").readText()).also {
         it.trackSignatures = TrackSignature.parseAll(File(dir, "track_signatures.json").readText())
+        it.trackOutlines = com.gt7pitwall.core.knowledge.TrackOutline.parseAll(File(dir, "track_outlines.json").readText())
     }
     private val paris = ZoneId.of("Europe/Paris")
     private val monday = LocalDate.of(2026, 11, 2)
@@ -92,5 +93,14 @@ class SportCardTest {
         val d = SportCard.of(edition(Series.DAILY_A, 847, ok("Dragon Trail - Gardens"), different, 7), db, wednesday)
         assertTrue(d.classes.isEmpty(), "Gr.3 contre Gr.4 : aucun badge deviné")
         assertEquals(2, d.carsBySource.size)
+    }
+
+    @Test fun suzukaEastGetsItsRebuiltOutlineAndOfficialId() {
+        val c = SportCard.of(edition(Series.DAILY_A, 442, ok("Suzuka Circuit East Course"), ok("Gr.4"), 7), db, wednesday)
+        val o = c.outline
+        assertNotNull(o, "tracé reconstitué des relevés (Suzuka East n'a pas de signature)")
+        assertTrue(c.outlineRebuilt)
+        assertEquals("4414cb", c.officialTrackId)
+        assertTrue(db.geometrySignatures.none { it.officialId == "4414cb" }, "jamais utilisé pour la reconnaissance")
     }
 }

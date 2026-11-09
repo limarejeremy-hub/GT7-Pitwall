@@ -72,6 +72,29 @@ class TrackSignature(
 }
 
 /**
+ * Tracé d'AFFICHAGE d'une configuration sans signature (Suzuka East…), reconstitué par `tools/track_outlines/build.py`
+ * à partir des relevés CC0 de gt7-datalogger-track-data. Jamais utilisé pour reconnaître un circuit.
+ */
+class TrackOutline(val officialId: String?, val name: String, val lengthM: Int, val path: FloatArray, val from: String?) {
+    companion object {
+        fun parseAll(json: String): List<TrackOutline> {
+            val o = JSONObject(json)
+            require(o.optString("format") == "gt7pitwall-track-outlines") { "format de tracés inconnu" }
+            val a = o.getJSONArray("outlines")
+            return (0 until a.length()).mapNotNull { i ->
+                val r = a.getJSONObject(i)
+                val p = r.getJSONArray("path")
+                if (p.length() < 20 || p.length() % 2 != 0) return@mapNotNull null
+                TrackOutline(
+                    r.optString("official_id", "").takeIf { Regex("^[0-9a-f]{6}$").matches(it) }, r.getString("name"),
+                    r.optInt("length_m", 0), FloatArray(p.length()) { p.getDouble(it).toFloat() }, r.optString("from", "").ifEmpty { null },
+                )
+            }
+        }
+    }
+}
+
+/**
  * Reconnaissance du circuit par la géométrie, à partir des positions X/Z de la télémétrie, bien avant la fin du
  * premier tour (la longueur d'un tour complet n'est plus nécessaire).
  *

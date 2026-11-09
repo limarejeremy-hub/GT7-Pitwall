@@ -37,3 +37,16 @@ d'échec, rien n'est affiché (le tracé dessiné reste). Au passage : l'adresse
 (`car_thumbnails/carNNNN.png`) est **confirmée** (HTTP 200, Audi TT Cup '16).
 
 `TrackCatalogPolicyTest` (4, extraits synthétiques), lecture validée sur les vrais fichiers du site (non versionnés).
+
+## V500 : tracés reconstitués (Suzuka East…)
+
+Le dépôt amont (gt7-datalogger-track-data, commit 637aaa3 du 08/11) a maintenant un relevé de bords de Suzuka East,
+mais toujours pas de signature utilisable (sans tracé, signalée). `tools/track_outlines/build.py` reconstitue un
+**tracé d'affichage** à partir de deux données CC0 réelles : la portion du tracé complet du même site couverte par le
+relevé (d'un seul tenant), plus la liaison propre à la configuration (moyenne des points du relevé hors du tracé
+complet, tous les 20 m). Gardé seulement si la longueur est à 5 % de l'officielle.
+
+Résultat (`assets/gt7db/track_outlines.json`) : Suzuka East 2 236 m (officiel 2 243), Lago Maggiore Centre et East
+End, Red Bull Ring Short Track. Mention « Tracé reconstitué d'un relevé de bords » sous le dessin. **Jamais utilisé pour
+reconnaître le circuit** (affichage seulement ; `track_signatures.json` inchangé). Toujours sans tracé : Barcelona
+National et Rallycross, Spa 24h, Streets of Willow Springs, Northern Isle (pas de relevé exploitable).

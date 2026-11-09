@@ -95,6 +95,10 @@ class Gt7Database(cars: Map<Int, Car>, courses: List<Course>) {
     @Volatile
     var numberedCorners: Map<Int, com.gt7pitwall.core.analysis.NumberedCorners> = emptyMap()
 
+    /** Tracés d'affichage des configurations sans signature (`track_outlines.json`) : Briefing seulement. */
+    @Volatile
+    var trackOutlines: List<TrackOutline> = emptyList()
+
     /** Signatures géométriques des circuits (fichier `track_signatures.json`) ; vide : reconnaissance par la longueur seule. */
     @Volatile
     var trackSignatures: List<TrackSignature> = emptyList()
