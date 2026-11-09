@@ -68,7 +68,7 @@ enum class FailureKind(val label: String) {
 
 sealed interface AiResult {
     /** [evidence] : faits rendus par des outils de données pendant la réponse (#70), autorisés au contrôle des chiffres. */
-    data class Text(val text: String, val evidence: String = "") : AiResult
+    data class Text(val text: String, val evidence: String = "", val tools: List<String> = emptyList()) : AiResult
 
     /** [daily] : le message d'erreur parle d'un plafond journalier (sinon : par minute, ou inconnu). */
     data class Failure(val kind: FailureKind, val detail: String? = null, val daily: Boolean = false) : AiResult

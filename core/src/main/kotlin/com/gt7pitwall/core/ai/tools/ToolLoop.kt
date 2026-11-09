@@ -53,7 +53,7 @@ class ToolLoop(
             turn.failure?.let { return Outcome(it, calls, round, stats) }
             if (turn.calls.isEmpty()) {
                 val text = turn.text.trim()
-                val r = if (text.isEmpty()) AiResult.Failure(FailureKind.EMPTY) else AiResult.Text(text, evidence.toString().trim())
+                val r = if (text.isEmpty()) AiResult.Failure(FailureKind.EMPTY) else AiResult.Text(text, evidence.toString().trim(), calls.map { it.name })
                 return Outcome(r, calls, round, stats)
             }
             for (fc in turn.calls) {

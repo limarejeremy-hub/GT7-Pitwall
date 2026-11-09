@@ -147,6 +147,26 @@ object IntentArbiter {
     }
 
     /** Pour une réponse attendue : la phrase libre est-elle plutôt une question ou une hypothèse ? */
+    /**
+     * Comparaison, regret ou demande d'avis d'au moins quatre mots (« était-il préférable de partir en durs ? », « vaut-il
+     * mieux faire un arrêt de plus ? ») : une question d'ANALYSE, même quand les deux transcriptions concordent et
+     * qu'aucune commande n'y est lue (consigne 09/11, point 3).
+     */
+    fun analysisQuestion(text: String): Boolean {
+        val n = DriverCommandParser.normalize(text)
+        return n.split(' ').count { it.isNotBlank() } >= 4 && ANALYSIS_MARKERS.containsMatchIn(n)
+    }
+
+    /** Sujet d'une question d'analyse : pilotage, pneus, sinon stratégie. */
+    fun topicOf(text: String): Topic {
+        val n = DriverCommandParser.normalize(text)
+        return when {
+            DRIVING.containsMatchIn(n) -> Topic.COACHING
+            TYRES.containsMatchIn(n) -> Topic.TYRES
+            else -> Topic.STRATEGY
+        }
+    }
+
     fun isQuestionOrHypothesis(text: String): Boolean {
         val m = StatementGuard.mode(text)
         return m == StatementGuard.Mode.QUESTION || m == StatementGuard.Mode.HYPOTHETICAL || ANALYSIS_MARKERS.containsMatchIn(DriverCommandParser.normalize(text))
