@@ -206,6 +206,24 @@ class RaceSim(
         repeat(120) { step(65f) }
     }
 
+    /**
+     * Arrêt au stand MAL CLASSÉ par le détecteur (fixture synthétique reprenant #73) : même approche au limiteur et même
+     * arrêt 60 m après la ligne que [pitStop], sans ravitaillement, mais sur la trajectoire de course (écart < 4 m) :
+     * le détecteur conclut « arrêt en piste » alors que c'est le passage du plan.
+     */
+    fun pitStopReadAsTrackStop(stopSeconds: Float = 4.8f) {
+        val entry = (2 * PI - 400.0 / radius).toFloat()
+        while (theta < entry) step(80f)
+        repeat(60) { step(40f - it * 0.33f) }
+        val startLap = lap
+        while (lap == startLap) step(20f)
+        while (theta < 60f / radius) step(20f)
+        repeat(30) { step(20f - it * 0.66f) }
+        stand(stopSeconds)
+        repeat(240) { step(5f + it * 0.25f) }
+        repeat(120) { step(65f) }
+    }
+
     /** Accident : de 80 m/s à 0 en 3 paquets à mi-tour, immobile 5 s, puis repart. */
     fun crash() {
         driveTo(PI.toFloat())

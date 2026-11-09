@@ -28,7 +28,27 @@ enum class PitAssessment {
  */
 class PitDetector(private val refuelThreshold: Float = 0.05f) {
 
-    data class Visit(val lap: Int, val refuelAmount: Float, val stoppedSeconds: Float, val assessment: PitAssessment, val locationKnown: Boolean)
+    /**
+     * [trackReason] : pour un [PitAssessment.TRACK_STOP], l'indice qui a écarté l'hypothèse du stand. Seul un choc
+     * ([TrackReason.VIOLENT]) est un signe fort ; les autres indices se trompent parfois (#73 : vrai arrêt au stand du
+     * tour 7 classé « en piste »), le contrôleur les rapproche alors du plan et du règlement.
+     */
+    data class Visit(
+        val lap: Int,
+        val refuelAmount: Float,
+        val stoppedSeconds: Float,
+        val assessment: PitAssessment,
+        val locationKnown: Boolean,
+        val trackReason: TrackReason? = null,
+    )
+
+    /** Pourquoi une immobilisation n'a pas été jugée « stand ». */
+    enum class TrackReason(val label: String) {
+        VIOLENT("décélération violente avant l'arrêt (choc)"),
+        NO_LIMITER("pas d'approche à vitesse limitée"),
+        FAR_FROM_LINE("loin de la ligne de départ"),
+        ON_RACING_LINE("sur la trajectoire de course"),
+    }
 
     private val speeds = FloatArray(HISTORY)
     private var count = 0
@@ -45,6 +65,7 @@ class PitDetector(private val refuelThreshold: Float = 0.05f) {
     private var stillPackets = 0
     private var fastPackets = 0
     private var pitLike = false
+    private var trackReason: TrackReason? = null
     private var locationKnown = false
 
     fun reset() {
@@ -98,38 +119,42 @@ class PitDetector(private val refuelThreshold: Float = 0.05f) {
             pitLike -> PitAssessment.PIT_LIKE_STOP
             else -> PitAssessment.TRACK_STOP
         }
-        return Visit(visitLap, fuel, stoppedPackets / 60f, assessment, locationKnown)
+        return Visit(visitLap, fuel, stoppedPackets / 60f, assessment, locationKnown, trackReason.takeIf { assessment == PitAssessment.TRACK_STOP })
     }
 
     private fun openVisit(p: TelemetryPacket, outline: TrackOutline?, assess: Boolean) {
         open = true
         visitLap = p.currentLap
         fuel = 0f
-        stoppedPackets = 0
+        // Immobilisation déjà écoulée avant l'ouverture (2 s) : comptée dans la durée (le paquet courant l'est ensuite).
+        stoppedPackets = if (assess) (stillPackets - 1).coerceAtLeast(0) else 0
         fastPackets = 0
         locationKnown = outline != null && outline.xs.size >= 2
-        pitLike = if (assess) looksLikePitStop(p, outline) else true
+        trackReason = if (assess) whyNotPit(p, outline) else null
+        pitLike = trackReason == null
     }
 
-    /** Indices d'un arrêt aux stands, calculés au moment où la voiture s'immobilise. */
-    private fun looksLikePitStop(p: TelemetryPacket, outline: TrackOutline?): Boolean {
-        // 1. Pas de décélération violente juste avant l'arrêt (choc).
-        val recent = lastSpeeds(VIOLENT_WINDOW)
+    /** Indices d'un arrêt aux stands, calculés au moment où la voiture s'immobilise : null s'ils concordent, sinon le premier qui manque. */
+    private fun whyNotPit(p: TelemetryPacket, outline: TrackOutline?): TrackReason? {
+        // 1. Pas de décélération violente juste avant l'arrêt (choc). Le passage s'ouvre après 2 s d'immobilité : la
+        //    fenêtre remonte avant ces 2 s (sinon elle ne contient que des 0 km/h et un choc n'est jamais vu).
+        val recent = lastSpeeds(VIOLENT_WINDOW + stillPackets)
         for (i in 1 until recent.size) {
             val g = abs(recent[i] - recent[i - 1]) / 3.6f * 60f / 9.81f
-            if (g > VIOLENT_G) return false
+            if (g > VIOLENT_G) return TrackReason.VIOLENT
         }
         // 2. Approche à vitesse limitée (limiteur de la voie des stands) : quelques secondes entre 20 et 105 km/h,
         //    sans dépasser 110 km/h dans les 5 dernières secondes.
         val approach = lastSpeeds(HISTORY)
         val limited = approach.count { it in 20f..105f }
         val maxRecent = lastSpeeds(300).maxOrNull() ?: 0f
-        if (limited < LIMITER_PACKETS || maxRecent > 110f) return false
+        if (limited < LIMITER_PACKETS || maxRecent > 110f) return TrackReason.NO_LIMITER
         // 3. Position, si la trajectoire d'un tour complet est connue.
-        if (outline == null || outline.xs.size < 2) return true
+        if (outline == null || outline.xs.size < 2) return null
         val toStartLine = hypot(p.positionX - outline.xs[0], p.positionZ - outline.zs[0])
-        val offLine = distanceToLine(p.positionX, p.positionZ, outline)
-        return toStartLine <= MAX_DISTANCE_TO_START_M && offLine >= MIN_OFF_LINE_M
+        if (toStartLine > MAX_DISTANCE_TO_START_M) return TrackReason.FAR_FROM_LINE
+        if (distanceToLine(p.positionX, p.positionZ, outline) < MIN_OFF_LINE_M) return TrackReason.ON_RACING_LINE
+        return null
     }
 
     private fun distanceToLine(x: Float, z: Float, o: TrackOutline): Float {
@@ -166,7 +191,12 @@ class PitDetector(private val refuelThreshold: Float = 0.05f) {
         const val CLOSE_FAST_PACKETS = 60 // 1 s au-dessus de 120 km/h : sortie des stands
         const val MIN_REFUEL = 0.5f
         const val VIOLENT_WINDOW = 120
-        const val VIOLENT_G = 2.5f
+        /**
+         * Choc : au-delà de tout freinage (une voiture de course freine à 4-5 g au plus). Jusqu'au 09/11 la fenêtre ne
+         * voyait que les 2 s d'immobilité et le contrôle ne servait jamais ; à 2,5 g il aurait pris un freinage appuyé
+         * dans la voie des stands pour un accident.
+         */
+        const val VIOLENT_G = 8f
         const val LIMITER_PACKETS = 180 // 3 s à vitesse limitée
         const val MAX_DISTANCE_TO_START_M = 800f
         const val MIN_OFF_LINE_M = 4f
