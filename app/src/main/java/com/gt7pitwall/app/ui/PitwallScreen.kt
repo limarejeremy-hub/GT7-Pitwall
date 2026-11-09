@@ -411,6 +411,12 @@ fun PitwallScreen(
                         color = PitColors.Orange)
                     Text("Comprends le règlement et choisis ton plan avant de prendre le départ.",
                         color = PitColors.Muted, style = MaterialTheme.typography.bodySmall)
+                    // Courses Sport A/B/C de la semaine, lisibles d'un coup d'œil (circuit, voiture ou catégorie, gommes).
+                    Text("COURSES SPORT DE LA SEMAINE", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = PitColors.Muted, letterSpacing = 1.sp)
+                    val sportCards = remember(state.schedule) {
+                        com.gt7pitwall.core.display.SportCard.all(state.schedule, engine.database, System.currentTimeMillis())
+                    }
+                    SportWeekCards(sportCards)
                     Gt7CareerPanel(gt7Profile, editable = false, localCareer = state.localCareer)
                     RaceSetupCard(state, rules, engine.database, engine::setRules, engine::command,
                         engine::selectProfile, engine::updateProfile, engine::confirmRules,
