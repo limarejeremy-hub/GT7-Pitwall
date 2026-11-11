@@ -135,28 +135,28 @@ fun PitIcon(dest: PitDest, color: Color, modifier: Modifier = Modifier) {
         val h = size.height
         val stroke = Stroke(width = w * 0.085f, cap = StrokeCap.Round, join = StrokeJoin.Round)
         fun p(x: Float, y: Float) = Offset(w * x, h * y)
-        fun path(vararg pts: Offset, close: Boolean = false) = Path().apply {
+        // Liste (et non vararg) : Offset est une classe de valeur, interdite en vararg.
+        fun path(pts: List<Offset>) = Path().apply {
             moveTo(pts[0].x, pts[0].y)
             pts.drop(1).forEach { lineTo(it.x, it.y) }
-            if (close) close()
         }
         when (dest) {
             // Drapeau.
             PitDest.RACE -> {
-                drawPath(path(p(.22f, .9f), p(.22f, .14f)), color, style = stroke)
-                drawPath(path(p(.22f, .16f), p(.82f, .16f), p(.68f, .36f), p(.82f, .56f), p(.22f, .56f)), color, style = stroke)
+                drawPath(path(listOf(p(.22f, .9f), p(.22f, .14f))), color, style = stroke)
+                drawPath(path(listOf(p(.22f, .16f), p(.82f, .16f), p(.68f, .36f), p(.82f, .56f), p(.22f, .56f))), color, style = stroke)
             }
             // Frise des relais : trois segments et un arrêt.
             PitDest.STRATEGY -> {
-                drawPath(path(p(.1f, .3f), p(.42f, .3f)), color, style = stroke)
-                drawPath(path(p(.58f, .3f), p(.9f, .3f)), color, style = stroke)
+                drawPath(path(listOf(p(.1f, .3f), p(.42f, .3f))), color, style = stroke)
+                drawPath(path(listOf(p(.58f, .3f), p(.9f, .3f))), color, style = stroke)
                 drawCircle(color, w * .07f, p(.5f, .3f))
-                drawPath(path(p(.1f, .7f), p(.62f, .7f)), color, style = stroke)
-                drawPath(path(p(.78f, .7f), p(.9f, .7f)), color, style = stroke)
+                drawPath(path(listOf(p(.1f, .7f), p(.62f, .7f))), color, style = stroke)
+                drawPath(path(listOf(p(.78f, .7f), p(.9f, .7f))), color, style = stroke)
                 drawCircle(color, w * .07f, p(.7f, .7f))
             }
             // Courbe de télémétrie.
-            PitDest.TELEMETRY -> drawPath(path(p(.08f, .74f), p(.3f, .46f), p(.48f, .6f), p(.66f, .22f), p(.92f, .56f)), color, style = stroke)
+            PitDest.TELEMETRY -> drawPath(path(listOf(p(.08f, .74f), p(.3f, .46f), p(.48f, .6f), p(.66f, .22f), p(.92f, .56f))), color, style = stroke)
             // Onde radio autour d'un point.
             PitDest.VEGA -> {
                 drawCircle(color, w * .1f, p(.5f, .56f))
@@ -165,7 +165,7 @@ fun PitIcon(dest: PitDest, color: Color, modifier: Modifier = Modifier) {
             }
             // Clé plate.
             PitDest.GARAGE -> {
-                drawPath(path(p(.2f, .8f), p(.62f, .38f)), color, style = Stroke(width = w * 0.13f, cap = StrokeCap.Round))
+                drawPath(path(listOf(p(.2f, .8f), p(.62f, .38f))), color, style = Stroke(width = w * 0.13f, cap = StrokeCap.Round))
                 drawArc(color, -20f, 270f, false, p(.52f, .1f), androidx.compose.ui.geometry.Size(w * .36f, h * .36f), style = stroke)
             }
         }
