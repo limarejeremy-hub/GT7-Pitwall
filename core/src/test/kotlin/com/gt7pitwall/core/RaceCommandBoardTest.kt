@@ -147,4 +147,24 @@ class RaceCommandBoardTest {
         assertTrue(b.alerts.isEmpty())
         assertEquals(RaceCommandBoard.CompoundStatus.UNCERTAIN, b.tyres.compoundStatus)
     }
+
+    @Test fun fuelCriticalAndBoxThisLapRemainTwoVisibleUrgentAlerts() {
+        val stop = PlannedStop(8, null, forFuel = true, mandatory = false, tyreToFit = TyreCompound.RH, changeTyres = true)
+        val need = FuelAdvice.PitRequired(30f, 8, 1, 0.2f, 7f)
+        val b = board(packet = packet(lap = 8), fuel = report(need, lapsOfFuel = 0.7f), plan = plan(stop))
+        assertEquals(
+            listOf(AlertKind.FUEL_CRITICAL, AlertKind.BOX_THIS_LAP),
+            b.alerts.filter { it.tone == Tone.CRITICAL }.map { it.kind },
+            "La présentation doit conserver les deux consignes urgentes, pas seulement le +1.",
+        )
+    }
+
+    @Test fun stoppingTelemetryDoesNotMakeAStoredPacketLive() {
+        val need = FuelAdvice.PitRequired(30f, 8, 1, 0.2f, 7f)
+        val oldPacket = board(connection = ConnectionStatus.Stopped, packet = packet(lap = 8), fuel = report(need, lapsOfFuel = 0.7f))
+        assertFalse(oldPacket.live, "Un paquet mémorisé ne signifie pas une télémétrie active.")
+        assertTrue(oldPacket.alerts.isEmpty(), "Ne pas déclencher d'alertes sur la dernière valeur mémorisée.")
+        assertEquals(8, oldPacket.lap, "L'historique reste accessible, mais l'interface doit l'atténuer.")
+    }
+
 }
