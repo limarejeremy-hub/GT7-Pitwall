@@ -10,6 +10,9 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import com.gt7pitwall.app.service.TelemetryService
 import com.gt7pitwall.app.ui.PitwallScreen
 import com.gt7pitwall.app.ui.theme.PitwallTheme
@@ -23,6 +26,23 @@ class MainActivity : ComponentActivity() {
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             if (granted) (application as PitwallApp).setVoiceInput(true)
         }
+
+    /**
+     * Plein écran immersif (cockpit) : barres d'état et de navigation masquées, y compris la barre des tâches du Fold.
+     * Un glissement depuis un bord les fait réapparaître un instant, sans déplacer l'interface.
+     */
+    private fun applyImmersive() {
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            hide(WindowInsetsCompat.Type.systemBars())
+        }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        // Retour d'une autre application, d'un dialogue ou d'un changement de posture du Fold : on reste immersif.
+        if (hasFocus) applyImmersive()
+    }
 
     override fun onStart() {
         super.onStart()
@@ -39,6 +59,12 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         // Tableau de bord : l'écran reste allumé tant que l'application est affichée.
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // V506 : le contenu s'étend aussi autour de la découpe de l'écran ; l'interface, elle, reste dans la zone sûre
+        // (voir PitwallShell : WindowInsets.safeDrawing).
+        window.attributes = window.attributes.apply {
+            layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+        }
+        applyImmersive()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=

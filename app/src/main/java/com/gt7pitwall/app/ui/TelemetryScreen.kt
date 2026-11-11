@@ -96,7 +96,8 @@ private fun num(v: Float?, digits: Int = 1): String = v?.let { String.format(Loc
 @Composable
 fun TelemetryScreen(board: TelemetryBoard?, modifier: Modifier = Modifier) {
     BoxWithConstraints(modifier.fillMaxSize()) {
-        val wide = maxWidth >= 720.dp
+        // 560 dp : deux colonnes aussi sur le Fold déplié en portrait, rail de navigation déduit (V506).
+        val wide = maxWidth >= 560.dp
         Column(
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),

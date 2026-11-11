@@ -205,6 +205,9 @@ fun PitwallScreen(
                 engine.detailedLapReports = it
             },
         )
+    }
+    // GARAGE / LAB : diagnostics, bancs d'essai et sondes expérimentales.
+    val labCards: @Composable () -> Unit = {
         RadioDiagnosticsCard(
             voiceInput,
             googleSpeech,
@@ -224,6 +227,9 @@ fun PitwallScreen(
         ExperimentalFieldsCard(engine)
         ControllerRadioProbeCard(engine)
         if (devTools) GapHunterCard(engine)
+    }
+    // VEGA : sortie radio (Discord), IA de l'ingénieure, personnalité.
+    val vegaAiCards: @Composable () -> Unit = {
         DiscordCard(
             discord = discord,
             autoJoin = discordAutoJoin,
@@ -247,7 +253,6 @@ fun PitwallScreen(
         CloudAiCard(cloudAi, onAiMode, radioRoute)
         ChatGptCard(cloudAi, voice)
         HumanRadioCard(engine, settings)
-        DrivingCard(engine)
         AiCard(
             on = aiOn,
             state = aiState,
@@ -302,209 +307,215 @@ fun PitwallScreen(
         )
     }
 
-    var selectedTab by rememberSaveable { mutableStateOf("Live") }
-    if (selectedTab == "Historique") {
-        HistoryScreen(engine, onBack = { selectedTab = "Live" })
+    var dest by rememberSaveable { mutableStateOf(PitDest.RACE) }
+    var showHistory by rememberSaveable { mutableStateOf(false) }
+    var telemetryView by rememberSaveable { mutableStateOf(0) }
+    if (showHistory) {
+        Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).windowInsetsPadding(WindowInsets.safeDrawing)) {
+            HistoryScreen(engine, onBack = { showHistory = false })
+        }
         return
     }
 
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
-        topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text("GT7 Pitwall", fontWeight = FontWeight.ExtraBold)
-                        FreshnessLine(freshness, onRefreshSchedule)
-                    }
+    // Écran RACE : tout l'affichage et chaque alerte sont décidés par RaceCommandBoard (module core, testé).
+    val board = remember(state, connection) {
+        com.gt7pitwall.core.display.RaceCommandBoard.of(
+            connection = connection,
+            packet = state.snapshot.packet,
+            position = state.driverPosition,
+            positionMeasured = state.positionMeasured,
+            cars = state.positionCars,
+            finished = state.raceFinished,
+            fuel = state.fuel,
+            plan = state.plan,
+            stint = state.tyreStint,
+            grip = state.grip.level,
+            stopsDone = state.stops.size,
+            pendingStop = state.pendingStop,
+            missingTyres = state.missingTyres,
+            rulesIncomplete = state.ruleGaps.isNotEmpty(),
+        )
+    }
+    val raceTitle = listOfNotNull(
+        state.profile.id.label,
+        state.course?.label ?: state.edition?.trackName?.value,
+        state.garageCar.name,
+    ).joinToString(" · ")
+    // État de Véga : ce que fait réellement la radio maintenant (jamais « à l'écoute » si le micro est coupé).
+    val (vegaStatus, vegaActive) = when {
+        !voiceOn -> "voix coupée" to false
+        listenState == ListenState.AWAKE -> "à l'écoute" to true
+        listenState == ListenState.WAITING_WAKE_WORD -> "en veille · dis « $wakeWord »" to true
+        listenState == ListenState.PAUSED -> "répond" to true
+        listenState == ListenState.LOADING -> "chargement" to false
+        listenState == ListenState.ERROR -> "micro en erreur" to false
+        else -> "micro coupé · voix active" to true
+    }
+    val alertColor = board.topAlert?.let {
+        if (it.tone == com.gt7pitwall.core.display.RaceCommandBoard.Tone.CRITICAL) PitColors.Red else PitColors.Yellow
+    }
+
+    // Retour Android : revient à l'écran de course avant de quitter l'application.
+    androidx.activity.compose.BackHandler(enabled = dest != PitDest.RACE) { dest = PitDest.RACE }
+
+    PitwallShell(selected = dest, onSelect = { dest = it }, raceAlert = alertColor) { wide ->
+        // RACE ⇄ TELEMETRY : glisser horizontalement pour passer de l'un à l'autre.
+        val swipe = Modifier.pointerInput(dest) {
+            var total = 0f
+            detectHorizontalDragGestures(
+                onDragStart = { total = 0f },
+                onDragEnd = {
+                    if (total < -SWIPE_PX && dest == PitDest.RACE) dest = PitDest.TELEMETRY
+                    else if (total > SWIPE_PX && dest == PitDest.TELEMETRY) dest = PitDest.RACE
                 },
-                actions = {
-                    TextButton(onClick = { selectedTab = "Atelier" }) {
-                        // Revue #69 : « PS5 active » seulement quand des paquets arrivent vraiment ; sinon on écoute.
-                        val receiving = connection is ConnectionStatus.Receiving
-                        Text(
-                            when { running && receiving -> "● PS5 active"; running -> "◌ Écoute PS5"; else -> "○ Connecter PS5" },
-                            color = when { running && receiving -> PitColors.Green; running -> PitColors.Yellow; else -> PitColors.Muted },
-                        )
-                    }
-                    StatusPill(connection)
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background),
-            )
-        },
-        bottomBar = {
-            // Android 15+/Samsung Fold: the persistent taskbar can overlap a
-            // custom Scaffold bottomBar when the Activity uses enableEdgeToEdge().
-            // Include the system's ACTUAL safe-drawing bottom inset in the bar's
-            // measured height, so Scaffold also reserves it for the dashboard.
-            // Do not hard-code a gap: the taskbar size changes with posture/mode.
-            Row(
-                Modifier.fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surface)
-                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom))
-                    .padding(horizontal = 6.dp, vertical = 7.dp),
-                horizontalArrangement = Arrangement.spacedBy(3.dp),
-            ) {
-                listOf("Live", "Télémétrie", "Briefing", "Analyse", "Historique", "Atelier").forEach { tab ->
-                    val active = selectedTab == tab
-                    val symbol = when (tab) {
-                        "Live" -> "◉"
-                        "Télémétrie" -> "▦"
-                        "Briefing" -> "▤"
-                        "Analyse" -> "▥"
-                        "Historique" -> "◷"
-                        else -> "⚙"
-                    }
-                    Column(
-                        Modifier.weight(1f)
-                            .background(
-                                if (active) PitColors.Orange.copy(alpha = 0.19f)
-                                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.18f),
-                                RoundedCornerShape(13.dp),
-                            )
-                            .clickable { selectedTab = tab }
-                            .padding(vertical = 6.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    ) {
-                        Text(symbol, fontSize = 17.sp,
-                            color = if (active) PitColors.Orange else PitColors.Muted)
-                        Text(tab, fontSize = 11.sp, fontWeight = FontWeight.Bold,
-                            color = if (active) PitColors.Orange else MaterialTheme.colorScheme.onSurface)
+            ) { _, dx -> total += dx }
+        }
+        when (dest) {
+            PitDest.RACE -> Box(swipe.fillMaxSize()) {
+                RaceCommandCenter(
+                    board = board,
+                    title = raceTitle,
+                    stints = telemetryBoard?.stints.orEmpty(),
+                    startAdvice = state.startTyreAdvice,
+                    vegaStatus = vegaStatus,
+                    vegaActive = vegaActive,
+                    message = radio.firstOrNull(),
+                    wide = wide,
+                    onOpen = { dest = it },
+                )
+            }
+            PitDest.STRATEGY -> {
+                // Recalcul des cartes Sport quand le programme change, quand la base est actualisée après lui, et quand
+                // le jour change écran ouvert (revue #76) : horloge relue chaque minute.
+                val briefingNow by androidx.compose.runtime.produceState(System.currentTimeMillis()) {
+                    while (true) {
+                        kotlinx.coroutines.delay(60_000L)
+                        value = System.currentTimeMillis()
                     }
                 }
-            }
-        },
-    ) { padding ->
-        BoxWithConstraints(
-            Modifier
-                .fillMaxSize()
-                .padding(padding)
-                // Pass consumed Scaffold paddings to nested content: no
-                // duplicate inset, and no final card hidden behind the taskbar.
-                .consumeWindowInsets(padding),
-        ) {
-            val wide = maxWidth >= 600.dp
-            // Écran 1 « Live » et écran 2 « Télémétrie » : glisser horizontalement pour passer de l'un à l'autre.
-            val swipe = Modifier.pointerInput(selectedTab) {
-                var total = 0f
-                detectHorizontalDragGestures(
-                    onDragStart = { total = 0f },
-                    onDragEnd = {
-                        if (total < -SWIPE_PX && selectedTab == "Live") selectedTab = "Télémétrie"
-                        else if (total > SWIPE_PX && selectedTab == "Télémétrie") selectedTab = "Live"
-                    },
-                ) { _, dx -> total += dx }
-            }
-            when (selectedTab) {
-                "Live" -> Box(swipe) {
-                    PitwallLiveDashboard(
-                        state = state,
-                        messages = radio,
-                        onBriefing = { selectedTab = "Briefing" },
-                        onAnalysis = { selectedTab = "Analyse" },
-                        onAtelier = { selectedTab = "Atelier" },
-                    )
+                val sportKey = com.gt7pitwall.core.display.SportCard.refreshKey(state.schedule, engine.database, briefingNow)
+                val sportCards = remember(sportKey) {
+                    com.gt7pitwall.core.display.SportCard.all(state.schedule, engine.database, briefingNow)
                 }
-                "Télémétrie" -> TelemetryScreen(telemetryBoard, swipe)
-                "Briefing" -> ScrollColumn(Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
-                    Text("PRÉPARE TA COURSE", fontSize = 22.sp, fontWeight = FontWeight.Bold,
-                        color = PitColors.Orange)
-                    Text("Comprends le règlement et choisis ton plan avant de prendre le départ.",
-                        color = PitColors.Muted, style = MaterialTheme.typography.bodySmall)
-                    // Courses Sport A/B/C de la semaine, lisibles d'un coup d'œil (circuit, voiture ou catégorie, gommes).
-                    Text("COURSES SPORT DE LA SEMAINE", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = PitColors.Muted, letterSpacing = 1.sp)
-                    // Recalcul quand le programme change, quand la base (circuits, voitures) est actualisée après lui, et quand
-                    // le jour change écran ouvert (revue #76) : horloge relue chaque minute, cartes recalculées seulement si la clé change.
-                    val briefingNow by androidx.compose.runtime.produceState(System.currentTimeMillis()) {
-                        while (true) {
-                            kotlinx.coroutines.delay(60_000L)
-                            value = System.currentTimeMillis()
-                        }
-                    }
-                    val sportKey = com.gt7pitwall.core.display.SportCard.refreshKey(state.schedule, engine.database, briefingNow)
-                    val sportCards = remember(sportKey) {
-                        com.gt7pitwall.core.display.SportCard.all(state.schedule, engine.database, briefingNow)
-                    }
+                val week: @Composable () -> Unit = {
+                    SectionTitle("STRATEGY", "Règlement, carburant, pneus et arrêts : prépare ta course.")
+                    FreshnessLine(freshness, onRefreshSchedule)
+                    SectionLabel("Courses Sport de la semaine")
                     SportWeekCards(sportCards)
                     Gt7CareerPanel(gt7Profile, editable = false, localCareer = state.localCareer)
+                }
+                val planning: @Composable () -> Unit = {
                     RaceSetupCard(state, rules, engine.database, engine::setRules, engine::command,
                         engine::selectProfile, engine::updateProfile, engine::confirmRules,
                         onRefreshSchedule, engine::declareRules)
-                    if (!running) connectionCard()
-                }
-                "Analyse" -> ScrollColumn(Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
-                    Text("COMPRENDS TON PILOTAGE", fontSize = 22.sp,
-                        fontWeight = FontWeight.Bold, color = PitColors.Orange)
-                    Text("Tes points forts, ce que tu peux améliorer, et pourquoi.",
-                        color = PitColors.Muted, style = MaterialTheme.typography.bodySmall)
-                    DrivingCard(engine)
-                    CornerReportCard(state)
-                    LapCard(state)
-                    TrackMapCard(state.snapshot.trackOutline, state.snapshot.packet, state.cornerMarks)
-                    LapHistoryCard(state.snapshot.laps)
-                    CarCard(state.snapshot.packet, state.gForce)
                     FuelCard(state.fuel, state.snapshot.packet)
                     TyreCard(state, rules)
+                    if (!running) connectionCard()
                 }
-                else -> {
-                    // All legacy tools and experiments stay accessible, but no longer
-                    // steal space from the PSVR2 / no-HUD cockpit.
-                    if (wide) {
-                        Row(Modifier.fillMaxSize().padding(horizontal = 12.dp),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            ScrollColumn(Modifier.weight(1f)) {
-                                Text("ATELIER & CONNEXION", fontSize = 20.sp,
-                                    fontWeight = FontWeight.Bold, color = PitColors.Orange)
-                                Gt7CareerPanel(gt7Profile, editable = true, localCareer = state.localCareer)
-                                connectionCard()
-                                DriveCard(state.snapshot.packet)
-                                LapHistoryCard(state.snapshot.laps)
-                                CarCard(state.snapshot.packet, state.gForce)
-                            }
-                            ScrollColumn(Modifier.weight(1f)) {
-                                Text("OUTILS AVANCÉS", fontSize = 20.sp,
-                                    fontWeight = FontWeight.Bold, color = PitColors.Orange)
-                                RaceSetupCard(state, rules, engine.database, engine::setRules,
-                                    engine::command, engine::selectProfile, engine::updateProfile,
-                                    engine::confirmRules, onRefreshSchedule, engine::declareRules)
-                                TrackMapCard(state.snapshot.trackOutline, state.snapshot.packet, state.cornerMarks)
-                                FuelCard(state.fuel, state.snapshot.packet)
-                                TyreCard(state, rules)
-                                RadioCard(radio, engine::command)
-                                voiceRadioCard()
-                                BlackBoxMeasureCard(engine)
-                                TelemetryTraceCard(engine)
-                                CarImageDiagnosticCard()
-                                CarChangesCard(engine)
-                                DatabaseCoverageCard(engine)
-                            }
-                        }
-                    } else {
-                        ScrollColumn(Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
-                            Text("ATELIER & CONNEXION", fontSize = 20.sp,
-                                fontWeight = FontWeight.Bold, color = PitColors.Orange)
-                            Gt7CareerPanel(gt7Profile, editable = true, localCareer = state.localCareer)
-                            connectionCard()
-                            RaceSetupCard(state, rules, engine.database, engine::setRules,
-                                engine::command, engine::selectProfile, engine::updateProfile,
-                                engine::confirmRules, onRefreshSchedule, engine::declareRules)
-                            DriveCard(state.snapshot.packet)
-                            CarCard(state.snapshot.packet, state.gForce)
-                            TrackMapCard(state.snapshot.trackOutline, state.snapshot.packet, state.cornerMarks)
-                            FuelCard(state.fuel, state.snapshot.packet)
-                            TyreCard(state, rules)
-                            RadioCard(radio, engine::command)
-                            voiceRadioCard()
-                            LapHistoryCard(state.snapshot.laps)
-                            BlackBoxMeasureCard(engine)
-                            TelemetryTraceCard(engine)
-                            CarImageDiagnosticCard()
-                            CarChangesCard(engine)
-                            DatabaseCoverageCard(engine)
-                        }
+                TwoPanes(wide, week, planning)
+            }
+            PitDest.TELEMETRY -> Column(Modifier.fillMaxSize()) {
+                Segmented(listOf("EN DIRECT", "ANALYSE", "HISTORIQUE"), telemetryView) {
+                    if (it == 2) showHistory = true else telemetryView = it
+                }
+                if (telemetryView == 0) {
+                    TelemetryScreen(telemetryBoard, swipe)
+                } else {
+                    val driving: @Composable () -> Unit = {
+                        SectionTitle("ANALYSE", "Tes points forts, ce que tu peux améliorer, et pourquoi.")
+                        DrivingCard(engine)
+                        CornerReportCard(state)
+                        LapCard(state)
                     }
+                    val car: @Composable () -> Unit = {
+                        TrackMapCard(state.snapshot.trackOutline, state.snapshot.packet, state.cornerMarks)
+                        LapHistoryCard(state.snapshot.laps)
+                        DriveCard(state.snapshot.packet)
+                        CarCard(state.snapshot.packet, state.gForce)
+                    }
+                    TwoPanes(wide, driving, car)
                 }
+            }
+            PitDest.VEGA -> {
+                val talk: @Composable () -> Unit = {
+                    SectionTitle("VEGA", "Ton ingénieure : ce qu'elle dit, ce qu'elle entend, comment elle réfléchit.")
+                    Text("État : $vegaStatus", color = if (vegaActive) PitColors.Cyan else PitColors.Muted, fontWeight = FontWeight.Bold)
+                    RadioCard(radio, engine::command)
+                    voiceRadioCard()
+                }
+                TwoPanes(wide, talk, vegaAiCards)
+            }
+            PitDest.GARAGE -> {
+                val setup: @Composable () -> Unit = {
+                    SectionTitle("GARAGE", "Connexion à la PS5, profil, réglages et historique.")
+                    connectionCard()
+                    OutlinedButton(onClick = { showHistory = true }, modifier = Modifier.fillMaxWidth().height(56.dp)) {
+                        Text("Historique des courses et journaux", fontWeight = FontWeight.Bold)
+                    }
+                    Gt7CareerPanel(gt7Profile, editable = true, localCareer = state.localCareer)
+                }
+                val lab: @Composable () -> Unit = {
+                    SectionLabel("Lab : sondes, mesures et fonctions expérimentales")
+                    labCards()
+                    BlackBoxMeasureCard(engine)
+                    TelemetryTraceCard(engine)
+                    CarImageDiagnosticCard()
+                    CarChangesCard(engine)
+                    DatabaseCoverageCard(engine)
+                }
+                TwoPanes(wide, setup, lab)
+            }
+        }
+    }
+}
+
+/** Deux colonnes défilantes sur le Fold déplié, une seule sur l'écran extérieur (mêmes cartes, même ordre). */
+@Composable
+private fun TwoPanes(wide: Boolean, first: @Composable () -> Unit, second: @Composable () -> Unit) {
+    if (wide) {
+        Row(Modifier.fillMaxSize().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            ScrollColumn(Modifier.weight(1f)) { first() }
+            ScrollColumn(Modifier.weight(1f)) { second() }
+        }
+    } else {
+        ScrollColumn(Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
+            first()
+            second()
+        }
+    }
+}
+
+@Composable
+private fun SectionTitle(title: String, subtitle: String) {
+    Column {
+        Text(title, fontSize = 22.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp, color = MaterialTheme.colorScheme.onBackground)
+        Text(subtitle, color = PitColors.Muted, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable
+private fun SectionLabel(text: String) {
+    Text(text.uppercase(), fontSize = 12.sp, fontWeight = FontWeight.Bold, color = PitColors.Muted, letterSpacing = 1.4.sp)
+}
+
+/** Sélecteur à segments, cibles de 48 dp de haut. */
+@Composable
+private fun Segmented(labels: List<String>, selected: Int, onSelect: (Int) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)
+            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(14.dp)).padding(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        labels.forEachIndexed { i, label ->
+            val active = i == selected
+            Box(
+                Modifier.weight(1f).height(48.dp)
+                    .background(if (active) MaterialTheme.colorScheme.surfaceVariant else Color.Transparent, RoundedCornerShape(11.dp))
+                    .clickable { onSelect(i) },
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(label, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.2.sp,
+                    color = if (active) MaterialTheme.colorScheme.onSurface else PitColors.Muted)
             }
         }
     }
@@ -525,6 +536,7 @@ private fun PitCard(title: String, content: @Composable ColumnScope.() -> Unit) 
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
     ) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(
