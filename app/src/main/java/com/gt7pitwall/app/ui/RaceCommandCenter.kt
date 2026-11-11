@@ -92,12 +92,14 @@ fun RaceCommandCenter(
     onOpen: (PitDest) -> Unit,
 ) {
     // Télémétrie perdue : les dernières valeurs restent visibles mais atténuées (elles sont figées).
-    val frozen = board.link == Link.SILENT || board.link == Link.ERROR
+    // Les anciens paquets peuvent rester affichés pendant la recherche ou après l'arrêt du service.
+    // Toute valeur hors flux réellement vivant est visuellement atténuée.
+    val frozen = !board.live
     val dim by animateFloatAsState(if (frozen) 0.45f else 1f, label = "dim")
     if (wide) {
         Column(Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             StatusLine(board, title, vegaStatus, vegaActive) { onOpen(PitDest.GARAGE) }
-            AlertBanner(board.topAlert, board.alerts.size)
+            AlertBanner(board.alerts)
             Hero(board, Modifier.weight(1f).fillMaxWidth().alpha(dim), big = true) { onOpen(if (board.link == Link.STOPPED) PitDest.GARAGE else PitDest.TELEMETRY) }
             Row(Modifier.weight(2.7f).fillMaxWidth().alpha(dim), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 FuelPanel(board.fuel, Modifier.weight(1f).fillMaxHeight()) { onOpen(PitDest.STRATEGY) }
@@ -112,7 +114,7 @@ fun RaceCommandCenter(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             StatusLine(board, title, vegaStatus, vegaActive) { onOpen(PitDest.GARAGE) }
-            AlertBanner(board.topAlert, board.alerts.size)
+            AlertBanner(board.alerts)
             Hero(board, Modifier.fillMaxWidth().height(176.dp).alpha(dim), big = false) { onOpen(if (board.link == Link.STOPPED) PitDest.GARAGE else PitDest.TELEMETRY) }
             VegaRibbon(vegaStatus, vegaActive, message, Modifier.fillMaxWidth().heightIn(min = 74.dp)) { onOpen(PitDest.VEGA) }
             PitPanel(board, stints, startAdvice, Modifier.fillMaxWidth().height(238.dp).alpha(dim)) { onOpen(PitDest.STRATEGY) }
@@ -213,9 +215,14 @@ private fun StatusLine(board: RaceCommandBoard, title: String, vegaStatus: Strin
 
 /** L'alerte la plus grave, en clair. Seule une alerte CRITIQUE pulse (lentement) ; rien ne bouge sinon. */
 @Composable
-private fun AlertBanner(alert: RaceCommandBoard.Alert?, count: Int) {
+private fun AlertBanner(alerts: List<RaceCommandBoard.Alert>) {
+    val alert = alerts.firstOrNull()
     AnimatedVisibility(alert != null, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
         val a = alert ?: return@AnimatedVisibility
+        // Ne jamais cacher une deuxième alerte critique derrière un simple compteur « +1 ».
+        // Exemple : carburant critique ET arrêt au stand ce tour.
+        val secondCritical = alerts.drop(1).firstOrNull { it.tone == Tone.CRITICAL }
+        val otherCount = alerts.size - 1 - (if (secondCritical != null) 1 else 0)
         val color = toneColor(a.tone)
         val pulse = if (a.tone == Tone.CRITICAL) {
             val t = rememberInfiniteTransition(label = "alerte")
@@ -233,8 +240,18 @@ private fun AlertBanner(alert: RaceCommandBoard.Alert?, count: Int) {
             Column(Modifier.weight(1f)) {
                 Text(a.title, color = color, fontSize = fixed(19.dp), fontWeight = FontWeight.Black, letterSpacing = 1.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(a.detail, color = PitSurface.Text, fontSize = fixed(14.dp), fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                if (secondCritical != null) {
+                    Text(
+                        "AUSSI : ${secondCritical.title} · ${secondCritical.detail}",
+                        color = PitColors.Red,
+                        fontSize = fixed(13.dp),
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
-            if (count > 1) Tag("+${count - 1}", color)
+            if (otherCount > 0) Tag("+$otherCount", color)
         }
     }
 }
