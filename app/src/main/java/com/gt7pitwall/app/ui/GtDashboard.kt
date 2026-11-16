@@ -100,9 +100,9 @@ fun GtDashboard(
             if (compact) {
                 Row(Modifier.fillMaxWidth().weight(2.0f), horizontalArrangement = Arrangement.spacedBy(gap)) {
                     TyreTile(board.tyres, Modifier.weight(1f).fillMaxHeight(), dim) { onOpen(PitDest.TELEMETRY) }
-                    FuelTile(board.fuel, Modifier.weight(1f).fillMaxHeight(), dim) { onOpen(PitDest.STRATEGY) }
+                    FuelTile(board.fuel, Modifier.weight(1f).fillMaxHeight(), dim, compact = true) { onOpen(PitDest.STRATEGY) }
                 }
-                Row(Modifier.fillMaxWidth().weight(1.75f), horizontalArrangement = Arrangement.spacedBy(gap)) {
+                Row(Modifier.fillMaxWidth().weight(1.95f), horizontalArrangement = Arrangement.spacedBy(gap)) {
                     PitTile(board, Modifier.weight(1f).fillMaxHeight(), dim) { onOpen(PitDest.STRATEGY) }
                     EngineTile(dash, Modifier.weight(1f).fillMaxHeight(), dim)
                 }
@@ -376,6 +376,7 @@ private fun TimingBlock(d: GtDash, modifier: Modifier, dim: Float, compact: Bool
                     else -> PitColors.Red
                 }
                 Fit(delta?.let { String.format(Locale.FRANCE, "%+.2f", it / 1000f) } ?: "—", Modifier.fillMaxWidth().weight(1f), color.copy(alpha = dim), charWidth = 0.58f)
+                Spacer(Modifier.height(4.dp))
                 DeltaBar(delta, Modifier.fillMaxWidth().height(8.dp))
             }
         }
@@ -493,25 +494,29 @@ private fun TyreCell(c: TelemetryBoard.TyreCell?, modifier: Modifier, dim: Float
 // ============================================================================================== Carburant
 
 @Composable
-private fun FuelTile(f: RaceCommandBoard.Fuel, modifier: Modifier, dim: Float, onClick: () -> Unit) {
+private fun FuelTile(f: RaceCommandBoard.Fuel, modifier: Modifier, dim: Float, compact: Boolean = false, onClick: () -> Unit) {
     val tone = toneColor(f.risk.tone)
     val critical = f.risk == FuelRisk.CRITICAL
     Tile(modifier, if (f.risk.tone == Tone.CAUTION || critical) tone else TileLine, onClick) {
-        Caption("Carburant")
-        Caption(f.risk.label, if (f.risk.tone == Tone.NEUTRAL) PitColors.Muted else tone, 10.dp)
+        // Écran extérieur : titre et risque sur une ligne, pour laisser la place au chiffre.
+        if (compact) Caption("Carbu. · " + f.risk.label, if (f.risk.tone == Tone.NEUTRAL) PitColors.Muted else tone, 10.dp)
+        else {
+            Caption("Carburant")
+            Caption(f.risk.label, if (f.risk.tone == Tone.NEUTRAL) PitColors.Muted else tone, 10.dp)
+        }
         Fit(
             f.lapsOfFuel?.let { String.format(Locale.FRANCE, "%.1f", it) } ?: "—", Modifier.fillMaxWidth().weight(1f),
             (if (critical) PitColors.Red else PitSurface.Text).copy(alpha = dim), maxHeight = 64.dp,
         )
-        Caption(if (f.lapsOfFuel != null) "tours restants" else "après 1 tour", size = 10.dp)
+        if (!compact) Caption(if (f.lapsOfFuel != null) "tours restants" else "après 1 tour", size = 10.dp)
         Spacer(Modifier.height(4.dp))
         Box(Modifier.fillMaxWidth().height(9.dp).clip(RoundedCornerShape(5.dp)).background(Off)) {
             f.levelPct?.let { lvl ->
                 Box(Modifier.fillMaxHeight().fillMaxWidth((lvl / 100f).coerceIn(0f, 1f)).background(if (critical) PitColors.Red else PitColors.Orange))
             }
         }
-        Spacer(Modifier.height(3.dp))
-        Row(Modifier.fillMaxWidth()) {
+        if (!compact) Spacer(Modifier.height(3.dp))
+        if (!compact) Row(Modifier.fillMaxWidth()) {
             Caption(f.levelPct?.let { "${it.toInt()} %" } ?: "—", PitSurface.Text, 11.dp)
             Spacer(Modifier.weight(1f))
             Caption(f.perLapPct?.let { String.format(Locale.FRANCE, "%.1f %%/t", it) } ?: "conso —", PitSurface.Text, 11.dp)
