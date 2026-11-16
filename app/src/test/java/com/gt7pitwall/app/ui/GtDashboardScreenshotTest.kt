@@ -61,6 +61,8 @@ class GtDashboardScreenshotTest {
     )
 
     private fun shoot(name: String, d: GtDash, b: RaceCommandBoard, menu: Boolean = true) {
+        // Horloge des animations figée : les LED et l'alerte clignotent sans fin, l'écran ne serait jamais « au repos ».
+        rule.mainClock.autoAdvance = false
         rule.setContent {
             PitwallTheme {
                 GtDashboard(
@@ -70,6 +72,7 @@ class GtDashboardScreenshotTest {
                 )
             }
         }
+        rule.mainClock.advanceTimeBy(600)
         val bmp = rule.onRoot().captureToImage().asAndroidBitmap()
         val dir = File("build/screens").apply { mkdirs() }
         File(dir, "$name.png").outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }

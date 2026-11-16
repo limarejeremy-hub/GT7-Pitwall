@@ -58,7 +58,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: captures-ecrans-${{ github.run_number }}
-          path: app/build/screens/*.png
+          path: |
+            app/build/screens/*.png
+            app/build/reports/tests/testDebugUnitTest/
           if-no-files-found: ignore
           retention-days: 30
 
