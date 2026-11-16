@@ -300,6 +300,14 @@ class PitwallEngine(
     val aiTrace: StateFlow<AiTrace?> = _aiTrace.asStateFlow()
 
     /** Écran 2 « Télémétrie » : chronos, secteurs colorés, pneus, carburant, relais (recalculé à chaque rafraîchissement). */
+    /**
+     * Tableau de bord GT3 (V507) : flux léger à ~30 images/s, séparé de l'état complet (20/s) pour que seules les
+     * instruments rapides (LED, rapport, régime, chrono, delta) soient redessinés à cette cadence.
+     */
+    private val _dash = MutableStateFlow(com.gt7pitwall.core.display.GtDash.of(null, false, null, emptyList()))
+    val dash: StateFlow<com.gt7pitwall.core.display.GtDash> = _dash.asStateFlow()
+    private var lastDashMs = 0L
+
     private val _telemetryBoard = MutableStateFlow<com.gt7pitwall.core.display.TelemetryBoard?>(null)
     val telemetryBoard: StateFlow<com.gt7pitwall.core.display.TelemetryBoard?> = _telemetryBoard.asStateFlow()
 
@@ -782,6 +790,10 @@ class PitwallEngine(
                     lastBlackBoxJournalMs = now
                 }
             }
+            if (now - lastDashMs >= DASH_REFRESH_MS) {
+                lastDashMs = now
+                _dash.value = runCatching { race.gtDash(live = client.status.value is ConnectionStatus.Receiving) }.getOrElse { _dash.value }
+            }
             publish(force = messages.isNotEmpty())
             messages.forEach(::deliver)
         }
@@ -1022,6 +1034,7 @@ class PitwallEngine(
         /** Au-delà, un petit signal discret dit que la réponse arrive (jamais une phrase « je réfléchis »). */
         const val THINKING_TONE_MS = 1_500L
         const val UI_REFRESH_MS = 50L
+        const val DASH_REFRESH_MS = 33L
         const val PROBE_REFRESH_MS = 500L
         const val GAP_REFRESH_MS = 1_000L
         const val MAX_RADIO_LOG = 50

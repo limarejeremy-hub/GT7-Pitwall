@@ -358,7 +358,8 @@ fun PitwallScreen(
     // Retour Android : revient à l'écran de course avant de quitter l'application.
     androidx.activity.compose.BackHandler(enabled = dest != PitDest.RACE) { dest = PitDest.RACE }
 
-    PitwallShell(selected = dest, onSelect = { dest = it }, raceAlert = alertColor) { wide ->
+    val dash by engine.dash.collectAsStateWithLifecycle()
+    PitwallShell(selected = dest, onSelect = { dest = it }, raceAlert = alertColor, immersive = dest == PitDest.RACE) { wide, onMenu ->
         // RACE ⇄ TELEMETRY : glisser horizontalement pour passer de l'un à l'autre.
         val swipe = Modifier.pointerInput(dest) {
             var total = 0f
@@ -372,16 +373,16 @@ fun PitwallScreen(
         }
         when (dest) {
             PitDest.RACE -> Box(swipe.fillMaxSize()) {
-                RaceCommandCenter(
+                // V507 : tableau de bord GT3 (LED de rupteur, rapport, vitesse, chrono, delta, secteurs, pneus, carburant…).
+                GtDashboard(
+                    dash = dash,
                     board = board,
                     title = raceTitle,
-                    stints = telemetryBoard?.stints.orEmpty(),
-                    startAdvice = state.startTyreAdvice,
                     vegaStatus = vegaStatus,
                     vegaActive = vegaActive,
                     message = radio.firstOrNull(),
-                    wide = wide,
                     onOpen = { dest = it },
+                    onMenu = onMenu,
                 )
             }
             PitDest.STRATEGY -> {

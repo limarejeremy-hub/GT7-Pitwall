@@ -23,6 +23,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -64,13 +66,18 @@ fun PitwallShell(
     selected: PitDest,
     onSelect: (PitDest) -> Unit,
     raceAlert: Color?,
-    content: @Composable (wide: Boolean) -> Unit,
+    /** Écran de course en plein écran sur le Fold déplié : rail masqué, un bouton MENU le fait réapparaître. */
+    immersive: Boolean = false,
+    content: @Composable (wide: Boolean, onMenu: (() -> Unit)?) -> Unit,
 ) {
+    var railShown by androidx.compose.runtime.saveable.rememberSaveable { androidx.compose.runtime.mutableStateOf(false) }
     BoxWithConstraints(
         Modifier.fillMaxSize().background(PitSurface.Carbon).windowInsetsPadding(WindowInsets.safeDrawing),
     ) {
         val wide = maxWidth >= WIDE_FROM
-        if (wide) {
+        if (wide && immersive && !railShown) {
+            content(true) { railShown = true }
+        } else if (wide) {
             Row(Modifier.fillMaxSize()) {
                 Column(
                     Modifier.width(84.dp).fillMaxHeight().background(PitSurface.Rail).padding(vertical = 10.dp),
@@ -81,15 +88,19 @@ fun PitwallShell(
                     Spacer(Modifier.height(6.dp))
                     PitDest.entries.forEach { d ->
                         if (d == PitDest.GARAGE) Spacer(Modifier.weight(1f))
-                        NavItem(d, d == selected, raceAlert.takeIf { d == PitDest.RACE && selected != PitDest.RACE }, Modifier.width(72.dp).height(68.dp)) { onSelect(d) }
+                        NavItem(d, d == selected, raceAlert.takeIf { d == PitDest.RACE && selected != PitDest.RACE }, Modifier.width(72.dp).height(68.dp)) {
+                            // Retour à l'écran de course : de nouveau en plein écran.
+                            railShown = false
+                            onSelect(d)
+                        }
                     }
                 }
                 Box(Modifier.width(1.dp).fillMaxHeight().background(PitSurface.Line))
-                Box(Modifier.weight(1f).fillMaxHeight()) { content(true) }
+                Box(Modifier.weight(1f).fillMaxHeight()) { content(true, null) }
             }
         } else {
             Column(Modifier.fillMaxSize()) {
-                Box(Modifier.weight(1f).fillMaxWidth()) { content(false) }
+                Box(Modifier.weight(1f).fillMaxWidth()) { content(false, null) }
                 Box(Modifier.fillMaxWidth().height(1.dp).background(PitSurface.Line))
                 Row(
                     Modifier.fillMaxWidth().background(PitSurface.Rail).padding(horizontal = 4.dp, vertical = 4.dp),
