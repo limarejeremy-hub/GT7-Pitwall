@@ -29,6 +29,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -94,13 +96,13 @@ fun GtDashboard(
                 GearBlock(dash, Modifier.weight(if (compact) 1.05f else 1.25f).fillMaxHeight(), dim)
                 PositionColumn(board, Modifier.weight(1f).fillMaxHeight(), dim) { onOpen(PitDest.STRATEGY) }
             }
-            TimingBlock(dash, Modifier.fillMaxWidth().weight(2.3f), dim) { onOpen(PitDest.TELEMETRY) }
+            TimingBlock(dash, Modifier.fillMaxWidth().weight(if (compact) 2.6f else 2.3f), dim, compact) { onOpen(PitDest.TELEMETRY) }
             if (compact) {
-                Row(Modifier.fillMaxWidth().weight(2.1f), horizontalArrangement = Arrangement.spacedBy(gap)) {
+                Row(Modifier.fillMaxWidth().weight(2.0f), horizontalArrangement = Arrangement.spacedBy(gap)) {
                     TyreTile(board.tyres, Modifier.weight(1f).fillMaxHeight(), dim) { onOpen(PitDest.TELEMETRY) }
                     FuelTile(board.fuel, Modifier.weight(1f).fillMaxHeight(), dim) { onOpen(PitDest.STRATEGY) }
                 }
-                Row(Modifier.fillMaxWidth().weight(1.5f), horizontalArrangement = Arrangement.spacedBy(gap)) {
+                Row(Modifier.fillMaxWidth().weight(1.75f), horizontalArrangement = Arrangement.spacedBy(gap)) {
                     PitTile(board, Modifier.weight(1f).fillMaxHeight(), dim) { onOpen(PitDest.STRATEGY) }
                     EngineTile(dash, Modifier.weight(1f).fillMaxHeight(), dim)
                 }
@@ -131,7 +133,10 @@ private val Tab = TextStyle(fontFeatureSettings = "tnum")
 @Composable
 private fun px(dp: Dp): TextUnit = with(LocalDensity.current) { dp.toSp() }
 
-/** Texte qui remplit sa boîte sans jamais être tronqué : taille déduite de la place, pas de la police du système. */
+/**
+ * Texte qui remplit sa boîte sans jamais être tronqué ni déborder : la taille est MESURÉE (largeur et hauteur réelles
+ * des glyphes), pas déduite de la police du système.
+ */
 @Composable
 private fun Fit(
     text: String,
@@ -139,14 +144,20 @@ private fun Fit(
     color: Color = PitSurface.Text,
     weight: FontWeight = FontWeight.Black,
     maxHeight: Dp = 400.dp,
-    charWidth: Float = 0.6f,
+    @Suppress("UNUSED_PARAMETER") charWidth: Float = 0.6f,
     align: Alignment = Alignment.Center,
 ) {
+    val measurer = rememberTextMeasurer(cacheSize = 32)
+    val density = LocalDensity.current
     BoxWithConstraints(modifier, contentAlignment = align) {
-        val byWidth = maxWidth / (text.length.coerceAtLeast(1) * charWidth)
-        val size = min(min(this.maxHeight * 0.92f, byWidth), maxHeight)
+        val ref = TextStyle(fontSize = 100.sp, fontWeight = weight, fontFeatureSettings = "tnum")
+        val m = remember(text, weight) { measurer.measure(text, ref, maxLines = 1, softWrap = false) }
+        val wPx = with(density) { this@BoxWithConstraints.maxWidth.toPx() }
+        val hPx = with(density) { min(this@BoxWithConstraints.maxHeight, maxHeight).toPx() }
+        val scale = if (m.size.width <= 0 || m.size.height <= 0) 1f else minOf(wPx * 0.97f / m.size.width, hPx * 0.98f / m.size.height)
+        val sizeSp = (100f * scale).coerceAtLeast(6f)
         Text(
-            text, color = color, fontSize = px(size), lineHeight = px(size), fontWeight = weight, maxLines = 1, softWrap = false,
+            text, color = color, fontSize = sizeSp.sp, fontWeight = weight, maxLines = 1, softWrap = false,
             style = Tab, textAlign = TextAlign.Center,
         )
     }
@@ -349,7 +360,7 @@ private fun PositionColumn(b: RaceCommandBoard, modifier: Modifier, dim: Float, 
 // ============================================================================================== Chrono, delta, secteurs
 
 @Composable
-private fun TimingBlock(d: GtDash, modifier: Modifier, dim: Float, onClick: () -> Unit) {
+private fun TimingBlock(d: GtDash, modifier: Modifier, dim: Float, compact: Boolean, onClick: () -> Unit) {
     Tile(modifier, onClick = onClick) {
         Row(Modifier.fillMaxWidth().weight(1.35f), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Column(Modifier.weight(1.25f).fillMaxHeight()) {
@@ -371,9 +382,18 @@ private fun TimingBlock(d: GtDash, modifier: Modifier, dim: Float, onClick: () -
         Spacer(Modifier.height(6.dp))
         Row(Modifier.fillMaxWidth().weight(0.8f), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             d.sectors.forEach { SectorBox(it, Modifier.weight(1f).fillMaxHeight()) }
-            Column(Modifier.weight(1.25f).fillMaxHeight(), verticalArrangement = Arrangement.SpaceEvenly) {
-                LapLine("Dernier", lap(d.lastLapMs), PitSurface.Text)
-                LapLine("Meilleur", lap(d.bestLapMs), PitColors.Purple)
+            if (!compact) {
+                Column(Modifier.weight(1.25f).fillMaxHeight(), verticalArrangement = Arrangement.SpaceEvenly) {
+                    LapLine("Dernier", lap(d.lastLapMs), PitSurface.Text)
+                    LapLine("Meilleur", lap(d.bestLapMs), PitColors.Purple)
+                }
+            }
+        }
+        if (compact) {
+            Spacer(Modifier.height(5.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Box(Modifier.weight(1f)) { LapLine("Dernier", lap(d.lastLapMs), PitSurface.Text) }
+                Box(Modifier.weight(1f)) { LapLine("Meill.", lap(d.bestLapMs), PitColors.Purple) }
             }
         }
     }
@@ -438,7 +458,10 @@ private fun TyreTile(t: RaceCommandBoard.Tyres, modifier: Modifier, dim: Float, 
             Caption("Pneus °C", modifier = Modifier.weight(1f))
             Box(Modifier.size(12.dp).clip(CircleShape).background(compoundColor(t.compound)))
             Spacer(Modifier.width(5.dp))
-            Caption(t.compound?.name ?: "?", if (t.compound == null) PitColors.Yellow else PitSurface.Text)
+            Caption(
+                t.compound?.name ?: "?",
+                if (t.compoundStatus == RaceCommandBoard.CompoundStatus.DECLARED) PitSurface.Text else PitColors.Yellow,
+            )
         }
         Spacer(Modifier.height(4.dp))
         Column(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -453,11 +476,7 @@ private fun TyreTile(t: RaceCommandBoard.Tyres, modifier: Modifier, dim: Float, 
         }
         Spacer(Modifier.height(3.dp))
         Caption(
-            (t.ageLaps?.let { "$it t · " } ?: "") + when (t.compoundStatus) {
-                RaceCommandBoard.CompoundStatus.DECLARED -> "gomme déclarée"
-                RaceCommandBoard.CompoundStatus.UNCERTAIN -> "gomme à confirmer"
-                RaceCommandBoard.CompoundStatus.UNKNOWN -> "gomme non déclarée"
-            } + " · usure n/d",
+            (t.ageLaps?.let { "$it tours" } ?: "âge —") + " · usure n/d",
             size = 10.dp,
         )
     }
@@ -478,15 +497,13 @@ private fun FuelTile(f: RaceCommandBoard.Fuel, modifier: Modifier, dim: Float, o
     val tone = toneColor(f.risk.tone)
     val critical = f.risk == FuelRisk.CRITICAL
     Tile(modifier, if (f.risk.tone == Tone.CAUTION || critical) tone else TileLine, onClick) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Caption("Carburant", modifier = Modifier.weight(1f))
-            Caption(f.risk.label, tone, 10.dp)
-        }
+        Caption("Carburant")
+        Caption(f.risk.label, if (f.risk.tone == Tone.NEUTRAL) PitColors.Muted else tone, 10.dp)
         Fit(
             f.lapsOfFuel?.let { String.format(Locale.FRANCE, "%.1f", it) } ?: "—", Modifier.fillMaxWidth().weight(1f),
             (if (critical) PitColors.Red else PitSurface.Text).copy(alpha = dim), maxHeight = 64.dp,
         )
-        Caption(if (f.lapsOfFuel != null) "tours d'autonomie (calcul)" else "autonomie après un tour", size = 10.dp)
+        Caption(if (f.lapsOfFuel != null) "tours restants" else "après 1 tour", size = 10.dp)
         Spacer(Modifier.height(4.dp))
         Box(Modifier.fillMaxWidth().height(9.dp).clip(RoundedCornerShape(5.dp)).background(Off)) {
             f.levelPct?.let { lvl ->
@@ -560,7 +577,7 @@ private fun EngineTile(d: GtDash, modifier: Modifier, dim: Float) {
         Column(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.SpaceEvenly) {
             EngineLine("EAU", d.waterC?.let { "$it°" }, d.waterC?.let { it >= 110 } == true, dim)
             EngineLine("HUILE", d.oilC?.let { "$it°" }, d.oilC?.let { it >= 130 } == true, dim)
-            EngineLine("TURBO", d.turboBar?.let { String.format(Locale.FRANCE, "%+.1f", it) }, false, dim)
+            d.turboBar?.let { EngineLine("TURBO", String.format(Locale.FRANCE, "%+.1f", it), false, dim) }
         }
     }
 }
