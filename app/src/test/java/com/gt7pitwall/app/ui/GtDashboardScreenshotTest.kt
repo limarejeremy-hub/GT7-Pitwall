@@ -24,7 +24,7 @@ import java.io.File
 
 /**
  * Captures de CONTRÔLE de l'écran RACE (V507), rendues par Robolectric à partir du vrai code Compose, avec des données
- * de démonstration (pas une course réelle). Fichiers : app/build/screens/*.png, publiés par la CI. Elles servent à
+ * de démonstration (pas une course réelle). Fichiers : app/build/screens (PNG), publiés par la CI. Elles servent à
  * vérifier la mise en page (rien de tronqué, rien qui déborde) ; le rendu sur le Fold reste à confirmer.
  */
 @RunWith(RobolectricTestRunner::class)
