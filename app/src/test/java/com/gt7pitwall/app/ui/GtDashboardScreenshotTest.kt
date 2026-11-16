@@ -1,10 +1,9 @@
 package com.gt7pitwall.app.ui
 
 import android.graphics.Bitmap
-import androidx.compose.ui.graphics.asAndroidBitmap
-import androidx.compose.ui.test.captureToImage
-import androidx.compose.ui.test.junit4.createComposeRule
-import androidx.compose.ui.test.onRoot
+import android.graphics.Canvas
+import androidx.activity.ComponentActivity
+import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import com.gt7pitwall.app.ui.theme.PitwallTheme
 import com.gt7pitwall.core.display.GtDash
 import com.gt7pitwall.core.display.RaceCommandBoard
@@ -31,7 +30,7 @@ import java.io.File
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(sdk = [34], application = android.app.Application::class)
 class GtDashboardScreenshotTest {
-    @get:Rule val rule = createComposeRule()
+    @get:Rule val rule = createAndroidComposeRule<ComponentActivity>()
 
     private fun dash(shift: Boolean = false, lit: Int = 9) = GtDash(
         live = true, paused = false, gear = "4", suggestedGear = null, speedKmh = 213, rpm = 7140,
@@ -73,7 +72,10 @@ class GtDashboardScreenshotTest {
             }
         }
         rule.mainClock.advanceTimeBy(600)
-        val bmp = rule.onRoot().captureToImage().asAndroidBitmap()
+        // Dessin logiciel de la fenêtre (captureToImage attend une copie matérielle des pixels, absente sous Robolectric).
+        val view = rule.activity.window.decorView
+        val bmp = Bitmap.createBitmap(view.width.coerceAtLeast(1), view.height.coerceAtLeast(1), Bitmap.Config.ARGB_8888)
+        rule.runOnUiThread { view.draw(Canvas(bmp)) }
         val dir = File("build/screens").apply { mkdirs() }
         File(dir, "$name.png").outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
     }
