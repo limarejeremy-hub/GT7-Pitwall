@@ -220,6 +220,32 @@ class SectorTrace(private val sectorCount: Int = DEFAULT_SECTORS) {
         return result
     }
 
+    /** Paquets écoulés depuis la ligne (GT7 : 60 par seconde de jeu). */
+    val elapsedTicks: Int get() = tick
+
+    /**
+     * Profil distance → temps du tour (un point sur [step]), pour le delta en direct d'un tour suivant. Temps en ticks
+     * GT7 (comme le tour en cours), pas recalés sur le chrono officiel : les deux côtés de la comparaison sont mesurés
+     * de la même façon. null si le tour n'a pas été suivi en entier.
+     */
+    fun profile(lapNumber: Int, step: Int = 3): LapProfile? {
+        if (!valid || distance < MIN_LAP_DISTANCE || tick <= 0) return null
+        val n = (distances.size + step - 1) / step + 1
+        val d = FloatArray(n)
+        val t = FloatArray(n)
+        for (k in 0 until n - 1) {
+            val i = minOf(k * step, distances.size - 1)
+            d[k] = distances[i]
+            t[k] = ticks[i].toFloat()
+        }
+        d[n - 1] = distance
+        t[n - 1] = tick.toFloat()
+        return LapProfile(lapNumber, d, t)
+    }
+
+    /** Ticks écoulés au passage de la distance [target] dans le tour en cours ; null si elle n'est pas atteinte. */
+    fun ticksAtDistance(target: Float): Double? = if (!valid || target > distance) null else tickAt(target)
+
     private fun tickAt(target: Float): Double {
         var i = 1
         while (i < distances.size && distances[i] < target) i++
@@ -247,6 +273,30 @@ class SectorTrace(private val sectorCount: Int = DEFAULT_SECTORS) {
 
         /** ~1/10 s : un glissement plus bref n'est pas compté. */
         const val SLIP_MIN_PACKETS = 6
+    }
+}
+
+/**
+ * Tour de référence pour le delta en direct : distance parcourue depuis la ligne (m) et ticks GT7 écoulés à chaque
+ * point, croissants.
+ */
+class LapProfile(val lapNumber: Int, private val distances: FloatArray, private val ticks: FloatArray) {
+    val lengthM: Float get() = distances.last()
+    val totalTicks: Float get() = ticks.last()
+
+    /** Ticks écoulés à la distance [d] (interpolés), null hors du tour. */
+    fun ticksAt(d: Float): Float? {
+        if (d < 0f || d > lengthM) return null
+        var lo = 0
+        var hi = distances.size - 1
+        while (hi - lo > 1) {
+            val mid = (lo + hi) ushr 1
+            if (distances[mid] < d) lo = mid else hi = mid
+        }
+        val d0 = distances[lo]
+        val d1 = distances[hi]
+        val f = if (d1 > d0) ((d - d0) / (d1 - d0)).coerceIn(0f, 1f) else 0f
+        return ticks[lo] + (ticks[hi] - ticks[lo]) * f
     }
 }
 

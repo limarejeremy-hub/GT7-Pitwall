@@ -372,6 +372,10 @@ class RaceController(
     }
 
     val snapshot: SessionSnapshot get() = tracker.snapshot
+
+    /** Tableau de bord GT3 (V507) : paquet courant, tour en cours mesuré par Pitwall et secteurs. [live] : flux GT7 actif. */
+    fun gtDash(live: Boolean): com.gt7pitwall.core.display.GtDash =
+        com.gt7pitwall.core.display.GtDash.of(tracker.snapshot.packet, live, tracker.liveLap(), tracker.snapshot.laps)
     val course: Course? get() = rules.trackId?.let(database::course)
     /** Voiture lue dans 0x124 sur tous les paquets, menus compris (issue #40). */
     val carIdentity = com.gt7pitwall.core.telemetry.CarIdentity()

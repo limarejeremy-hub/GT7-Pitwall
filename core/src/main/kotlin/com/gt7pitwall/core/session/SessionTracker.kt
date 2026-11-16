@@ -131,6 +131,33 @@ class SessionTracker(
     /** Un passage aux stands (ravitaillement ou immobilisation) est en cours. */
     val pitVisitOpen: Boolean get() = pitDetector.inVisit
 
+    /** Meilleur tour complet de la session (hors stands), référence du delta en direct. */
+    private var reference: com.gt7pitwall.core.analysis.LapProfile? = null
+    private var referenceMs: Int? = null
+
+    /**
+     * Tour en cours, mesuré par Pitwall : temps écoulé (paquets GT7, 60/s), secteur en cours (tiers de la distance du
+     * tour de référence, secteurs Pitwall et non officiels), temps des secteurs déjà bouclés et écart avec le meilleur
+     * tour au même endroit. null si le tour n'est pas suivi depuis la ligne (connexion en cours de tour, pause, stand).
+     */
+    fun liveLap(): LiveLap? {
+        val p = snapshot.packet ?: return null
+        if (p.currentLap < 1 || !trace.isComplete || p.isPaused || p.isLoading) return null
+        val elapsed = (trace.elapsedTicks * 1000L / 60L).toInt()
+        val ref = reference
+        val d = trace.lapDistance
+        if (ref == null) return LiveLap(elapsed, null, null, emptyList(), null, null)
+        val sectors = com.gt7pitwall.core.analysis.SectorTrace.DEFAULT_SECTORS
+        val bounds = (1..sectors).map { ref.lengthM * it / sectors }
+        val crossed = bounds.dropLast(1).mapNotNull { b -> trace.ticksAtDistance(b) }
+        var previous = 0.0
+        val splits = crossed.map { t -> ((t - previous) * 1000.0 / 60.0).toInt().also { previous = t } }
+        val sector = (crossed.size + 1).coerceAtMost(sectors)
+        // Au-delà de la longueur de référence (trajectoire plus longue), plus de delta : rien d'extrapolé.
+        val delta = if (pitVisitOpen || lapStartedInPit) null else ref.ticksAt(d)?.let { r -> ((trace.elapsedTicks - r) * 1000f / 60f).toInt() }
+        return LiveLap(elapsed, sector, delta, splits, ref.lapNumber, ref.lengthM)
+    }
+
     /**
      * Progress within the current lap (0..1) inferred from a complete previous
      * lap's distance. Pitwall sectors are equal-distance thirds, NOT official
@@ -299,6 +326,13 @@ class SessionTracker(
             kerbShare = if (complete) pl.trace.kerbShare else null,
             offTrackEvents = if (complete) pl.trace.offTracks else null,
         )
+        // Référence du delta en direct : meilleur tour complet, hors passage aux stands.
+        if (complete && timeMs != null && !pl.pitLane && !pl.refuelled && (referenceMs == null || timeMs < referenceMs!!)) {
+            pl.trace.profile(pl.lapNumber)?.let {
+                reference = it
+                referenceMs = timeMs
+            }
+        }
         // La carte suit le meilleur tour complet (ou le premier disponible).
         if (complete && timeMs != null && (outlineLapMs == null || timeMs < outlineLapMs!!)) {
             pl.trace.outline(pl.lapNumber)?.let {
@@ -325,6 +359,8 @@ class SessionTracker(
         trace = SectorTrace()
         outline = null
         outlineLapMs = null
+        reference = null
+        referenceMs = null
         raceTicks = null
         pitDetector.reset()
         fuelRise.reset()
@@ -341,3 +377,16 @@ class SessionTracker(
         const val GRID_STABLE_PACKETS = 60
     }
 }
+
+/**
+ * Tour en cours mesuré par Pitwall. [sector] : 1, 2 ou 3 (null sans tour de référence) ; [splitsMs] : secteurs déjà
+ * bouclés ; [deltaMs] : écart avec le tour de référence au même endroit (négatif = plus rapide), estimation.
+ */
+data class LiveLap(
+    val elapsedMs: Int,
+    val sector: Int?,
+    val deltaMs: Int?,
+    val splitsMs: List<Int>,
+    val referenceLap: Int?,
+    val referenceLengthM: Float?,
+)

@@ -23,7 +23,7 @@ android {
         // Sur GitHub Actions, chaque build a un numéro croissant : l'APK s'installe par-dessus le précédent.
         versionCode = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
         // Issue #59 : le pilote doit savoir exactement quelle version il a (affichée dans la carte Connexion PS5).
-        versionName = "0.10.0 · V506 Race Command Center"
+        versionName = "0.11.0 · V507 Dashboard GT3"
 
         // Le Fold est en arm64 ; on garde aussi armeabi-v7a. Réduit la taille des bibliothèques natives (Vosk).
         ndk {
@@ -59,6 +59,13 @@ android {
 
     buildFeatures {
         compose = true
+    }
+
+    // V507 : rendu des écrans Compose par Robolectric (captures de contrôle publiées par la CI). Tests seulement.
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+        }
     }
 
     sourceSets["main"].jniLibs.srcDir(layout.buildDirectory.dir("dave-natives"))
@@ -212,4 +219,10 @@ dependencies {
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
+
+    // Captures de contrôle des écrans (CI) : rien de tout cela n'entre dans le code de l'application.
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

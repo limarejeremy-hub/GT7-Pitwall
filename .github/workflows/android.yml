@@ -49,6 +49,21 @@ jobs:
       - name: Compiler l'APK debug
         run: ./gradlew --no-daemon --stacktrace :app:assembleDebug
 
+      - name: Captures de contrôle des écrans (Robolectric, données de démonstration)
+        continue-on-error: true
+        run: ./gradlew --no-daemon --stacktrace :app:testDebugUnitTest --tests '*ScreenshotTest*'
+
+      - name: Publier les captures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: captures-ecrans-${{ github.run_number }}
+          path: |
+            app/build/screens/*.png
+            app/build/reports/tests/testDebugUnitTest/
+          if-no-files-found: ignore
+          retention-days: 30
+
       - name: Renommer l'APK
         run: |
           mkdir -p dist
