@@ -539,6 +539,9 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
         return (rms / 50).toInt().coerceIn(0, 100)
     }
 
+    /** V509 : moteur qui produit la voix envoyée au salon (synthèse Android du téléphone, rééchantillonnée en 48 kHz). */
+    fun engineReport(): com.gt7pitwall.core.radio.VoiceEngineReport = speech.report("Discord (casque PS5)")
+
     /** Phrase de test : vérifie toute la chaîne voix → Opus → DAVE → Discord → PS5 → casque, sans GT7. */
     fun sayTest() {
         if (!inVoice) {
