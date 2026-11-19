@@ -340,6 +340,18 @@ class PitwallEngine(
     }
 
     /**
+     * Option de test V508 (validation HUD, désactivée à chaque lancement) : « Position ? » → « Neuvième sur quinze. »
+     * ou « Position indisponible. ».
+     */
+    private val _shortPosition = MutableStateFlow(false)
+    val shortPosition: StateFlow<Boolean> = _shortPosition.asStateFlow()
+
+    fun setShortPositionAnswer(on: Boolean) {
+        race.engineer.shortPositionAnswer = on
+        _shortPosition.value = on
+    }
+
+    /**
      * Gap Hunter (outils de développement) : exploration silencieuse des octets de la télémétrie. Désactivé par défaut ;
      * ne transmet rien à la stratégie ni à la radio.
      */
@@ -759,7 +771,7 @@ class PitwallEngine(
         runCatching {
             positionProbe.onPacket(p, now)
             torqueProbe.onPacket(p)
-            formatLog.onPacket(now)
+            formatLog.onPacket(now, p.packetId)
             if (controllerProbe.enabled) {
                 controllerProbe.profile(race.profile.id.label, now)
                 controllerProbe.onPacket(p, now)

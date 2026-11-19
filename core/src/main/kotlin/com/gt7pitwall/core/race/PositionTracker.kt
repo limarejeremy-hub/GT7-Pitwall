@@ -36,6 +36,12 @@ data class MeasuredPosition(
  * l'arrivée. Rien sur les adversaires : GT7 ne donne que notre rang, ni écart ni distance.
  *
  * En qualification, rien n'est lu : 0x84 n'y a pas été validé.
+ *
+ * V508 (capture Course Sport du pilote : P10/15 au départ, P9 au tour 2, 0x86 15 → 14 en restant P8, P5/14 à « 8/7 ») :
+ * - le rang de chaque passage de ligne est noté ([lapPositions], valeur brute du paquet de la ligne) ;
+ * - le classement est figé dès le paquet de la ligne d'arrivée s'il est cohérent (sinon après [finishStableMs], ou la
+ *   dernière place établie si la course se ferme avant) ; le « 8/0 » qui suit ne rouvre rien ;
+ * - [liveRank] ne donne un rang que si le flux est frais, la course lancée, et le rang cohérent avec au moins 2 voitures.
  */
 class PositionTracker(
     private val stableMs: Long = STABLE_MS,
@@ -74,6 +80,15 @@ class PositionTracker(
     private var lastValidMs: Long? = null
     private var invalidSinceMs: Long? = null
     private var finishSeenMs: Long? = null
+    private var lastLap: Int? = null
+    private var lastPacketMs: Long? = null
+    private var inRaceNow = false
+
+    /** Rang au passage de la ligne de chaque tour bouclé (valeur brute du paquet de la ligne, cohérente). */
+    data class LapPosition(val lap: Int, val position: Int, val cars: Int, val timeMs: Long, val packetId: Int)
+
+    private val laps = mutableListOf<LapPosition>()
+    val lapPositions: List<LapPosition> get() = laps.toList()
 
     /** Ce qui vient de changer, pour l'ingénieur. */
     sealed interface Change {
@@ -81,11 +96,26 @@ class PositionTracker(
         data class CarsChanged(val from: Int?, val to: Int) : Change
         data class Finished(val position: Int, val cars: Int) : Change
         data object Lost : Change
+
+        /** Tour [lap] bouclé : rang lu sur le paquet de la ligne (journal seulement, rien n'est annoncé). */
+        data class LapCrossed(val lap: Int, val position: Int, val cars: Int) : Change
     }
 
     /** Position mesurée utilisable maintenant : établie, et GT7 envoie encore des valeurs valides. */
     fun reliable(nowMs: Long): Boolean =
         enabled && finalPosition == null && position != null && lastValidMs?.let { nowMs - it <= unavailableMs } == true
+
+    /**
+     * Rang à dire maintenant (« Position ? »), ou null : flux frais (dernier paquet il y a au plus [FRESH_MS]), course
+     * lancée (tours connus, ni chargement ni menu), pas encore arrivée, rang établi cohérent avec au moins 2 voitures.
+     */
+    fun liveRank(nowMs: Long): Pair<Int, Int>? {
+        val pos = position ?: return null
+        val n = cars ?: return null
+        if (!inRaceNow || n < 2 || pos !in 1..n || !reliable(nowMs)) return null
+        if (lastPacketMs?.let { nowMs - it in 0..FRESH_MS } != true) return null
+        return pos to n
+    }
 
     fun onPacket(p: TelemetryPacket, nowMs: Long): List<Change> {
         if (!enabled || finalPosition != null) return emptyList()
@@ -95,13 +125,24 @@ class PositionTracker(
         val valid = n in 1..MAX_CARS && pos in 1..n
         // Une course réellement lancée : nombre de tours connu, sur la grille (tour 0) ou en piste.
         val inRace = p.totalLaps > 0 && p.currentLap >= 0 && !p.isLoading
+        lastPacketMs = nowMs
+        inRaceNow = inRace
         if (!inRace || p.isPaused) {
             // Pause : la valeur affichée reste vraie, sans servir à un changement.
             if (p.isPaused && valid && pos == position) lastValidMs = nowMs
             candidate = null
+            // Ligne d'arrivée vue, puis la course se ferme (« 8/0 », chargement) avant le classement : dernière place établie.
+            if (!p.isPaused && finishSeenMs != null) position?.let { fp -> freeze(fp, cars ?: return out, out) }
             return out
         }
         val finished = p.currentLap > p.totalLaps
+        // Passage de ligne : le rang du paquet de la ligne, noté pour le tour qui vient de se terminer.
+        val prevLap = lastLap
+        lastLap = p.currentLap
+        if (prevLap != null && prevLap >= 1 && p.currentLap == prevLap + 1 && valid && laps.none { it.lap == prevLap }) {
+            laps += LapPosition(prevLap, pos, n, nowMs, p.packetId)
+            out += Change.LapCrossed(prevLap, pos, n)
+        }
         if (!valid) {
             candidate = null
             val since = invalidSinceMs ?: nowMs.also { invalidSinceMs = it }
@@ -119,13 +160,15 @@ class PositionTracker(
             candidateSinceMs = nowMs
         }
         if (finished) {
-            // Arrivée : le classement de la ligne, s'il reste stable un instant ; sinon la dernière position établie.
+            // Arrivée : le classement du paquet de la ligne (ce que montre le HUD à « 8/7 »), figé tout de suite pour que
+            // le message d'arrivée le dise ; si la ligne est franchie sans valeur cohérente, la valeur stable qui suit,
+            // sinon la dernière position établie.
+            val firstFinishPacket = finishSeenMs == null
             val seen = finishSeenMs ?: nowMs.also { finishSeenMs = it }
-            if (nowMs - candidateSinceMs >= finishStableMs || nowMs - seen >= stableMs) {
-                val (fp, fc) = if (nowMs - candidateSinceMs >= finishStableMs) value else (position ?: return out) to (cars ?: n)
-                finalPosition = fp
-                finalCars = fc
-                out += Change.Finished(fp, fc)
+            when {
+                firstFinishPacket && prevLap != null && prevLap <= p.totalLaps -> freeze(pos, n, out)
+                nowMs - candidateSinceMs >= finishStableMs -> freeze(pos, n, out)
+                nowMs - seen >= stableMs -> freeze(position ?: return out, cars ?: n, out)
             }
             return out
         }
@@ -145,6 +188,13 @@ class PositionTracker(
             startCars = n
         }
         return out
+    }
+
+    private fun freeze(fp: Int, fc: Int, out: MutableList<Change>) {
+        if (finalPosition != null) return
+        finalPosition = fp
+        finalCars = fc
+        out += Change.Finished(fp, fc)
     }
 
     /** Une position a été établie pendant cette course. */
@@ -171,6 +221,8 @@ class PositionTracker(
         finalCars = null
         finishSeenMs = null
         tracked = false
+        lastLap = null
+        laps.clear()
     }
 
     private fun clearLive() {
@@ -179,6 +231,7 @@ class PositionTracker(
         candidate = null
         lastValidMs = null
         invalidSinceMs = null
+        inRaceNow = false
     }
 
     companion object {
@@ -187,6 +240,9 @@ class PositionTracker(
         const val STABLE_MS = 2_000L
         const val FINISH_STABLE_MS = 1_000L
         const val UNAVAILABLE_MS = 5_000L
+
+        /** « Position ? » : plus de 1,5 s sans paquet (gel UDP, menu), le rang n'est plus dit. */
+        const val FRESH_MS = 1_500L
         const val MAX_CARS = 40
     }
 }

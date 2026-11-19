@@ -344,7 +344,7 @@ class RaceController(
         lastAiAnswerMs?.let { nowMs - it < AI_CONVERSATION_MS } == true
 
     /** Position en course transmise par GT7 (0x84 filtré). */
-    val positionTracker = PositionTracker()
+    val positionTracker = PositionTracker().also { t -> engineer.liveRank = { t.liveRank(clock()) } }
 
     /** Journal de course intégral, enregistré au fil de l'eau sous l'identifiant de la session archivée. */
     val journal = SessionJournal(storage, clock) { journalTelemetry() }
@@ -489,7 +489,7 @@ class RaceController(
         if (!replay) events.filterIsInstance<SessionEvent.LapCompleted>().forEach { checkReplay(it.lap) }
         if (replay) return emptyList()
         val coached = if (sessionFinished) emptyList() else runCatching { driverCoach.onPacket(p, tracker.pitVisitOpen) }.getOrElse { diagnostic("profil de pilotage (paquet)", it); emptyList() }
-        if (positionChanges.isNotEmpty()) lastPositionChangeClockMs = pacer.packetClockMs
+        if (positionChanges.any { it !is PositionTracker.Change.LapCrossed }) lastPositionChangeClockMs = pacer.packetClockMs
         journalPositions(positionChanges)
         val out = mutableListOf<EngineerMessage>()
         if (events.isEmpty()) out += journalCoaching(coached)
@@ -2382,6 +2382,7 @@ class RaceController(
                 is PositionTracker.Change.CarsChanged -> "Participants : ${c.from ?: "?"} → ${c.to}"
                 is PositionTracker.Change.Finished -> "Classement final : P${c.position} sur ${c.cars}"
                 PositionTracker.Change.Lost -> "Position plus transmise par GT7"
+                is PositionTracker.Change.LapCrossed -> "Tour ${c.lap} bouclé : P${c.position} sur ${c.cars} (ligne)"
             }
             journal.record(JournalType.POSITION, JournalSource.TELEMETRY, text)
         }

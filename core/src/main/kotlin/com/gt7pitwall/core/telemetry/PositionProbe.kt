@@ -22,6 +22,10 @@ class PositionProbe(private val maxEvents: Int = 600) {
         val raw86: Int,
         val state: String,
         val reason: String,
+        /** Numéro du paquet GT7 (0x70) : clé commune avec le journal des formats et une trace brute. */
+        val packetId: Int = 0,
+        /** Format du paquet reçu (A, B, ~, C). */
+        val format: String = "",
     )
 
     /** Répartition des valeurs d'un champ sur tous les paquets reçus. */
@@ -49,13 +53,19 @@ class PositionProbe(private val maxEvents: Int = 600) {
     private var c86 = Counts()
     private var last: Event? = null
 
+    /** Ligne d'arrivée vue (tour > tours) : le « 8/0 » qui suit n'est plus « en course ». */
+    private var finishSeen = false
+
     @Synchronized
     fun onPacket(p: TelemetryPacket, nowMs: Long) {
         packets++
         c84 = count(c84, p.preRacePosition)
         c86 = count(c86, p.preRaceCarCount)
-        val state = state(p)
         val prev = last
+        if (prev != null && p.currentLap < prev.lap) finishSeen = false
+        val raw = state(p)
+        if (raw == "arrivée") finishSeen = true
+        val state = if (finishSeen && p.totalLaps <= 0 && raw == "en course") AFTER_FINISH else raw
         val reason = when {
             prev == null -> "premier paquet"
             prev.raw84 != p.preRacePosition || prev.raw86 != p.preRaceCarCount -> "changement 0x84/0x86"
@@ -63,7 +73,7 @@ class PositionProbe(private val maxEvents: Int = 600) {
             prev.lap != p.currentLap -> "tour ${p.currentLap}"
             else -> null
         }
-        val e = Event(nowMs, p.currentLap, p.totalLaps, p.preRacePosition, p.preRaceCarCount, state, reason ?: "")
+        val e = Event(nowMs, p.currentLap, p.totalLaps, p.preRacePosition, p.preRaceCarCount, state, reason ?: "", p.packetId, p.format.label)
         last = e
         if (reason != null) add(e)
     }
@@ -72,7 +82,7 @@ class PositionProbe(private val maxEvents: Int = 600) {
     @Synchronized
     fun mark(label: String, nowMs: Long) {
         val l = last
-        add(Event(nowMs, l?.lap ?: -1, l?.totalLaps ?: -1, l?.raw84 ?: 0, l?.raw86 ?: 0, l?.state ?: "aucun paquet", "repère : $label"))
+        add(Event(nowMs, l?.lap ?: -1, l?.totalLaps ?: -1, l?.raw84 ?: 0, l?.raw86 ?: 0, l?.state ?: "aucun paquet", "repère : $label", l?.packetId ?: 0, l?.format ?: ""))
     }
 
     @Synchronized
@@ -83,6 +93,7 @@ class PositionProbe(private val maxEvents: Int = 600) {
         c84 = Counts()
         c86 = Counts()
         last = null
+        finishSeen = false
     }
 
     @Synchronized
@@ -99,9 +110,9 @@ class PositionProbe(private val maxEvents: Int = 600) {
         appendLine(line("0x86", c86))
         if (dropped > 0) appendLine("Lignes anciennes retirées : $dropped")
         appendLine()
-        appendLine("heure;tour;tours;0x84;0x86;état;motif")
+        appendLine("heure;tour;tours;0x84;0x86;état;motif;paquet;format")
         for (e in events) {
-            appendLine("${fmt.format(Instant.ofEpochMilli(e.timeMs))};${e.lap};${e.totalLaps};${e.raw84};${e.raw86};${e.state};${e.reason}")
+            appendLine("${fmt.format(Instant.ofEpochMilli(e.timeMs))};${e.lap};${e.totalLaps};${e.raw84};${e.raw86};${e.state};${e.reason};${e.packetId};${e.format}")
         }
     }
 
@@ -123,6 +134,9 @@ class PositionProbe(private val maxEvents: Int = 600) {
     }
 
     companion object {
+        /** Après la ligne d'arrivée, GT7 remet le nombre de tours à 0 (« 8/0 ») : ce n'est pas une reprise de course. */
+        const val AFTER_FINISH = "après arrivée"
+
         fun state(p: TelemetryPacket): String = when {
             p.isLoading -> "chargement"
             p.isPaused -> "pause"

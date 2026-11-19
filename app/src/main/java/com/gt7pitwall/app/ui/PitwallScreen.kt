@@ -1417,6 +1417,18 @@ private fun PositionProbeCard(engine: PitwallEngine) {
             style = MaterialTheme.typography.bodySmall,
             color = PitColors.Muted,
         )
+        val shortPosition by engine.shortPosition.collectAsStateWithLifecycle()
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Réponse courte « Position ? » (test HUD)", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "« Neuvième sur quinze. » si le flux est frais et la course lancée, sinon « Position indisponible. »",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = PitColors.Muted,
+                )
+            }
+            Switch(checked = shortPosition, onCheckedChange = { engine.setShortPositionAnswer(it) })
+        }
         DiagLine("0x84 (position ?)", s.raw84?.toString() ?: "—", PitColors.Green)
         DiagLine("0x86 (voitures ?)", s.raw86?.toString() ?: "—", PitColors.Green)
         DiagLine("Tour / état", "${s.lap ?: "—"} / ${s.state ?: "aucun paquet"}")
@@ -1462,7 +1474,7 @@ private fun PositionProbeCard(engine: PitwallEngine) {
             val fmt = remember { java.text.SimpleDateFormat("HH:mm:ss", Locale.FRANCE) }
             s.events.asReversed().forEach { e ->
                 Text(
-                    "${fmt.format(java.util.Date(e.timeMs))}  tour ${e.lap}  0x84=${e.raw84}  0x86=${e.raw86}  ${e.state} — ${e.reason}",
+                    "${fmt.format(java.util.Date(e.timeMs))}  tour ${e.lap}/${e.totalLaps}  0x84=${e.raw84}  0x86=${e.raw86}  ${e.format}#${e.packetId}  ${e.state} — ${e.reason}",
                     style = MaterialTheme.typography.bodySmall,
                     fontFamily = FontFamily.Monospace,
                     color = PitColors.Muted,

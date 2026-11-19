@@ -10,6 +10,11 @@ package com.gt7pitwall.core.telemetry
  * réponse, silences, erreurs) : il ne change rien au protocole et n'interrompt pas l'analyse (contrairement à la sonde des
  * formats de Gap Hunter, qui suspend le traitement pendant son balayage). Aucune manipulation du Fold : il tourne seul,
  * et se lit après la session. Aucune adresse réseau n'est gardée.
+ *
+ * V508 : trois choses distinctes par période — le DERNIER heartbeat envoyé, le format REÇU, et le statut de la réponse.
+ * Un format reçu n'est plus jamais affiché « sans réponse » (capture Sport : A puis 90 482 paquets C, et pourtant
+ * « sans réponse : C »). Chaque période garde les numéros GT7 (0x70) de son premier et dernier paquet, la même clé que
+ * le diagnostic de position : un changement de 0x84 se rattache ainsi au format reçu à ce moment-là.
  */
 class FormatLog(private val maxSegments: Int = 200) {
     /** Une période continue avec le même format demandé et reçu, dans le même profil d'épreuve. */
@@ -20,8 +25,30 @@ class FormatLog(private val maxSegments: Int = 200) {
         val received: PacketFormat?,
         val profile: String,
         var packets: Long = 0,
+        /** Formats que le client a demandés sans paquet lisible pendant sa négociation (statut brut du client). */
         val unanswered: List<PacketFormat> = emptyList(),
-    )
+        var firstPacketId: Int? = null,
+        var lastPacketId: Int? = null,
+    ) {
+        /** Statut de la réponse au heartbeat. */
+        val response: Response
+            get() = when {
+                received == null -> Response.NONE
+                received == requested -> Response.MATCHES_HEARTBEAT
+                received in unanswered -> Response.EARLIER_HEARTBEAT
+                else -> Response.OTHER_FORMAT
+            }
+
+        /** Formats restés sans réponse, hors celui qui arrive dans cette période. */
+        val stillUnanswered: List<PacketFormat> get() = unanswered.filter { it != received }
+    }
+
+    enum class Response(val text: String) {
+        NONE("aucun paquet"),
+        MATCHES_HEARTBEAT("répond au dernier heartbeat"),
+        EARLIER_HEARTBEAT("format demandé plus tôt (pas le dernier heartbeat envoyé)"),
+        OTHER_FORMAT("format différent du heartbeat"),
+    }
 
     data class Event(val timeMs: Long, val text: String)
 
@@ -46,9 +73,11 @@ class FormatLog(private val maxSegments: Int = 200) {
         lastStatus = key
         when (s) {
             is ConnectionStatus.Receiving -> {
-                open(Segment(nowMs, nowMs, s.requested, s.format, profile, unanswered = s.unanswered))
-                log(nowMs, "reçu ${label(s.format)} (heartbeat demandé : ${label(s.requested)})" +
-                    (if (s.unanswered.isNotEmpty()) ", sans réponse : ${s.unanswered.joinToString { label(it) }}" else "") + ", profil : $profile")
+                val seg = Segment(nowMs, nowMs, s.requested, s.format, profile, unanswered = s.unanswered)
+                open(seg)
+                log(nowMs, "dernier heartbeat envoyé : ${label(s.requested)} ; reçu : ${label(s.format)} ; réponse : ${seg.response.text}" +
+                    (if (seg.stillUnanswered.isNotEmpty()) " ; sans réponse : ${seg.stillUnanswered.joinToString { label(it) }}" else "") +
+                    " ; profil : $profile")
             }
             is ConnectionStatus.NoData -> log(nowMs, "plus de paquet depuis ${s.silenceMs} ms")
             is ConnectionStatus.Searching -> log(nowMs, "recherche de la PS5")
@@ -57,11 +86,30 @@ class FormatLog(private val maxSegments: Int = 200) {
         }
     }
 
-    /** Un paquet lisible : compté dans la période en cours. */
+    /** Un paquet lisible : compté dans la période en cours ; [packetId] = numéro GT7 (0x70), clé commune des diagnostics. */
     @Synchronized
-    fun onPacket(nowMs: Long) {
-        segments.lastOrNull()?.let { it.packets++; it.endMs = nowMs }
+    fun onPacket(nowMs: Long, packetId: Int? = null) {
+        segments.lastOrNull()?.let {
+            it.packets++
+            it.endMs = nowMs
+            if (packetId != null) {
+                if (it.firstPacketId == null) it.firstPacketId = packetId
+                it.lastPacketId = packetId
+            }
+        }
     }
+
+    /** Format reçu au moment d'un événement : la période qui contient ce numéro de paquet GT7, ou cette heure. */
+    @Synchronized
+    fun receivedAt(packetId: Int? = null, timeMs: Long? = null): PacketFormat? = segments.lastOrNull { seg ->
+        val f = seg.firstPacketId
+        val l = seg.lastPacketId
+        when {
+            packetId != null && f != null && l != null -> packetId in f..l
+            timeMs != null -> timeMs in seg.startMs..seg.endMs
+            else -> false
+        }
+    }?.received
 
     private fun open(seg: Segment) {
         segments += seg
@@ -84,9 +132,13 @@ class FormatLog(private val maxSegments: Int = 200) {
                 "${label(f)} : ${l.sumOf { it.packets }} paquets, ${l.sumOf { it.endMs - it.startMs } / 1000} s"
             }
             val requested = segs.mapNotNull { it.requested }.distinct().joinToString { label(it) }
-            val unanswered = segs.flatMap { it.unanswered }.distinct()
-            "$profile — ${byFormat.joinToString(" ; ")} (demandé : $requested" +
-                (if (unanswered.isNotEmpty()) ", sans réponse : ${unanswered.joinToString { label(it) }}" else "") + ")"
+            val received = segs.filter { it.packets > 0 || it.received != null }.mapNotNull { it.received }.toSet()
+            // Un format reçu dans ce profil n'est jamais « sans réponse », même si le client l'a noté pendant le repli.
+            val unanswered = segs.flatMap { it.unanswered }.distinct().filter { it !in received }
+            val late = segs.filter { it.response == Response.EARLIER_HEARTBEAT }.mapNotNull { it.received }.distinct()
+            "$profile — ${byFormat.joinToString(" ; ")} (heartbeat envoyé : $requested" +
+                (if (unanswered.isNotEmpty()) ", sans réponse : ${unanswered.joinToString { label(it) }}" else "") +
+                (if (late.isNotEmpty()) ", reçu sans être le dernier heartbeat : ${late.joinToString { label(it) }}" else "") + ")"
         }
     }
 
@@ -96,5 +148,10 @@ class FormatLog(private val maxSegments: Int = 200) {
         summary().forEach { appendLine("# $it") }
         appendLine("t_ms;evenement")
         events.forEach { appendLine("${it.timeMs - startMs};${it.text.replace(';', ',')}") }
+        appendLine("# Périodes : debut_ms;fin_ms;heartbeat_envoye;recu;reponse;paquets;premier_paquet;dernier_paquet")
+        segments.forEach {
+            appendLine("${it.startMs - startMs};${it.endMs - startMs};${it.requested?.label ?: "?"};${it.received?.label ?: "?"};" +
+                "${it.response.name};${it.packets};${it.firstPacketId ?: ""};${it.lastPacketId ?: ""}")
+        }
     }
 }
