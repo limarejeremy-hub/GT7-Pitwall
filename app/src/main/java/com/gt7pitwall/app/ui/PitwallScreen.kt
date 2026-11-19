@@ -1420,10 +1420,25 @@ private fun VoiceBenchCard(engine: PitwallEngine, voice: TtsVoiceOutput, discord
         engines.forEach { Text(it, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace) }
         TextButton(onClick = { engines = readEngines() }) { Text("Relire le moteur") }
         Text(engine.voiceBench.bUnavailable, style = MaterialTheme.typography.bodySmall, color = PitColors.Yellow)
+        val liveOpen by engine.liveOpen.collectAsStateWithLifecycle()
+        val liveLines by engine.live.collectAsStateWithLifecycle()
+        var liveError by remember { mutableStateOf<String?>(null) }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = { engine.startVoiceBench() }, modifier = Modifier.weight(1f)) { Text("Démarrer A") }
-            OutlinedButton(onClick = {}, enabled = false, modifier = Modifier.weight(1f)) { Text("B — GPT-Live") }
+            Button(onClick = { engine.startVoiceBench() }, enabled = !liveOpen, modifier = Modifier.weight(1f)) { Text("Démarrer A") }
+            if (liveOpen) {
+                Button(onClick = { engine.stopLiveB() }, modifier = Modifier.weight(1f)) { Text("Arrêter B") }
+            } else {
+                OutlinedButton(onClick = { liveError = engine.startLiveB() }, modifier = Modifier.weight(1f)) { Text("B simulé (5 min)") }
+            }
         }
+        liveError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = PitColors.Red) }
+        Text(
+            "B simulé : pendant la session, parle sans redire « Véga » et coupe-la quand tu veux. Seules les alertes " +
+                "critiques de la voix A passent. La voix entendue reste la synthèse Android : on juge le déroulé, pas la voix GPT.",
+            style = MaterialTheme.typography.bodySmall,
+            color = PitColors.Muted,
+        )
+        liveLines.forEach { Text(it, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace) }
         step?.let {
             Text("À faire : ${it.prompt}", fontWeight = FontWeight.Bold, color = PitColors.Green)
             Text("On juge : ${it.judge}", style = MaterialTheme.typography.bodySmall, color = PitColors.Muted)

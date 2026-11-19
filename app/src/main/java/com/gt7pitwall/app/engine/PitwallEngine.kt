@@ -281,6 +281,87 @@ class PitwallEngine(
         refreshBench()
     }
 
+    // ------------------------------------------------------------------ V510 : prototype B (GPT-Live simulé)
+
+    /** Port audio Discord du prototype B (posé par l'application). */
+    @Volatile
+    var liveAudio: LiveAudioPort? = null
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private val liveCtx = Dispatchers.IO.limitedParallelism(1)
+    @Volatile private var liveSession: com.gt7pitwall.core.live.LiveSession? = null
+    @Volatile private var liveLastUtterance: VoiceInputEvent.Utterance? = null
+    private val _live = MutableStateFlow(listOf("B — simulation GPT-Live : pas démarrée"))
+    val live: StateFlow<List<String>> = _live.asStateFlow()
+    private val _liveOpen = MutableStateFlow(false)
+    val liveOpen: StateFlow<Boolean> = _liveOpen.asStateFlow()
+
+    private val liveRunning: Boolean get() = liveSession?.state == com.gt7pitwall.core.live.LiveSession.State.OPEN
+
+    /**
+     * Démarre B (activation manuelle, 5 minutes au plus) : serveur GPT-Live SIMULÉ, même salon Discord, réponses de
+     * Pitwall sur l'état de course. Renvoie la raison d'un refus, ou null.
+     */
+    fun startLiveB(): String? {
+        val port = liveAudio ?: return "Sortie Discord indisponible."
+        if (!port.available) return "Rejoins d'abord le salon Discord."
+        if (liveRunning) return null
+        val clock = { android.os.SystemClock.elapsedRealtime() }
+        val server = com.gt7pitwall.core.live.SimulatedLiveServer(clock, voice = { text -> kotlinx.coroutines.runBlocking { port.synthesize(text) } })
+        val session = com.gt7pitwall.core.live.LiveSession(
+            server, clock,
+            delegate = { heard, reply ->
+                // Pitwall est le « backend » : même calcul que la voix A (état de course), jamais inventé.
+                val event = liveLastUtterance
+                scope.launch {
+                    val text = runCatching {
+                        conversation.onUtterance(event?.text ?: heard, event?.freeText ?: heard, languageModel, {}, addressed = true)
+                            .filter { it.category != MessageCategory.DRIVER }.joinToString(" ") { it.text }
+                    }.getOrNull()?.takeIf { it.isNotBlank() } ?: "Je n'ai pas de réponse à ça."
+                    withContext(liveCtx) { reply(text) }
+                }
+            },
+            play = port::play,
+            flush = port::flush,
+        )
+        if (!session.start()) return "Session refusée."
+        liveSession = session
+        _liveOpen.value = true
+        voiceInput?.expectReply()
+        // Boucle de session : limite de durée et audio simulé toutes les 20 ms.
+        scope.launch(liveCtx) {
+            var n = 0
+            while (session.state == com.gt7pitwall.core.live.LiveSession.State.OPEN) {
+                session.tick()
+                if (n++ % 25 == 0) _live.value = session.lines()
+                kotlinx.coroutines.delay(20)
+            }
+            port.end()
+            _live.value = session.lines()
+            _liveOpen.value = false
+            journalRadio("LIVE_B_FIN", "Prototype B fermé : ${session.closeReason}")
+        }
+        // Micro du casque vers la session (le simulateur ne fait que le compter ; le vrai service l'écouterait).
+        scope.launch(Dispatchers.IO) {
+            val mic = port.openMic() ?: return@launch
+            try {
+                while (session.state == com.gt7pitwall.core.live.LiveSession.State.OPEN) {
+                    val pcm = mic.read(480) ?: break
+                    if (pcm.isNotEmpty()) withContext(liveCtx) { session.onMicAudio(pcm) }
+                }
+            } finally {
+                mic.close()
+            }
+        }
+        journalRadio("LIVE_B_DEBUT", "Prototype B (GPT-Live simulé) démarré, 5 minutes au plus")
+        return null
+    }
+
+    fun stopLiveB() {
+        val s = liveSession ?: return
+        scope.launch(liveCtx) { s.stop() }
+    }
+
     /** Phrases de prononciation (« onzième sur quinze ») par la sortie active : Discord si le salon est ouvert. */
     fun playPronunciation() {
         com.gt7pitwall.core.radio.VoiceBench.PRONUNCIATION.forEach {
@@ -657,13 +738,21 @@ class PitwallEngine(
                 pendingLatency = null
                 voiceBench.onBargeIn(event.heard, android.os.SystemClock.elapsedRealtime())
                 refreshBench()
+                liveSession?.let { s -> scope.launch(liveCtx) { s.onDriverSpeechStart() } }
                 race.journal.record(
                     JournalType.RADIO, JournalSource.TRANSCRIPT, "Interruption du pilote : ${event.heard}",
                     details = mapOf("mode" to event.mode.label),
                 )
                 deliver(EngineerMessage("🎙 Interrompu : « ${event.heard} »", Priority.INFO, MessageCategory.DRIVER))
             }
-            is VoiceInputEvent.Utterance -> {
+            is VoiceInputEvent.Utterance -> if (liveRunning) {
+                // Prototype B : la phrase va à la session (pas de mot d'appel nécessaire pendant ses 5 minutes).
+                journalUtterance(event)
+                liveLastUtterance = event
+                val s = liveSession
+                scope.launch(liveCtx) { s?.onDriverUtterance(event.freeText?.takeIf { it.isNotBlank() } ?: event.text) }
+                voiceInput?.expectReply()
+            } else {
                 journalUtterance(event)
                 val heardAt = android.os.SystemClock.elapsedRealtime()
                 val trace = com.gt7pitwall.core.radio.LatencyTrace(++turnSeq).apply {
@@ -986,7 +1075,9 @@ class PitwallEngine(
         journalMessage(message)
         _radio.update { (listOf(message) + it).take(MAX_RADIO_LOG) }
         // Les paroles du pilote sont seulement affichées.
-        if (voiceEnabled && message.category != MessageCategory.DRIVER &&
+        // Prototype B en cours (5 min au plus) : seules les alertes critiques de la voix A sont dites, pour ne pas mêler deux voix.
+        val heldForLive = liveRunning && message.priority != Priority.CRITICAL
+        if (voiceEnabled && message.category != MessageCategory.DRIVER && !heldForLive &&
             !com.gt7pitwall.core.radio.RadioPacer.dropBeforeSpeech(message, voiceBusy())
         ) {
             voice.speak(message)
