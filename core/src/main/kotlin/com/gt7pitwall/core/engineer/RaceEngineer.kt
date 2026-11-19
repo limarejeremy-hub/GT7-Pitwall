@@ -60,6 +60,19 @@ class RaceEngineer {
     var driverPosition: Int? = null
         private set
 
+    /**
+     * Option de test (V508, validation HUD) : « Position ? » reçoit une réponse courte, « Neuvième sur quinze. », ou
+     * « Position indisponible. ». Désactivée par défaut : la réponse habituelle reste celle de [positionAnswer].
+     */
+    var shortPositionAnswer: Boolean = false
+
+    /**
+     * Rang de la session active à l'instant de la question (PositionTracker.liveRank) : null si le flux n'est pas frais,
+     * si la course n'est pas lancée ou si le rang n'est pas cohérent. Lu au moment de la question, pas au dernier paquet
+     * (un gel UDP ne laisse donc pas une place périmée).
+     */
+    var liveRank: () -> Pair<Int, Int>? = { null }
+
     /** Position mesurée par GT7 (0x84 filtré, voir PositionTracker) : prioritaire sur la position déclarée. */
     var measured: MeasuredPosition = MeasuredPosition.NONE
         set(v) {
@@ -805,7 +818,7 @@ class RaceEngineer {
                         out += msg("Tu pars en position ${c.to} sur ${c.cars}. Bonne course !", Priority.NORMAL, MessageCategory.RADIO)
                     }
                 }
-                is PositionTracker.Change.CarsChanged -> Unit
+                is PositionTracker.Change.CarsChanged, is PositionTracker.Change.LapCrossed -> Unit
             }
         }
         // Dépassements groupés : on attend que la position ne bouge plus pendant [POSITION_GROUP_MS] (double dépassement,
@@ -834,7 +847,13 @@ class RaceEngineer {
 
     private fun declaredSuffix(): String = driverPosition?.let { " D'après ce que tu m'as dit, tu es P$it." } ?: ""
 
+    /** Réponse courte de test : « Neuvième sur quinze. » ou « Position indisponible. » (jamais une place héritée). */
+    fun shortPosition(): String = liveRank()?.let { (p, n) ->
+        "${FrenchFormat.ordinalWords(p).replaceFirstChar { it.uppercase() }} sur ${FrenchFormat.cardinalWords(n)}."
+    } ?: "Position indisponible."
+
     private fun positionAnswer(): String {
+        if (shortPositionAnswer) return shortPosition()
         val m = measured
         m.finalPosition?.let { return "Tu termines P$it sur ${m.finalCars}, d'après GT7." }
         m.position?.let { p ->
