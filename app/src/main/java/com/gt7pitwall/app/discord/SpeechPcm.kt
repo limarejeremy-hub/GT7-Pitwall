@@ -36,6 +36,25 @@ class SpeechPcm(context: Context) {
     @Volatile
     var speechRate: Float = 1.05f
 
+    @Volatile private var lastRate: Int? = null
+    @Volatile private var lastSynthMs: Long? = null
+
+    /** V509 : moteur réellement utilisé pour la voix du salon (diagnostic, relevé sur le téléphone). */
+    fun report(route: String): com.gt7pitwall.core.radio.VoiceEngineReport {
+        val v = runCatching { tts.voice }.getOrNull()
+        return com.gt7pitwall.core.radio.VoiceEngineReport(
+            route = route,
+            enginePackage = runCatching { tts.defaultEngine }.getOrNull(),
+            voiceName = v?.name,
+            locale = v?.locale?.toLanguageTag(),
+            networkVoice = v?.isNetworkConnectionRequired,
+            quality = v?.quality,
+            nativeRateHz = lastRate,
+            outputRateHz = lastRate?.let { OpusFrames.SAMPLE_RATE },
+            lastSynthesisMs = lastSynthMs,
+        )
+    }
+
     private fun finish(id: String?, ok: Boolean) {
         synchronized(pending) { pending.remove(id) }?.complete(ok)
     }
@@ -48,11 +67,14 @@ class SpeechPcm(context: Context) {
         val id = UUID.randomUUID().toString()
         val file = File(cacheDir, "discord-$id.wav")
         val done = CompletableDeferred<Boolean>()
+        val t0 = android.os.SystemClock.elapsedRealtime()
         synchronized(pending) { pending[id] = done }
         try {
             if (tts.synthesizeToFile(text, null, file, id) != TextToSpeech.SUCCESS) return null
             if (withTimeoutOrNull(SYNTH_TIMEOUT_MS) { done.await() } != true) return null
             val (rate, samples) = readWav(file.readBytes()) ?: return null
+            lastRate = rate
+            lastSynthMs = android.os.SystemClock.elapsedRealtime() - t0
             return resample(samples, rate, OpusFrames.SAMPLE_RATE)
         } finally {
             synchronized(pending) { pending.remove(id) }

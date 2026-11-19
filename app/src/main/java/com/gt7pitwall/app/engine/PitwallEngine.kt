@@ -258,13 +258,51 @@ class PitwallEngine(
         runCatching { race.journal.record(JournalType.RADIO, JournalSource.SYSTEM, text, details = mapOf("code" to code)) }
     }
 
+    /** V509 : banc d'écoute A/B (voix actuelle ; GPT-Live indisponible sans clé payante). */
+    val voiceBench = com.gt7pitwall.core.radio.VoiceBench()
+    private val _bench = MutableStateFlow(voiceBench.lines())
+    val bench: StateFlow<List<String>> = _bench.asStateFlow()
+    private val _benchStep = MutableStateFlow<com.gt7pitwall.core.radio.VoiceBench.Step?>(null)
+    val benchStep: StateFlow<com.gt7pitwall.core.radio.VoiceBench.Step?> = _benchStep.asStateFlow()
+
+    /** Tour en attente de son premier son : texte reconnu et « Véga » dit ou non, pour le banc. */
+    @Volatile
+    private var benchTurn: Triple<com.gt7pitwall.core.radio.LatencyTrace, String, Boolean>? = null
+
+    private fun refreshBench() {
+        _bench.value = voiceBench.lines()
+        _benchStep.value = voiceBench.current
+    }
+
+    fun startVoiceBench(): Boolean = voiceBench.start().also { refreshBench() }
+
+    fun stopVoiceBench() {
+        voiceBench.stop()
+        refreshBench()
+    }
+
+    /** Phrases de prononciation (« onzième sur quinze ») par la sortie active : Discord si le salon est ouvert. */
+    fun playPronunciation() {
+        com.gt7pitwall.core.radio.VoiceBench.PRONUNCIATION.forEach {
+            voice.speak(EngineerMessage(it, Priority.NORMAL, MessageCategory.RADIO, dedupKey = "prononciation-${System.nanoTime()}"))
+        }
+        voiceBench.onPronunciationPlayed()
+        refreshBench()
+    }
+
     fun onAudible(message: EngineerMessage, atMs: Long) {
         // Fenêtre d'écho à partir du premier son réellement émis (issue #45).
         if (message.category != MessageCategory.DRIVER) race.noteSpoken(message.text)
+        if (message.category != MessageCategory.DRIVER) voiceBench.onAudible(atMs)
         val (trace, answers) = pendingLatency ?: return
         if (answers.none { it === message }) return
         pendingLatency = null
         trace.mark(com.gt7pitwall.core.radio.LatencyTrace.Step.AUDIBLE, atMs)
+        benchTurn?.takeIf { it.first === trace }?.let { (t, heard, addressed) ->
+            benchTurn = null
+            voiceBench.onTurn(heard, addressed, t.totalMs)
+            refreshBench()
+        }
         val text = trace.text()
         _latency.value = text
         race.journal.record(
@@ -617,6 +655,8 @@ class PitwallEngine(
                 voice.stop()
                 conversation.interrupt()
                 pendingLatency = null
+                voiceBench.onBargeIn(event.heard, android.os.SystemClock.elapsedRealtime())
+                refreshBench()
                 race.journal.record(
                     JournalType.RADIO, JournalSource.TRANSCRIPT, "Interruption du pilote : ${event.heard}",
                     details = mapOf("mode" to event.mode.label),
@@ -656,7 +696,12 @@ class PitwallEngine(
                         val spoken = messages.filter { it.category != MessageCategory.DRIVER }.toSet()
                         if (spoken.isNotEmpty()) {
                             trace.mark(com.gt7pitwall.core.radio.LatencyTrace.Step.SYNTHESIS, android.os.SystemClock.elapsedRealtime())
+                            benchTurn = Triple(trace, event.text, event.addressed)
                             pendingLatency = trace to spoken
+                        } else if (voiceBench.running) {
+                            // Aucune réponse dite : le tour compte quand même (« délai non mesuré »).
+                            voiceBench.onTurn(event.text, event.addressed, null)
+                            refreshBench()
                         }
                         messages.forEach(::deliver)
                     } finally {

@@ -250,6 +250,7 @@ fun PitwallScreen(
             },
             listeningOn = micLabel,
         )
+        VoiceBenchCard(engine, voice, discord)
         CloudAiCard(cloudAi, onAiMode, radioRoute)
         ChatGptCard(cloudAi, voice)
         HumanRadioCard(engine, settings)
@@ -1393,6 +1394,58 @@ private fun ControllerRadioProbeCard(engine: PitwallEngine) {
                 modifier = Modifier.weight(1f),
             ) { Text("Exporter") }
             OutlinedButton(onClick = { probe.reset(); lines = probe.summary() }, modifier = Modifier.weight(1f)) { Text("Effacer") }
+        }
+    }
+}
+
+/**
+ * V509 — diagnostic de la voix et banc d'écoute A/B. Montre le moteur qui produit réellement le son (synthèse Android
+ * du téléphone, relevée sur l'appareil) et guide le protocole : carburant, relance sans « Véga », interruption,
+ * prononciation. B (GPT-Live) reste indisponible sans clé d'API payante.
+ */
+@Composable
+private fun VoiceBenchCard(engine: PitwallEngine, voice: TtsVoiceOutput, discord: DiscordRadio) {
+    val context = LocalContext.current
+    val lines by engine.bench.collectAsStateWithLifecycle()
+    val step by engine.benchStep.collectAsStateWithLifecycle()
+    val discordState by discord.state.collectAsStateWithLifecycle()
+    var engines by remember { mutableStateOf<List<String>>(emptyList()) }
+    fun readEngines(): List<String> = buildList {
+        if (discordState == DiscordState.IN_VOICE) addAll(runCatching { discord.engineReport().lines() }.getOrDefault(emptyList()))
+        addAll(runCatching { voice.engineReport().lines() }.getOrDefault(emptyList()).distinct())
+    }.distinct()
+    androidx.compose.runtime.LaunchedEffect(discordState) { engines = readEngines() }
+    PitCard("Voix de Véga : diagnostic et banc A/B") {
+        Text("Moteur réel", style = MaterialTheme.typography.labelMedium, color = PitColors.Muted)
+        engines.forEach { Text(it, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace) }
+        TextButton(onClick = { engines = readEngines() }) { Text("Relire le moteur") }
+        Text(engine.voiceBench.bUnavailable, style = MaterialTheme.typography.bodySmall, color = PitColors.Yellow)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = { engine.startVoiceBench() }, modifier = Modifier.weight(1f)) { Text("Démarrer A") }
+            OutlinedButton(onClick = {}, enabled = false, modifier = Modifier.weight(1f)) { Text("B — GPT-Live") }
+        }
+        step?.let {
+            Text("À faire : ${it.prompt}", fontWeight = FontWeight.Bold, color = PitColors.Green)
+            Text("On juge : ${it.judge}", style = MaterialTheme.typography.bodySmall, color = PitColors.Muted)
+        }
+        if (discordState != DiscordState.IN_VOICE) {
+            Text("Rejoins le salon Discord pour tester dans le casque PS5.", style = MaterialTheme.typography.bodySmall, color = PitColors.Muted)
+        }
+        lines.forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { engine.playPronunciation() }, modifier = Modifier.weight(1f)) { Text("Prononciation") }
+            OutlinedButton(
+                onClick = {
+                    val send = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_SUBJECT, "GT7 Pitwall — banc voix A/B")
+                        putExtra(Intent.EXTRA_TEXT, engine.voiceBench.export(readEngines()))
+                    }
+                    context.startActivity(Intent.createChooser(send, "Exporter le banc"))
+                },
+                modifier = Modifier.weight(1f),
+            ) { Text("Exporter") }
+            TextButton(onClick = { engine.stopVoiceBench() }) { Text("Arrêter") }
         }
     }
 }
