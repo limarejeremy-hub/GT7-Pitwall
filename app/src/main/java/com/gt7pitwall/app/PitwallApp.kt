@@ -117,6 +117,7 @@ class PitwallApp : Application() {
         engine = PitwallEngine(radioOut, voiceInput, DatabaseRepository.load(this), RaceStore(this)).also {
             voice.onAudible = it::onAudible
             discord.onAudible = it::onAudible
+            it.liveAudio = discord.liveAudio
             // Issue #48 : anomalies de la voix envoyée au salon, au journal (aucun son gardé).
             discord.audioMonitor.enabled = settings.audioDiagnostics
             discord.onAudioEvent = { code, text -> it.journalRadio(code, text) }
