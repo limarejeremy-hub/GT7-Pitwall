@@ -221,3 +221,66 @@ Tests de non-régression : `V511ReliabilityTest` (6), en plus de `PostFinishRevi
 6. **Traces** : envoyer les fichiers `.gt7trace` du 19 et du 22/11 (et les trois autres) pour `RealTraceReplayTest`.
 
 Rien n'est validé tant que le journal exporté ne montre pas le comportement attendu.
+
+## 10. Revue de la PR #86 (corrections)
+
+### Alertes critiques sur la synthèse Android (Fold)
+
+**Défaut confirmé.** `TtsVoiceOutput` décidait du `QUEUE_FLUSH` d'après `current`, qui n'est posé qu'au rappel
+`onStart`. Quand deux alertes critiques arrivent immédiatement, la première est en file mais pas encore commencée. La
+seconde voit `current == null`, demande `QUEUE_FLUSH` et efface la première.
+
+**Correction.** La décision passe dans `core/radio/TtsPreemption` (Kotlin pur, testé), d'après **toute** la file :
+- une alerte critique sans autre alerte critique en file → `FLUSH` : la préemption des annonces non critiques est
+  conservée ;
+- une alerte critique alors qu'une autre est en file → `ADD`, sans rien effacer ;
+- une annonce non critique pendant les alertes → `DEFER`. Elle est rendue après la dernière alerte, et jamais dite si
+  elle est devenue fausse entre-temps.
+
+Tests : `V511ReviewTest` reproduit l'enchaînement exact (1re alerte placée sans `onStart`, 2e aussitôt → `ADD`) et
+vérifie la préemption et le report.
+
+### Position invalide
+
+- **0x84 = -1 avec des paquets toujours reçus.** Avant, la place établie restait « actuelle » jusqu'à 5 s. De plus, la
+  réponse longue l'attribuait au pilote : « d'après ce que tu m'as dit, tu es P8 », alors que c'était une ancienne
+  mesure recopiée. Désormais :
+  - « Position ? » répond « Position indisponible. » dès le premier paquet incohérent ;
+  - après un rang incohérent, la place n'est redite que si GT7 redonne la même valeur ou si la nouvelle valeur est
+    stable ;
+  - « d'après ce que tu m'as dit » est réservé aux places réellement déclarées par le pilote.
+- **Premier paquet d'arrivée au rang incohérent.** Avant, l'arrivée n'était pas notée et l'archive restait sans
+  classement si la course se fermait. Désormais, le rang de la ligne est, dans cet ordre :
+  1. le dernier rang cohérent reçu au plus 1,5 s avant la ligne ;
+  2. sinon la place établie ;
+  3. sinon le premier rang cohérent après la ligne.
+
+  L'origine du rang est notée au journal (`lineSource`).
+
+### Replays réels
+
+`RealTraceReplayTest` exige maintenant les deux traces du 19 et du 22/11 dès que `PITWALL_TRACES` est défini.
+
+**Contrôles par trace** :
+- échantillons et format (19/11 : 74 556 C ; 22/11 : 29 936 C ; 06/11 : 126 686 A tronquée ; 28/10 : 22 400 C) ;
+- paquets illisibles et interruptions ;
+- rang à la ligne, révisions et classement final (PositionTracker) ;
+- archive de session (SessionArchive) ;
+- un « Course terminée » par arrivée, aucun bilan en double, au plus une révision dite ;
+- « 8/0 » jamais vu « en course ».
+
+**Comportement** :
+- sans `PITWALL_TRACES` : le test est ignoré, avec la liste exacte des contrôles non exécutés ;
+- avec un dossier où une trace obligatoire manque : échec explicite, qui nomme les contrôles non exécutés.
+
+**Contrôle du harnais (pas une validation)** : une trace synthétique de 29 936 échantillons C, au scénario du 22/11,
+donne ligne P12/16, archivé P13/16, une révision et un seul « Course terminée ». Le test échoue bien sur la trace
+obligatoire du 19/11 absente.
+
+### Séparation des validations
+
+| Validation | État |
+|---|---|
+| Automatisée (JVM + CI) | 945 tests, 0 échec ; `RealTraceReplayTest` ignoré faute de traces |
+| Traces réelles rejouées | **non exécutée** : les traces ne sont pas encore dans la session |
+| Réelle PS5 + Fold | **non faite** : protocole de la section 9 |

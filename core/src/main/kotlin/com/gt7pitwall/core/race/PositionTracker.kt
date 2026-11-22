@@ -130,6 +130,26 @@ class PositionTracker(
     private var lastPacketMs: Long? = null
     private var inRaceNow = false
 
+    /**
+     * Revue #86 : le DERNIER paquet en course porte un rang cohérent. Faux dès qu'arrive un 0x84 = -1 (ou incohérent)
+     * alors que les paquets continuent : la place établie n'est plus dite comme actuelle, même pendant les 5 s avant
+     * « position perdue ».
+     */
+    private var latestValid = false
+
+    /**
+     * Après un rang incohérent, la place établie n'est plus fiable tant que GT7 ne la redonne pas (même valeur) ou
+     * qu'une nouvelle valeur n'est pas stable : jamais « P8 » quand GT7 dit déjà P7 (revue #86).
+     */
+    private var reconfirm = false
+
+    /** Dernier rang brut cohérent reçu en course (position, voitures, instant), pour une ligne sans rang cohérent. */
+    private var lastRawValid: Triple<Int, Int, Long>? = null
+
+    /** D'où vient le rang de la ligne (paquet de la ligne, ou repli si ce paquet était incohérent). */
+    var lineSource: String? = null
+        private set
+
     /** Rang au passage de la ligne de chaque tour bouclé (valeur brute du paquet de la ligne, cohérente). */
     data class LapPosition(val lap: Int, val position: Int, val cars: Int, val timeMs: Long, val packetId: Int)
 
@@ -140,8 +160,11 @@ class PositionTracker(
     sealed interface Change {
         data class Moved(val from: Int?, val to: Int, val cars: Int) : Change
         data class CarsChanged(val from: Int?, val to: Int) : Change
-        /** Ligne d'arrivée : rang du paquet de la ligne (classement provisoire). */
-        data class Finished(val position: Int, val cars: Int) : Change
+        /**
+         * Ligne d'arrivée : rang de la ligne (classement provisoire). [source] : d'où vient ce rang quand le paquet de la
+         * ligne n'en porte pas de cohérent (revue #86).
+         */
+        data class Finished(val position: Int, val cars: Int, val source: String = LINE_PACKET) : Change
         data object Lost : Change
 
         /** Classement révisé par GT7 après la ligne (cause non transmise). */
@@ -156,7 +179,7 @@ class PositionTracker(
 
     /** Position mesurée utilisable maintenant : établie, et GT7 envoie encore des valeurs valides. */
     fun reliable(nowMs: Long): Boolean =
-        enabled && finalPosition == null && position != null && lastValidMs?.let { nowMs - it <= unavailableMs } == true
+        enabled && finalPosition == null && position != null && latestValid && !reconfirm && lastValidMs?.let { nowMs - it <= unavailableMs } == true
 
     /**
      * Rang à dire maintenant (« Position ? »), ou null : flux frais (dernier paquet il y a au plus [FRESH_MS]), course
@@ -199,6 +222,22 @@ class PositionTracker(
         }
         if (!valid) {
             candidate = null
+            latestValid = false
+            reconfirm = true
+            // Revue #86 : paquet de la ligne d'arrivée sans rang cohérent. L'arrivée est quand même notée ; le rang de la
+            // ligne est le dernier rang cohérent reçu juste avant (au plus [FRESH_MS]), sinon la place établie, sinon le
+            // premier rang cohérent qui suit (branche [finished] plus bas).
+            if (finished && finishSeenMs == null) {
+                finishSeenMs = nowMs
+                if (prevLap != null && prevLap <= p.totalLaps) {
+                    val raw = lastRawValid?.takeIf { nowMs - it.third <= FRESH_MS }
+                    when {
+                        raw != null -> freeze(raw.first, raw.second, out, p.currentLap, nowMs, LAST_VALID_BEFORE_LINE)
+                        position != null && cars != null -> freeze(position!!, cars!!, out, p.currentLap, nowMs, ESTABLISHED)
+                    }
+                }
+                return out
+            }
             val since = invalidSinceMs ?: nowMs.also { invalidSinceMs = it }
             if (position != null && nowMs - since > unavailableMs) {
                 clearLive()
@@ -208,6 +247,9 @@ class PositionTracker(
         }
         invalidSinceMs = null
         lastValidMs = nowMs
+        latestValid = true
+        lastRawValid = Triple(pos, n, nowMs)
+        if (reconfirm && pos == position && n == cars) reconfirm = false
         val value = pos to n
         if (candidate != value) {
             candidate = value
@@ -221,12 +263,15 @@ class PositionTracker(
             val seen = finishSeenMs ?: nowMs.also { finishSeenMs = it }
             when {
                 firstFinishPacket && prevLap != null && prevLap <= p.totalLaps -> freeze(pos, n, out, p.currentLap, nowMs)
-                nowMs - candidateSinceMs >= finishStableMs -> freeze(pos, n, out, p.currentLap, nowMs)
-                nowMs - seen >= stableMs -> freeze(position ?: return out, cars ?: n, out, p.currentLap, nowMs)
+                // Ligne passée sans rang cohérent ni repli : premier rang cohérent qui suit.
+                !firstFinishPacket && linePosition == null && nowMs - seen <= FRESH_MS -> freeze(pos, n, out, p.currentLap, nowMs, FIRST_VALID_AFTER_LINE)
+                nowMs - candidateSinceMs >= finishStableMs -> freeze(pos, n, out, p.currentLap, nowMs, FIRST_VALID_AFTER_LINE)
+                nowMs - seen >= stableMs -> freeze(position ?: return out, cars ?: n, out, p.currentLap, nowMs, ESTABLISHED)
             }
             return out
         }
         if (nowMs - candidateSinceMs < stableMs) return out
+        reconfirm = false
         if (cars != n) {
             out += Change.CarsChanged(cars, n)
             cars = n
@@ -244,8 +289,9 @@ class PositionTracker(
         return out
     }
 
-    private fun freeze(fp: Int, fc: Int, out: MutableList<Change>, lap: Int, nowMs: Long) {
+    private fun freeze(fp: Int, fc: Int, out: MutableList<Change>, lap: Int, nowMs: Long, source: String = LINE_PACKET) {
         if (finalPosition != null) return
+        lineSource = source
         finalPosition = fp
         finalCars = fc
         linePosition = fp
@@ -253,7 +299,7 @@ class PositionTracker(
         finishLap = lap
         lineMs = nowMs
         lastRevisionMs = nowMs
-        out += Change.Finished(fp, fc)
+        out += Change.Finished(fp, fc, source)
     }
 
     /** Après la ligne : révisions du classement, puis consolidation. */
@@ -351,6 +397,8 @@ class PositionTracker(
         tracked = false
         lastLap = null
         laps.clear()
+        lineSource = null
+        lastRawValid = null
     }
 
     private fun clearLive() {
@@ -360,6 +408,8 @@ class PositionTracker(
         lastValidMs = null
         invalidSinceMs = null
         inRaceNow = false
+        latestValid = false
+        reconfirm = false
     }
 
     companion object {
@@ -373,6 +423,12 @@ class PositionTracker(
          * arrivée 567 ms après la ligne).
          */
         const val POST_FINISH_STABLE_MS = 500L
+
+        /** Sources du rang de la ligne (journal et archive). */
+        const val LINE_PACKET = "paquet de la ligne"
+        const val LAST_VALID_BEFORE_LINE = "dernier rang cohérent avant la ligne"
+        const val FIRST_VALID_AFTER_LINE = "premier rang cohérent après la ligne"
+        const val ESTABLISHED = "dernière place établie"
 
         /**
          * Consolidation : 30 s sans changement après la ligne ou la dernière révision. Une seule mesure réelle existe
