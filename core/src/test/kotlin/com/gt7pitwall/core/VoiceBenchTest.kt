@@ -73,7 +73,7 @@ class VoiceBenchTest {
         assertTrue("prise sans « Véga »" in l[1], l[1])
         assertTrue("coupée après 1700 ms de parole (« attends »)" in l[2], l[2])
         val e = b.export(listOf("Discord (casque PS5) : synthèse vocale Android du téléphone — Samsung TTS"))
-        assertTrue("B indisponible" in e && "réponse en 1240 ms" in e, e)
+        assertTrue("GPT-Live réel désactivé" in e && "réponse en 1240 ms" in e, e)
     }
 
     @Test

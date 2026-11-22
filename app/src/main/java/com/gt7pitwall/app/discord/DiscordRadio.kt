@@ -539,6 +539,89 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
         return (rms / 50).toInt().coerceIn(0, 100)
     }
 
+    // ------------------------------------------------------------------ V510 : prototype B (GPT-Live simulé)
+
+    private val liveGen = java.util.concurrent.atomic.AtomicInteger()
+    private val liveChunks = Channel<Pair<Int, ShortArray>>(Channel.UNLIMITED)
+    @Volatile private var liveJob: kotlinx.coroutines.Job? = null
+
+    /** Port audio du prototype B : même salon, même file d'envoi que la voix A. */
+    val liveAudio: com.gt7pitwall.app.engine.LiveAudioPort = object : com.gt7pitwall.app.engine.LiveAudioPort {
+        override val available: Boolean get() = inVoice
+
+        override fun play(pcm24k: ShortArray) {
+            if (!inVoice) return
+            liveChunks.trySend(liveGen.get() to pcm24k)
+            ensureLiveJob()
+        }
+
+        override fun flush() {
+            liveGen.incrementAndGet()
+            sender.clear("coupure du pilote (prototype B)", null)
+            _speaking.value = false
+        }
+
+        override fun end() {
+            flush()
+            liveJob?.cancel()
+            liveJob = null
+        }
+
+        override suspend fun synthesize(text: String): ShortArray? {
+            speech.speechRate = speechRate
+            val pcm = speech.synthesize(com.gt7pitwall.core.radio.SpokenFrench.forAudio(text)) ?: return null
+            return SpeechPcm.resample(pcm, OpusFrames.SAMPLE_RATE, com.gt7pitwall.core.live.LiveConfig.SAMPLE_RATE)
+        }
+
+        override fun openMic(): com.gt7pitwall.app.engine.LiveAudioPort.MicReader? {
+            val src = openMicSource() ?: return null
+            src.start()
+            return object : com.gt7pitwall.app.engine.LiveAudioPort.MicReader {
+                private val buf = ShortArray(OpusDecoderStream.OUTPUT_RATE / 50)
+                override fun read(max: Int): ShortArray? {
+                    val n = src.read(buf)
+                    if (n < 0) return null
+                    return SpeechPcm.resample(buf.copyOf(n), OpusDecoderStream.OUTPUT_RATE, com.gt7pitwall.core.live.LiveConfig.SAMPLE_RATE)
+                }
+                override fun close() = src.release()
+            }
+        }
+    }
+
+    /** Encode les morceaux de B en flux (un encodeur par réponse) et les met dans la file du salon. */
+    private fun ensureLiveJob() {
+        if (liveJob?.isActive == true) return
+        liveJob = scope.launch {
+            var encoder: OpusStreamEncoder? = null
+            var encGen = -1
+            try {
+                while (true) {
+                    // Rien pendant 400 ms : la réponse est finie, la voix se tait.
+                    val item = kotlinx.coroutines.withTimeoutOrNull(400) { liveChunks.receive() }
+                    if (item == null) {
+                        if (!sender.canProvide()) _speaking.value = false
+                        continue
+                    }
+                    val (g, pcm) = item
+                    if (g != liveGen.get()) continue
+                    if (g != encGen) {
+                        // Nouvelle réponse après une coupure : encodeur neuf, aucune trame de l'ancienne.
+                        encoder?.release()
+                        encoder = OpusStreamEncoder()
+                        encGen = g
+                    }
+                    val frames = encoder!!.encode(SpeechPcm.resample(pcm, com.gt7pitwall.core.live.LiveConfig.SAMPLE_RATE, OpusFrames.SAMPLE_RATE))
+                    if (g == liveGen.get() && frames.isNotEmpty() && inVoice) {
+                        _speaking.value = true
+                        sender.enqueue(frames)
+                    }
+                }
+            } finally {
+                encoder?.release()
+            }
+        }
+    }
+
     /** V509 : moteur qui produit la voix envoyée au salon (synthèse Android du téléphone, rééchantillonnée en 48 kHz). */
     fun engineReport(): com.gt7pitwall.core.radio.VoiceEngineReport = speech.report("Discord (casque PS5)")
 

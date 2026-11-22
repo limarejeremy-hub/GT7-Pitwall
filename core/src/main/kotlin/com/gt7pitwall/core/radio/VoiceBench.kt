@@ -89,8 +89,9 @@ class VoiceBench {
     )
 
     val bUnavailable: String =
-        "B indisponible : GPT-Live exige une clé d'API OpenAI payante (0,05 \$/min de voix, plus le modèle). Le forfait " +
-            "ChatGPT ne couvre pas l'audio. Aucune clé configurée, par choix : rien n'est simulé."
+        "GPT-Live réel désactivé : il exige une clé d'API OpenAI payante (0,05 \$/min de voix, plus le modèle), que le " +
+            "forfait ChatGPT ne remplace pas. B simulé (V510) : déroulé d'une session GPT-Live (relances sans « Véga », " +
+            "coupure, 5 min max) avec la voix A — la voix de GPT-Live elle-même ne peut pas être jugée en simulation."
 
     var variant: Variant = Variant.A
         private set
