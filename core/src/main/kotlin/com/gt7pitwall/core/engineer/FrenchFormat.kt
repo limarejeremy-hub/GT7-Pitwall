@@ -9,6 +9,41 @@ object FrenchFormat {
         "janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre",
     )
 
+    private val UNITS = listOf(
+        "zéro", "un", "deux", "trois", "quatre", "cinq", "six", "sept", "huit", "neuf", "dix",
+        "onze", "douze", "treize", "quatorze", "quinze", "seize",
+    )
+    private val TENS = mapOf(2 to "vingt", 3 to "trente", 4 to "quarante", 5 to "cinquante", 6 to "soixante")
+
+    /** Nombre en toutes lettres pour la voix (0 à 69 ; au-delà, les chiffres) : « quinze », « vingt et un », « trente-deux ». */
+    fun cardinalWords(n: Int): String = when {
+        n in 0..16 -> UNITS[n]
+        n in 17..19 -> "dix-" + UNITS[n - 10]
+        n in 20..69 -> {
+            val t = TENS.getValue(n / 10)
+            when (n % 10) {
+                0 -> t
+                1 -> "$t et un"
+                else -> "$t-${UNITS[n % 10]}"
+            }
+        }
+        else -> n.toString()
+    }
+
+    /** Rang en toutes lettres : « premier », « neuvième », « vingt et unième » (au-delà de 69, « 70e »). */
+    fun ordinalWords(n: Int): String {
+        if (n == 1) return "premier"
+        if (n !in 2..69) return "${n}e"
+        val c = cardinalWords(n)
+        val stem = when {
+            c.endsWith("cinq") -> c + "u"
+            c.endsWith("neuf") -> c.dropLast(1) + "v"
+            c.endsWith("e") -> c.dropLast(1)
+            else -> c
+        }
+        return stem + "ième"
+    }
+
     /** « 19 octobre » (le 1er : « 1er octobre »). */
     fun dayMonth(d: java.time.LocalDate): String =
         (if (d.dayOfMonth == 1) "1er" else d.dayOfMonth.toString()) + " " + MONTHS[d.monthValue - 1]
