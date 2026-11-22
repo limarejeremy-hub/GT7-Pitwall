@@ -138,7 +138,9 @@ class LivePositionTest {
         assertEquals(11, m.finalCars)
         assertEquals(7, m.startPosition)
         assertEquals(12, m.startCars)
-        assertTrue(said.any { "Tu termines P8 sur 11" in it }, said.toString())
+        // V508 révisé : la ligne est dite comme un fait, le classement final peut encore être révisé par GT7.
+        assertTrue(said.any { "Tu passes la ligne P8 sur 11." in it }, said.toString())
+        assertEquals(8, m.linePosition)
         assertFalse(said.any { "Ta position à l'arrivée ?" in it }, "inutile de la demander")
         val places = r.c.engineer.answer(DriverQuery.PLACES, r.c.snapshot, r.c.fuel).text
         assertEquals("Tu as perdu une place : P7 au départ, P8 à l'arrivée. Une voiture a quitté la course depuis le départ.", places)
@@ -253,16 +255,21 @@ class LivePositionTest {
     }
 
     @Test
-    fun finishFreezesTheLinePositionNotLaterValues() {
+    fun lobbyValuesAfterTheFinishConsolidateTheResultInsteadOfRevisingIt() {
+        // V508 révisé : l'ancien gabarit « 9/10 d'après-course » (non mesuré) est retiré ; la trace réelle du 22/11 montre
+        // que GT7 révise 0x84 après la ligne. Les valeurs du salon (0x84 = 0x86 = voitures chargées, peloton en hausse)
+        // ne sont en revanche jamais un classement : elles consolident le résultat.
         val segs = listOf(
             Seg(0.0, 0, 3, 5, 10, onTrack),
             Seg(10.0, 1, 3, 4, 10, onTrack),
             Seg(30.0, 4, 3, 3, 10, onTrack), // arrivée en P3
-            Seg(35.0, 4, 3, 9, 10, onTrack), // valeurs d'après-course
+            Seg(35.0, 4, 0, 3, 10, onTrack), // « 4/0 » : même classement
             Seg(40.0, 4, 0, 12, 12, onTrack), // retour au salon
         )
         val r = replay(segs, until = 50.0)
         assertEquals(3, r.c.engineer.measured.finalPosition)
+        assertTrue(r.c.engineer.measured.finalConsolidated)
+        assertTrue(r.c.engineer.measured.postFinishChanges.isEmpty())
         assertEquals("Tu termines P3 sur 10, d'après GT7.", r.c.engineer.answer(DriverQuery.POSITION, r.c.snapshot, r.c.fuel).text)
         assertEquals("Tu as gagné 2 places : P5 au départ, P3 à l'arrivée.", r.c.engineer.answer(DriverQuery.PLACES, r.c.snapshot, r.c.fuel).text)
     }

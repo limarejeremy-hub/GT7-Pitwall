@@ -144,6 +144,13 @@ class RaceController(
      */
     private fun startGrid(): Int? = engineer.measured.startPosition ?: gridPosition
     private var finishPosition: Int? = null
+    private var finishCars: Int? = null
+    private var lineFinish: Pair<Int, Int>? = null
+    private var finishConsolidated = false
+    private val postFinish = mutableListOf<PositionTracker.PostFinishChange>()
+
+    /** Bilan de fin de course différé jusqu'à la consolidation du classement GT7 (un seul bilan). */
+    private var finishReportPending = false
     private var briefed = false
     var lastReview: com.gt7pitwall.core.strategy.RaceReview? = null
         private set
@@ -469,10 +476,22 @@ class RaceController(
         tyreHunter.onPacket(p, tracker.pitVisitOpen, raceActive)?.let(::journalThermal)
         gMeter.update(p)?.let { gForce = it }
         // Position mesurée (0x84) : seulement en course ; en qualification, elle n'a pas été validée.
+        val nowMs = clock()
+        // Nouvelle session : le classement d'arrivée en attente de la précédente est consolidé et archivé d'abord.
+        val closingFinish = if (events.any { it is SessionEvent.SessionReset }) positionTracker.consolidate("nouvelle session") else emptyList()
+        if (closingFinish.isNotEmpty()) {
+            journalPositions(closingFinish)
+            applyFinishChanges(closingFinish)
+        }
+        val closingReport = if (closingFinish.isNotEmpty() && finishReportPending) {
+            finishReportPending = false
+            drivingReportAtFinish()
+        } else {
+            emptyList()
+        }
         if (events.any { it is SessionEvent.SessionReset }) positionTracker.reset()
         positionTracker.enabled = profile.id.kind == SessionKind.RACE
-        val nowMs = clock()
-        val positionChanges = runCatching { positionTracker.onPacket(p, nowMs) }.getOrElse { diagnostic("position", it); emptyList() }
+        val positionChanges = closingFinish + runCatching { positionTracker.onPacket(p, nowMs) }.getOrElse { diagnostic("position", it); emptyList() }
         // Nouvelle session : la précédente est archivée avant que le registre des arrêts soit vidé.
         if (events.any { it is SessionEvent.SessionReset }) {
             closeSession(SessionOutcome.INTERRUPTED)
@@ -490,7 +509,9 @@ class RaceController(
         if (replay) return emptyList()
         val coached = if (sessionFinished) emptyList() else runCatching { driverCoach.onPacket(p, tracker.pitVisitOpen) }.getOrElse { diagnostic("profil de pilotage (paquet)", it); emptyList() }
         if (positionChanges.any { it !is PositionTracker.Change.LapCrossed }) lastPositionChangeClockMs = pacer.packetClockMs
-        journalPositions(positionChanges)
+        val newChanges = positionChanges.drop(closingFinish.size)
+        journalPositions(newChanges)
+        applyFinishChanges(newChanges)
         val out = mutableListOf<EngineerMessage>()
         if (events.isEmpty()) out += journalCoaching(coached)
         if (!sessionFinished) out += runCatching { tractionCheck() }.getOrElse { diagnostic("motricité", it); emptyList() }
@@ -603,9 +624,17 @@ class RaceController(
         // Retour au menu après une course finie : pas de « nouvelle session » annoncée.
         out.addAll(0, engineer.onUpdate(events, tracker.snapshot, fuel).filterNot { finishedBefore && it.text.startsWith("Nouvelle session détectée") })
         out += celebrate(engineer.onPosition(positionChanges, nowMs), nowMs)
+        out += closingReport
         if (events.any { it is SessionEvent.RaceFinished }) {
-            finishPosition = engineer.measured.finalPosition ?: engineer.driverPosition
+            val m = engineer.measured
+            finishPosition = m.finalPosition ?: engineer.driverPosition
+            // Classement GT7 en consolidation : un seul bilan, donné quand le classement est consolidé.
+            if (m.enabled && m.linePosition != null && !m.finalConsolidated) finishReportPending = true else out += drivingReportAtFinish()
+        }
+        if (finishReportPending && newChanges.any { it is PositionTracker.Change.Consolidated }) {
+            finishReportPending = false
             out += drivingReportAtFinish()
+            saveSession()
         }
         val briefingNow = briefingIfDue(p)
         out += briefingNow
@@ -1718,6 +1747,11 @@ class RaceController(
         driverDeclaredDuringPitNumber = null
         gridPosition = null
         finishPosition = null
+        finishCars = null
+        lineFinish = null
+        finishConsolidated = false
+        postFinish.clear()
+        finishReportPending = false
         internalErrors.clear()
         trackInconsistencyNoted = false
         geometry?.reset()
@@ -1830,6 +1864,11 @@ class RaceController(
             gridPosition = startGrid(),
             report = lastDrivingReport?.lines.orEmpty(),
             finishPosition = finishPosition,
+            finishCars = finishCars,
+            lineFinishPosition = lineFinish?.first,
+            lineFinishCars = lineFinish?.second,
+            finishConsolidated = finishConsolidated,
+            postFinishChanges = postFinish.toList(),
         )
     }
 
@@ -1963,6 +2002,11 @@ class RaceController(
             gridPosition = startGrid(),
             report = lastDrivingReport?.lines.orEmpty(),
             finishPosition = finishPosition,
+            finishCars = finishCars,
+            lineFinishPosition = lineFinish?.first,
+            lineFinishCars = lineFinish?.second,
+            finishConsolidated = finishConsolidated,
+            postFinishChanges = postFinish.toList(),
         )
         if (r != null) {
             sessions[r.id] = r
@@ -2375,6 +2419,20 @@ class RaceController(
         )
     }
 
+    /** Classement d'arrivée archivé : rang de la ligne, puis chaque révision, puis consolidation (sauvegardés aussitôt). */
+    private fun applyFinishChanges(changes: List<PositionTracker.Change>) {
+        var changed = false
+        for (c in changes) {
+            when (c) {
+                is PositionTracker.Change.Finished -> { finishPosition = c.position; finishCars = c.cars; lineFinish = c.position to c.cars }
+                is PositionTracker.Change.Revised -> { finishPosition = c.change.toPosition; finishCars = c.change.toCars; postFinish += c.change; changed = true }
+                is PositionTracker.Change.Consolidated -> { finishPosition = c.position; finishCars = c.cars; finishConsolidated = true; changed = true }
+                else -> Unit
+            }
+        }
+        if (changed && sessionId != null) saveSession()
+    }
+
     private fun journalPositions(changes: List<PositionTracker.Change>) {
         for (c in changes) {
             val text = when (c) {
@@ -2383,6 +2441,9 @@ class RaceController(
                 is PositionTracker.Change.Finished -> "Classement final : P${c.position} sur ${c.cars}"
                 PositionTracker.Change.Lost -> "Position plus transmise par GT7"
                 is PositionTracker.Change.LapCrossed -> "Tour ${c.lap} bouclé : P${c.position} sur ${c.cars} (ligne)"
+                is PositionTracker.Change.Revised -> "Classement révisé par GT7 après l'arrivée : ${c.change.text} (cause non transmise)"
+                is PositionTracker.Change.Consolidated ->
+                    "Classement d'arrivée consolidé : P${c.position} sur ${c.cars} (ligne : P${c.linePosition} sur ${c.lineCars} ; ${c.reason})"
             }
             journal.record(JournalType.POSITION, JournalSource.TELEMETRY, text)
         }
