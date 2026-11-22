@@ -146,6 +146,18 @@ object RaceJson {
             .put("notes", notes)
             .also { o -> r.gridPosition?.let { o.put("grid", it) }; r.finishPosition?.let { o.put("finish", it) } }
             .also { o -> if (r.report.isNotEmpty()) o.put("report", JSONArray(r.report)) }
+            .also { o ->
+                r.finishCars?.let { o.put("finishCars", it) }
+                r.lineFinishPosition?.let { o.put("lineFinish", it) }
+                r.lineFinishCars?.let { o.put("lineFinishCars", it) }
+                if (r.finishConsolidated) o.put("finishConsolidated", true)
+                if (r.postFinishChanges.isNotEmpty()) {
+                    o.put("postFinish", JSONArray(r.postFinishChanges.map {
+                        JSONObject().put("from", it.fromPosition).put("fromCars", it.fromCars).put("to", it.toPosition)
+                            .put("toCars", it.toCars).put("afterLineMs", it.afterLineMs)
+                    }))
+                }
+            }
             .toString()
     }
 
@@ -213,6 +225,13 @@ object RaceJson {
             notes = objects("notes").map { n -> DriverNote(n.optInt("lap"), n.optString("text", "")) },
             gridPosition = o.optInt("grid", -1).takeIf { it > 0 },
             finishPosition = o.optInt("finish", -1).takeIf { it > 0 },
+            finishCars = o.optInt("finishCars", -1).takeIf { it > 0 },
+            lineFinishPosition = o.optInt("lineFinish", -1).takeIf { it > 0 },
+            lineFinishCars = o.optInt("lineFinishCars", -1).takeIf { it > 0 },
+            finishConsolidated = o.optBoolean("finishConsolidated", false),
+            postFinishChanges = objects("postFinish").map {
+                PositionTracker.PostFinishChange(it.optInt("from"), it.optInt("fromCars"), it.optInt("to"), it.optInt("toCars"), it.optLong("afterLineMs"))
+            },
             report = o.optJSONArray("report")?.let { a -> (0 until a.length()).map { a.getString(it) } }.orEmpty(),
         )
     } catch (e: Exception) {
