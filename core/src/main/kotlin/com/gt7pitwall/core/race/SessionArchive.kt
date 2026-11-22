@@ -110,7 +110,15 @@ data class SessionRecord(
     val plans: List<PlanEntry> = emptyList(),
     val notes: List<DriverNote> = emptyList(),
     val gridPosition: Int? = null,
+    /** Classement d'arrivée archivé (consolidé, sauf course fermée avant la consolidation : voir [finishConsolidated]). */
     val finishPosition: Int? = null,
+    val finishCars: Int? = null,
+    /** Rang lu sur le paquet de la ligne d'arrivée (peut différer du classement révisé ensuite par GT7). */
+    val lineFinishPosition: Int? = null,
+    val lineFinishCars: Int? = null,
+    val finishConsolidated: Boolean = false,
+    /** Changements du classement reçus après la ligne (cause non transmise par GT7). */
+    val postFinishChanges: List<PositionTracker.PostFinishChange> = emptyList(),
     /** Bilan de pilotage de fin de course (absent des anciennes sessions et des courses interrompues). */
     val report: List<String> = emptyList(),
 ) {

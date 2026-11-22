@@ -39,6 +39,10 @@ import java.util.zip.GZIPOutputStream
  * tour 1 ; 19:34:43.717 P8/14 (0x86 15 → 14, rang inchangé) ; 19:42:55.781 « 8/7 » P5/14 ; puis « 8/0 ».
  * Tout le reste (heures des autres passages de ligne, instant du passage P9 → P8, durée avant « 8/0 ») est un GABARIT
  * de test, pas une mesure : la relecture de la trace brute réelle devra le confirmer.
+ *
+ * Révision du 22/11 : P5/14 est le rang de la LIGNE. Le pilote attend P7/13 comme résultat archivé du 19/11 (sous
+ * réserve du classement officiel) : cette révision après la ligne n'est pas dans l'export texte, elle n'est donc pas
+ * inventée ici ; [RealTraceReplayTest] la vérifie sur la trace brute réelle quand elle est fournie.
  */
 class PositionRadioV508Test {
 
@@ -143,7 +147,7 @@ class PositionRadioV508Test {
     }
 
     @Test
-    fun sportRaceFromTheCaptureIsFollowedLapByLapAndFrozenAtTheFlag() {
+    fun sportRaceFromTheCaptureIsFollowedLapByLapAndTheLineRankIsKept() {
         val answers = mutableMapOf<String, String>()
         var verbose: String? = null
         fun ask(r: Run) = r.c.engineer.answer(DriverQuery.POSITION, r.c.snapshot, r.c.fuel).text
@@ -200,7 +204,8 @@ class PositionRadioV508Test {
         val said = r.texts()
         assertEquals(1, said.count { it.startsWith("Course terminée") }, said.toString())
         assertEquals(1, said.count { "P5 sur 14" in it }, said.toString())
-        assertTrue(said.any { it.startsWith("Course terminée") && "Tu termines P5 sur 14." in it }, said.toString())
+        assertTrue(said.any { it.startsWith("Course terminée") && "Tu passes la ligne P5 sur 14." in it }, said.toString())
+        assertEquals(5 to 14, m.linePosition to m.lineCars)
         assertFalse(said.any { "Ta position à l'arrivée" in it }, said.toString())
         assertFalse(said.any { "Nouvelle session" in it }, "le 8/0 ne rouvre pas de session : $said")
         assertTrue(r.c.engineer.raceOver)

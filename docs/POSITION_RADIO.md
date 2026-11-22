@@ -27,9 +27,8 @@ Base : V507 (`claude/v507-gt3-dashboard`). Rien n'est changé dans la négociati
   - Le rang est lu au moment de la question, pas au dernier paquet : un gel UDP ne laisse pas une place périmée.
 - **Rang à chaque tour.** `PositionTracker.lapPositions` garde le rang lu sur le paquet de la ligne, et le journal le
   note (« Tour 1 bouclé : P9 sur 15 (ligne) »). Rien n'est annoncé.
-- **Arrivée.**
-  - Le classement est figé dès le paquet de la ligne (« 8/7 ») s'il est cohérent. Le message « Course terminée ! »
-    le dit donc une seule fois.
+- **Arrivée.** Voir la section « Révision du classement après la ligne » : le rang de la ligne n'est plus définitif.
+  - Le rang de la ligne est relevé dès le paquet de la ligne (« 8/7 ») s'il est cohérent.
   - Si le paquet de la ligne est incohérent, Pitwall prend la valeur stable qui suit.
   - Si la course se ferme avant cela (« 8/0 », chargement), Pitwall prend la dernière place établie.
   - Le « 8/0 » ne rouvre rien. Une nouvelle grille repart d'un état vide.
@@ -41,6 +40,45 @@ Base : V507 (`claude/v507-gt3-dashboard`). Rien n'est changé dans la négociati
   - Un format reçu n'est jamais affiché « sans réponse ».
   - Chaque période garde ses premier et dernier numéros de paquet. `receivedAt(packetId)` rattache ainsi un événement
     de position au format reçu.
+
+## Révision du classement après la ligne (22/11)
+
+Trace du 22/11 : P12/16 sur le paquet de la ligne, puis P13/16 567 ms plus tard. Le pilote a reçu une pénalité de 2 s,
+appliquée après la ligne. Ce n'est donc pas une anomalie de transmission : GT7 met 0x84 à jour après l'arrivée quand le
+classement change. Le classement n'est plus figé définitivement au premier paquet « 8/7 ».
+
+Pitwall distingue désormais trois valeurs :
+- **position au franchissement de la ligne** (`linePosition`) : le rang du paquet de la ligne, jamais modifié ;
+- **position après l'arrivée** (`finalPosition`) : révisée tant que la session d'arrivée dure. Le compteur de tours
+  reste celui de l'arrivée, en « 8/7 » ou en « 8/0 ». Une nouvelle valeur doit tenir 0,5 s. Chaque révision est
+  gardée dans `postFinishChanges`, avec son délai depuis la ligne ;
+- **résultat archivé** (`finishPosition`, `finishConsolidated`) : la valeur consolidée.
+
+**Consolidation.** Le classement est consolidé après 30 s sans changement depuis la ligne ou la dernière révision ;
+chaque révision relance ce délai. Il l'est aussi plus tôt quand la session d'arrivée se termine :
+- chargement, ou autre tour ;
+- nouvelle session (le résultat est archivé avant la remise à zéro) ;
+- peloton en hausse. Après l'arrivée, 0x86 ne peut pas augmenter : une hausse correspond aux valeurs du salon ou du
+  matchmaking (0x84 = 0x86 = voitures chargées, essais du 20/10).
+
+**Pourquoi 30 s.** Une seule mesure réelle existe (567 ms). Le délai n'est pas calé sur elle : une révision liée au
+temps peut dépendre de voitures encore en piste, et 30 s couvrent des écarts et des pénalités de plusieurs secondes.
+Après l'arrivée, attendre n'a pas de coût en course. **À recalibrer avec d'autres traces.**
+
+**Radio.**
+- Une seule annonce à la ligne : « Tu passes la ligne P12 sur 16. ». Ce n'est plus « Tu termines… », qui pourrait
+  être contredit ensuite.
+- À la consolidation, une seule fois et seulement si le rang a changé : « Classement GT7 révisé après l'arrivée :
+  P13 sur 16. ».
+- Le bilan de fin de course est donné une seule fois, après la consolidation.
+- « Position ? » : « Tu as passé la ligne P12 sur 16 ; classement GT7 provisoire : P13 sur 16. » pendant la
+  consolidation, puis « Tu termines P13 sur 16, d'après GT7. P12 à la ligne, classement révisé ensuite. ».
+
+**Aucune cause attribuée.** GT7 ne transmet aucun champ de pénalité identifié. La pénalité du 22/11 est connue par le
+témoignage du pilote ; Pitwall ne dit jamais « pénalité ».
+
+L'ancien gabarit de test « 9/10 cinq secondes après l'arrivée, à ignorer » n'était pas une mesure. Il est remplacé par
+le cas réel du 22/11 et par le cas des valeurs du salon.
 
 ## Preuves et limites
 
