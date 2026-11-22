@@ -125,7 +125,8 @@ class TtsVoiceOutput(context: Context) : VoiceOutput, TextToSpeech.OnInitListene
                 val style = SpeechStyle.of(message)
                 tts.setSpeechRate(speechRate * style.rate)
                 tts.setPitch(style.pitch)
-                val flush = message.priority == Priority.CRITICAL
+                // V511 : une alerte critique coupe la phrase en cours, jamais une autre alerte critique (elle passe après).
+                val flush = message.priority == Priority.CRITICAL && current?.priority != Priority.CRITICAL
                 if (flush) inFlight.clear()
                 _speaking.value = true
                 // Une alerte critique est dite d'un trait : elle ne s'interrompt pas.

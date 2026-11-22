@@ -307,7 +307,13 @@ class PitwallEngine(
         if (!port.available) return "Rejoins d'abord le salon Discord."
         if (liveRunning) return null
         val clock = { android.os.SystemClock.elapsedRealtime() }
-        val server = com.gt7pitwall.core.live.SimulatedLiveServer(clock, voice = { text -> kotlinx.coroutines.runBlocking { port.synthesize(text) } })
+        // V511 : synthèse hors du fil de la session (jamais bloquant), résultat rendu sur ce fil.
+        val server = com.gt7pitwall.core.live.SimulatedLiveServer(clock, voice = { text, done ->
+            scope.launch(Dispatchers.IO) {
+                val pcm = runCatching { port.synthesize(text) }.getOrNull()
+                withContext(liveCtx) { done(pcm) }
+            }
+        })
         val session = com.gt7pitwall.core.live.LiveSession(
             server, clock,
             delegate = { heard, reply ->
@@ -365,7 +371,7 @@ class PitwallEngine(
     /** Phrases de prononciation (« onzième sur quinze ») par la sortie active : Discord si le salon est ouvert. */
     fun playPronunciation() {
         com.gt7pitwall.core.radio.VoiceBench.PRONUNCIATION.forEach {
-            voice.speak(EngineerMessage(it, Priority.NORMAL, MessageCategory.RADIO, dedupKey = "prononciation-${System.nanoTime()}"))
+            voice.speak(EngineerMessage(it, Priority.NORMAL, MessageCategory.RADIO, dedupKey = "prononciation-${System.nanoTime()}", ttlMs = LISTENING_TTL_MS))
         }
         voiceBench.onPronunciationPlayed()
         refreshBench()
@@ -851,7 +857,8 @@ class PitwallEngine(
      */
     fun testDiction() {
         com.gt7pitwall.core.radio.DictionSamples.LINES.forEach {
-            voice.speak(EngineerMessage(it, Priority.NORMAL, MessageCategory.RADIO, dedupKey = "diction-${System.nanoTime()}"))
+            // Échantillons d'écoute : validité longue (V511, file voix bornée dans le temps).
+            voice.speak(EngineerMessage(it, Priority.NORMAL, MessageCategory.RADIO, dedupKey = "diction-${System.nanoTime()}", ttlMs = LISTENING_TTL_MS))
         }
     }
 
@@ -1178,6 +1185,9 @@ class PitwallEngine(
 
     private companion object {
         const val TRACE_EXT = ".gt7trace"
+
+        /** Phrases d'écoute (diction, prononciation) : jamais jugées périmées dans la file de la voix. */
+        const val LISTENING_TTL_MS = 120_000L
         const val MAX_TRACES = 5
         /** Au-delà, un petit signal discret dit que la réponse arrive (jamais une phrase « je réfléchis »). */
         const val THINKING_TONE_MS = 1_500L

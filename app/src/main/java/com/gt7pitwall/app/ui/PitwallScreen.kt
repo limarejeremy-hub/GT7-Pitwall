@@ -250,7 +250,7 @@ fun PitwallScreen(
             },
             listeningOn = micLabel,
         )
-        VoiceBenchCard(engine, voice, discord)
+        VoiceBenchCard(engine, voice, discord, settings)
         CloudAiCard(cloudAi, onAiMode, radioRoute)
         ChatGptCard(cloudAi, voice)
         HumanRadioCard(engine, settings)
@@ -1404,7 +1404,7 @@ private fun ControllerRadioProbeCard(engine: PitwallEngine) {
  * prononciation. B (GPT-Live) reste indisponible sans clé d'API payante.
  */
 @Composable
-private fun VoiceBenchCard(engine: PitwallEngine, voice: TtsVoiceOutput, discord: DiscordRadio) {
+private fun VoiceBenchCard(engine: PitwallEngine, voice: TtsVoiceOutput, discord: DiscordRadio, settings: com.gt7pitwall.app.settings.SettingsStore) {
     val context = LocalContext.current
     val lines by engine.bench.collectAsStateWithLifecycle()
     val step by engine.benchStep.collectAsStateWithLifecycle()
@@ -1445,6 +1445,16 @@ private fun VoiceBenchCard(engine: PitwallEngine, voice: TtsVoiceOutput, discord
         }
         if (discordState != DiscordState.IN_VOICE) {
             Text("Rejoins le salon Discord pour tester dans le casque PS5.", style = MaterialTheme.typography.bodySmall, color = PitColors.Muted)
+        }
+        // V511 : sur Discord, l'écoute pendant la parole est coupée par défaut (#45, écho du casque) : sans l'option, le
+        // test « coupe-la » ne peut pas réussir, ni en A ni en B.
+        if (!settings.remoteBargeIn || !settings.bargeIn) {
+            Text(
+                "Coupure par Discord désactivée : pour le test « Attends… », active « Interruption à la voix » et " +
+                    "« Interruption aussi par Discord (expérimental) » dans Radio humaine, et note toute fausse interruption.",
+                style = MaterialTheme.typography.bodySmall,
+                color = PitColors.Yellow,
+            )
         }
         lines.forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
