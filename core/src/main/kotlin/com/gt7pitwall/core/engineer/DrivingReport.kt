@@ -142,7 +142,8 @@ data class DrivingReport(
                 if (spread <= STRONG_SPREAD_MS) lines += "Point fort mesuré : la régularité."
                 val worst = losses?.withIndex()?.maxByOrNull { it.value }
                 priority = when {
-                    cornerFindings.isNotEmpty() -> cornerFindings.first()
+                    // Le constat se termine déjà par un point : jamais « par passage.. » (journal réel du 22/11).
+                    cornerFindings.isNotEmpty() -> cornerFindings.first().trimEnd('.', ' ')
                     worst != null && worst.value >= 200 -> "le secteur ${worst.index + 1}, où tu laisses ${s(worst.value)} par tour"
                     spread > 600 -> "la régularité (plus ou moins ${s(spread)})"
                     else -> null
@@ -153,11 +154,11 @@ data class DrivingReport(
                 append("Bilan : ")
                 if (grid != null && finish != null) append("P$grid à P$finish. ")
                 when {
-                    !enough -> append("pas assez de tours propres pour juger ton pilotage.")
+                    !enough -> append("Pas assez de tours propres pour juger ton pilotage.")
                     priority != null -> append("Priorité : $priority.")
                     spread != null -> append("course régulière, à plus ou moins ${s(spread)}.")
                 }
-            }.replace("Bilan : P", "Bilan : de P")
+            }.replace(Regex("^Bilan : P(\\d)"), "Bilan : de P$1")
             return DrivingReport(lines, radio.trim(), enough)
         }
 

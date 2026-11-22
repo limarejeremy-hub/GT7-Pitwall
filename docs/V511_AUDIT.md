@@ -277,10 +277,39 @@ vérifie la préemption et le report.
 donne ligne P12/16, archivé P13/16, une révision et un seul « Course terminée ». Le test échoue bien sur la trace
 obligatoire du 19/11 absente.
 
+### Rejeu des traces réelles du pilote (fournies le 22/11)
+
+Les traces sont rejouées localement, hors dépôt (`PITWALL_TRACES`), avec le code V511. **Résultat : 0 échec.**
+
+| Trace | Échantillons | Paquets illisibles | Interruptions > 0,5 s | Résultat |
+|---|---|---|---|---|
+| 19/11 (début 19:45:05) | 74 556 C (= référence) | 0 | 3 (sans conséquence) | ligne P7/13, archivé P7/13, consolidé, aucune révision ; 1 « Course terminée », 1 bilan ; « 8/0 » vu « après arrivée » |
+| 22/11 | 29 936 C (= référence) | 0 | 0 | ligne P12/16, **P12/16 → P13/16 à 567 ms**, archivé P13/16, consolidé ; 1 « Course terminée », 1 révision dite, 1 bilan ; « 8/0 » vu « après arrivée » |
+| 06/11 | 126 686 A (= référence, tronquée) | 0 | 0 | lecture complète, classement non contrôlé (aucune référence) |
+| 28/10 | 22 400 C (= référence) | 0 | 0 | lecture complète, classement non contrôlé |
+| 20/11 | 0 (fichier de 28 octets, en-tête seul) | — | — | **non exploitable** |
+
+**À retenir :**
+- **19/11** : la trace commence après la course de la capture texte (19:32 à 19:42, ligne P5/14). Elle couvre une
+  course suivante : départ P13, ligne P7/13. Les deux résultats ne se contredisent pas.
+- **Journal réel du 22/11** (session 1795355413542-2184, ancienne build) : il confirme les défauts que V511 corrige. On
+  y lit « Tu termines P12 sur 16 », « P12 à l'arrivée » archivé, et « Virage 5 : … vitesse minimale plus basse de
+  28 km/h… Environ 41 dixièmes par passage.. » (perte non plausible, point doublé).
+- **Rejeu du 22/11 avec V511** : la seule consigne de virage produite est « Virage 10 : … Environ 4 dixièmes par
+  passage. » ; plus aucune consigne au-delà de 1,5 s.
+- **Écart rejeu / application réelle** : le rejeu juge « pas assez de tours propres » là où l'application réelle en a
+  compté 5. Les traces sont à environ 20 Hz contre 60 Hz en direct, et le rejeu n'a pas l'historique archivé du
+  pilote. Cette différence est notée ; sa cause exacte n'est pas établie.
+- **« Meilleur tour : 1 minute 30 secondes 6 »** apparaît dans les deux courses. Le 22/11 il correspond au journal
+  (T6 1:30.601). Pour le 19/11, la valeur reste à vérifier contre le HUD.
+
+**Correctifs ajoutés après ce rejeu** : point doublé dans le bilan (« par passage.. »), majuscule de « Pas assez de
+tours propres » (test du journal réel dans `V511ReviewTest`).
+
 ### Séparation des validations
 
 | Validation | État |
 |---|---|
-| Automatisée (JVM + CI) | 945 tests, 0 échec ; `RealTraceReplayTest` ignoré faute de traces |
-| Traces réelles rejouées | **non exécutée** : les traces ne sont pas encore dans la session |
-| Réelle PS5 + Fold | **non faite** : protocole de la section 9 |
+| Automatisée (JVM + CI) | 946 tests, 0 échec ; `RealTraceReplayTest` ignoré en CI (traces privées, jamais dans le dépôt) |
+| Traces réelles rejouées (local) | **exécutée** : 19/11, 22/11, 06/11, 28/10 sans échec ; 20/11 vide |
+| Réelle PS5 + Fold avec V511 | **non faite** : protocole de la section 9 |

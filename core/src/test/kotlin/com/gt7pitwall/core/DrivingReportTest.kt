@@ -47,6 +47,6 @@ class DrivingReportTest {
         val r = c.lastDrivingReport!!
         assertFalse(r.enoughData)
         assertTrue(r.lines.any { it.startsWith("Pilotage non jugé") }, r.lines.toString())
-        assertTrue("pas assez de tours propres" in r.radio, r.radio)
+        assertTrue(r.radio.contains("pas assez de tours propres", ignoreCase = true), r.radio)
     }
 }

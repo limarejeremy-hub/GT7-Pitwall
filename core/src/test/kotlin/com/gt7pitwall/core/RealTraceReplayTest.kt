@@ -163,6 +163,12 @@ class RealTraceReplayTest {
         out.append("   messages de position et d'arrivée :\n")
         texts.filter { it.startsWith("Course terminée") || it.startsWith("Classement GT7") || it.startsWith("Tu passes la ligne") }
             .forEach { out.append("     « $it »\n") }
+        // Consignes de virage réellement produites (garde-fou V511 : aucune perte > 1,5 s, jamais « 41 dixièmes »).
+        val coaching = texts.filter { "Virage" in it || it.startsWith("Bilan") }
+        out.append("   consignes de virage et bilans dits : ${coaching.size}\n")
+        coaching.forEach { out.append("     « $it »\n") }
+        assertTrue(coaching.none { Regex("\\b([1-9]\\d) dixièmes").containsMatchIn(it) }, "${e.label} : durée d'au moins une seconde dite en dixièmes")
+        assertTrue(coaching.none { ".." in it }, "${e.label} : point doublé")
         return out.toString()
     }
 }

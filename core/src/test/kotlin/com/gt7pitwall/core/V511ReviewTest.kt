@@ -1,6 +1,8 @@
 package com.gt7pitwall.core
 
+import com.gt7pitwall.core.engineer.DrivingReport
 import com.gt7pitwall.core.engineer.EngineerMessage
+import com.gt7pitwall.core.session.LapRecord
 import com.gt7pitwall.core.engineer.MessageCategory
 import com.gt7pitwall.core.engineer.Priority
 import com.gt7pitwall.core.race.PositionTracker
@@ -205,5 +207,20 @@ class V511ReviewTest {
         assertEquals(PositionTracker.FIRST_VALID_AFTER_LINE, r.c.positionTracker.lineSource)
         assertTrue(m.finalConsolidated)
         assertEquals(1, r.texts().count { it.startsWith("Course terminée") }, r.texts().toString())
+    }
+
+    // ------------------------------------------------------------------ Journal réel du 22/11 : libellés du bilan
+
+    @Test
+    fun theEndOfRaceReportNeverDoublesThePeriod() {
+        // Tours du journal réel du 22/11 (1795355413542-2184) et sa consigne, telle qu'archivée (finit par un point).
+        val times = listOf(103_450, 102_805, 91_664, 91_841, 92_355, 90_601, 91_808)
+        val laps = times.mapIndexed { i, t -> LapRecord(i + 1, t, 2.0f, false) }
+        val finding = "Virage 5 : ta vitesse minimale est plus basse de 28 km/h que sur tes meilleurs passages. Garde plus de vitesse au milieu du virage. Environ 4 dixièmes par passage."
+        val r = DrivingReport.of(laps, emptyList(), emptyList(), grid = 12, finish = 13, cornerFindings = listOf(finding), adviceGiven = 1, adviceImproved = 0)
+        assertFalse(r.radio.contains(".."), r.radio)
+        assertFalse(r.lines.any { it.contains("..") }, r.lines.toString())
+        val few = DrivingReport.of(laps.take(2), emptyList(), emptyList(), grid = 13, finish = 7, cornerFindings = emptyList(), adviceGiven = 0, adviceImproved = 0)
+        assertEquals("Bilan : de P13 à P7. Pas assez de tours propres pour juger ton pilotage.", few.radio)
     }
 }
