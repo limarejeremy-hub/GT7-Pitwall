@@ -58,6 +58,12 @@ class RoutedVoiceOutput(
     companion object {
         /** Au-delà, un message non diffusé n'est plus rejoué (« essence pour 3 tours » dit avec 20 s de retard est faux). */
         const val STALE_MS = 10_000L
+
+        /**
+         * V511 : message périmé au moment de le dire (file de la voix en retard derrière une longue phrase). Validité
+         * propre du message ([EngineerMessage.ttlMs], ex. une place) sinon [STALE_MS], comptée depuis sa création.
+         */
+        fun stale(m: EngineerMessage, nowMs: Long): Boolean = nowMs - m.timestampMs > (m.ttlMs ?: STALE_MS)
     }
 }
 
@@ -72,15 +78,21 @@ class SpeechQueue<T>(private val priorityOf: (T) -> Priority) {
     var generation: Long = 0
         private set
 
-    /** Ajoute [item] ; renvoie les éléments écartés par une alerte critique (la phrase en cours doit être coupée). */
+    /**
+     * Ajoute [item] ; renvoie les éléments écartés par une alerte critique (la phrase en cours doit être coupée, sauf si
+     * c'est elle-même une alerte critique).
+     *
+     * V511 : une alerte critique n'écarte que les messages NON critiques. Avant, une deuxième alerte critique effaçait la
+     * première encore en attente (perdue sans être dite). Les alertes critiques passent dans leur ordre d'arrivée.
+     */
     @Synchronized
     fun offer(item: T): List<T>? {
         if (priorityOf(item) != Priority.CRITICAL) {
             items.addLast(item)
             return null
         }
-        val dropped = items.toList()
-        items.clear()
+        val dropped = items.filter { priorityOf(it) != Priority.CRITICAL }
+        items.removeAll { priorityOf(it) != Priority.CRITICAL }
         generation++
         items.addLast(item)
         return dropped

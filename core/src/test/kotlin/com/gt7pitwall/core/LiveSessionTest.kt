@@ -20,7 +20,9 @@ class LiveSessionTest {
     private var now = 0L
 
     /** 1 s de « voix » par tranche de 20 caractères, à 24 kHz : assez long pour être coupée. */
-    private val fakeVoice: (String) -> ShortArray? = { t -> ShortArray(LiveConfig.SAMPLE_RATE * (1 + t.length / 20)) { 1000 } }
+    private val fakePcm: (String) -> ShortArray = { t -> ShortArray(LiveConfig.SAMPLE_RATE * (1 + t.length / 20)) { 1000 } }
+    /** Synthèse immédiate (rappel tout de suite). */
+    private val fakeVoice: (String, (ShortArray?) -> Unit) -> Unit = { t, done -> done(fakePcm(t)) }
 
     private class Rig(val server: SimulatedLiveServer, val session: LiveSession) {
         val played = mutableListOf<ShortArray>()

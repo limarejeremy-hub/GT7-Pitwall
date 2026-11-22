@@ -542,7 +542,8 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
     // ------------------------------------------------------------------ V510 : prototype B (GPT-Live simulé)
 
     private val liveGen = java.util.concurrent.atomic.AtomicInteger()
-    private val liveChunks = Channel<Pair<Int, ShortArray>>(Channel.UNLIMITED)
+    /** V511 : file bornée (3 s) ; la session ne demande jamais plus de 0,6 s d'avance. */
+    private val liveChunks = Channel<Pair<Int, ShortArray>>(150, kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST)
     @Volatile private var liveJob: kotlinx.coroutines.Job? = null
 
     /** Port audio du prototype B : même salon, même file d'envoi que la voix A. */
@@ -651,8 +652,9 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
 
     private fun enqueue(message: EngineerMessage, onFailed: (EngineerMessage) -> Unit) {
         val dropped = queue.offer(Queued(message, onFailed))
-        // Alerte critique : la phrase en cours est coupée, les messages en attente sont abandonnés (comme sur le Fold).
-        if (dropped != null) sender.clear("alerte prioritaire (${message.text.take(30)})", current?.text)
+        // Alerte critique : la phrase en cours est coupée, les messages non critiques en attente sont abandonnés. V511 :
+        // une alerte critique en cours n'est jamais coupée par une autre (elle passe ensuite, dans l'ordre).
+        if (dropped != null && current?.priority != Priority.CRITICAL) sender.clear("alerte prioritaire (${message.text.take(30)})", current?.text)
         wake.trySend(Unit)
     }
 
@@ -695,6 +697,12 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
                     item.onFailed(item.message)
                     continue
                 }
+                // V511 : message devenu faux pendant l'attente (file en retard) : jamais dit en retard.
+                if (!item.isTone && com.gt7pitwall.core.radio.RoutedVoiceOutput.stale(item.message, System.currentTimeMillis())) {
+                    onAudioEvent("VOIX_PERIMEE", "Message périmé non dit : ${item.message.text.take(60)}")
+                    item.done?.complete(false)
+                    continue
+                }
                 if (!item.isTone) _speaking.value = true
                 val frames = item.frames ?: try {
                     framesFor(item.message.text)
@@ -707,6 +715,11 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
                 }
                 // Une alerte critique est arrivée pendant la synthèse : cette phrase est abandonnée.
                 if (queue.generation != generation && item.message.priority != Priority.CRITICAL) continue
+                if (!item.isTone && com.gt7pitwall.core.radio.RoutedVoiceOutput.stale(item.message, System.currentTimeMillis())) {
+                    onAudioEvent("VOIX_PERIMEE", "Message périmé pendant la synthèse, non dit : ${item.message.text.take(60)}")
+                    item.done?.complete(false)
+                    continue
+                }
                 if (!inVoice) {
                     item.onFailed(item.message)
                     continue
@@ -719,12 +732,13 @@ class DiscordRadio(context: Context, private val tokens: DiscordTokenStore) : Re
                 sender.enqueue(frames)
                 val started = System.currentTimeMillis()
                 val maxMs = frames.size * FRAME_MS + PLAYBACK_MARGIN_MS
-                while (sender.canProvide() && queue.generation == generation && inVoice &&
+                val critical = item.message.priority == Priority.CRITICAL
+                while (sender.canProvide() && (queue.generation == generation || critical) && inVoice &&
                     System.currentTimeMillis() - started < maxMs
                 ) {
                     delay(FRAME_MS)
                 }
-                audioMonitor.endPhrase(cutShort = queue.generation != generation || !inVoice)
+                audioMonitor.endPhrase(cutShort = (queue.generation != generation && !critical) || !inVoice)
                 audioMonitor.drain().forEach { onAudioEvent(it.code, it.text) }
                 item.done?.complete(true)
                 if (!item.isTone) current = null

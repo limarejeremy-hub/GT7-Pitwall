@@ -40,6 +40,18 @@ object CornerCoach {
     const val MIN_REFERENCE = 3
     const val LOSING_MS = 60
 
+    /**
+     * V511 — garde-fou de vraisemblance : une perte répétée de pilotage dans UN virage dépasse rarement une seconde. Au-
+     * delà de [MAX_PLAUSIBLE_LOSS_MS] ou de [MAX_PLAUSIBLE_SHARE] du temps de référence du virage, c'est un incident
+     * (sortie de piste invisible en format A, trafic, accrochage) ou une zone mal découpée : aucun conseil, aucune
+     * valeur annoncée. Cas réel : « virage 5, environ 41 dixièmes par passage » (4,1 s).
+     */
+    const val MAX_PLAUSIBLE_LOSS_MS = 1_500
+    const val MAX_PLAUSIBLE_SHARE = 0.30
+
+    fun plausible(lossMs: Int, referenceMs: Float): Boolean =
+        lossMs <= MAX_PLAUSIBLE_LOSS_MS && lossMs <= referenceMs * MAX_PLAUSIBLE_SHARE
+
     /** Perte minimale pour un conseil : entraînement (coach) ou course (stratège, seulement ce qui vaut la peine). */
     const val MIN_LOSS_PRACTICE_MS = 100
     const val MIN_LOSS_RACE_MS = 250
@@ -66,7 +78,10 @@ object CornerCoach {
             val last = rec.filter { it.offTrack != true }.takeLast(RECENT)
             if (ref.size < MIN_REFERENCE || last.size < RECENT) return@mapNotNull null
             val refMs = median(ref.map { it.timeMs.toFloat() })!!
-            c to last.map { it.timeMs - refMs }.average().roundToInt()
+            val loss = last.map { it.timeMs - refMs }.average().roundToInt()
+            // Perte non plausible pour un défaut de pilotage : ce virage n'est pas comparé (voir [plausible]).
+            if (!plausible(loss, refMs)) return@mapNotNull null
+            c to loss
         }.toMap()
 
     /**
@@ -127,9 +142,13 @@ object CornerCoach {
         return null to null
     }
 
-    /** Dixièmes de seconde, à la française : « 2 dixièmes », « un dixième ». */
+    /** Dixièmes de seconde, à la française : « 2 dixièmes », « un dixième » ; une seconde ou plus : « 1,2 seconde ». */
     fun tenths(ms: Int): String {
         val t = (ms / 100.0).roundToInt().coerceAtLeast(1)
+        if (t >= 10) {
+            val s = String.format(java.util.Locale.FRANCE, "%.1f", t / 10.0).removeSuffix(",0")
+            return "$s seconde" + if (t >= 20) "s" else ""
+        }
         return if (t == 1) "un dixième" else "$t dixièmes"
     }
 

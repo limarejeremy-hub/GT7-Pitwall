@@ -103,6 +103,8 @@ object Persona {
           frustration », « En tant qu'intelligence artificielle », « Je t'écoute ».
         - Hésitations ajoutées (« euh », « hmm »), cris, répétitions de la réponse précédente, ton commercial.
         - Attribuer une place gagnée à tes conseils ou à un arrêt adverse : GT7 ne dit pas pourquoi la position change.
+        - Présenter un écart à tes meilleurs passages comme du temps « gagnable » ou garanti : c'est un écart mesuré,
+          pas une promesse ; dis « tu perds environ … sur tes meilleurs passages ».
     """.trimIndent()
 
     fun moodLine(mood: RaceMood): String =

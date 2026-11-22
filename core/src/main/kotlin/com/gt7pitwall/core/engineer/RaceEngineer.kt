@@ -77,7 +77,11 @@ class RaceEngineer {
     var measured: MeasuredPosition = MeasuredPosition.NONE
         set(v) {
             field = v
-            v.position?.let { driverPosition = it }
+            v.position?.let {
+                driverPosition = it
+                // Recalée sur la mesure : ce n'est pas une déclaration du pilote (revue #86).
+                driverPositionDeclared = false
+            }
             v.cars?.let { carsInRace = it }
         }
 
@@ -196,6 +200,7 @@ class RaceEngineer {
         announcedMeasuring = false
         fuelRadio.reset()
         driverPosition = null
+        driverPositionDeclared = false
         carsInRace = null
         tyres.reset()
         raining = false
@@ -290,11 +295,13 @@ class RaceEngineer {
                 if (m == command.position) "Bien reçu, P$m, GT7 confirme." else "Noté, mais GT7 me donne P$m : je garde sa mesure."
             } ?: run {
                 driverPosition = command.position
+                driverPositionDeclared = true
                 positionReportedLap = snapshotLap
                 if (raceOver) "Bien reçu, tu termines P${command.position}." else "Bien reçu, P${command.position}."
             }
             DriverCommand.ReportLast -> measured.position?.let { m -> "Noté, mais GT7 me donne P$m : je garde sa mesure." } ?: carsInRace?.let {
                 driverPosition = it
+                driverPositionDeclared = true
                 positionReportedLap = snapshotLap
                 "Compris, dernier, P$it. On remonte."
             } ?: "Compris, tu es dernier. Dis-moi ta place en chiffre, par exemple « je suis vingtième »."
@@ -304,7 +311,10 @@ class RaceEngineer {
             } ?: run {
                 val pos = driverPosition?.let { (it - 1).coerceAtLeast(1) }
                 driverPosition = pos
-                if (pos != null) positionReportedLap = snapshotLap
+                if (pos != null) {
+                    positionReportedLap = snapshotLap
+                    driverPositionDeclared = true
+                }
                 if (pos == null) "Bien joué ! Donne-moi ta position quand tu peux." else "Bien joué ! Tu es P$pos."
             }
             is DriverCommand.SeveralPlaces -> measured.position?.let { m ->
@@ -324,7 +334,10 @@ class RaceEngineer {
             } ?: run {
                 val pos = driverPosition?.let { p -> (p + 1).let { n -> carsInRace?.let { minOf(n, it) } ?: n } }
                 driverPosition = pos
-                if (pos != null) positionReportedLap = snapshotLap
+                if (pos != null) {
+                    positionReportedLap = snapshotLap
+                    driverPositionDeclared = true
+                }
                 if (pos == null) "Compris. Donne-moi ta position quand tu peux." else "Compris, tu es P$pos. On reste concentré."
             }
             is DriverCommand.SetLaps -> "Noté : course de ${command.laps} tours."
@@ -859,7 +872,14 @@ class RaceEngineer {
         return out
     }
 
-    private fun declaredSuffix(): String = driverPosition?.let { " D'après ce que tu m'as dit, tu es P$it." } ?: ""
+    /**
+     * Revue #86 : « d'après ce que tu m'as dit » seulement pour une place réellement déclarée (ou ajustée par « j'ai
+     * doublé ») ; une ancienne mesure GT7 n'est jamais présentée comme actuelle ni attribuée au pilote.
+     */
+    private fun declaredSuffix(): String = driverPosition?.takeIf { driverPositionDeclared }?.let { " D'après ce que tu m'as dit, tu es P$it." } ?: ""
+
+    /** La place [driverPosition] vient du pilote (déclaration, dépassement annoncé), pas d'une mesure recopiée. */
+    private var driverPositionDeclared = false
 
     /** Réponse courte de test : « Neuvième sur quinze. » ou « Position indisponible. » (jamais une place héritée). */
     fun shortPosition(): String = liveRank()?.let { (p, n) ->

@@ -2438,7 +2438,8 @@ class RaceController(
             val text = when (c) {
                 is PositionTracker.Change.Moved -> "Position P${c.from ?: "?"} → P${c.to} sur ${c.cars}"
                 is PositionTracker.Change.CarsChanged -> "Participants : ${c.from ?: "?"} → ${c.to}"
-                is PositionTracker.Change.Finished -> "Classement final : P${c.position} sur ${c.cars}"
+                is PositionTracker.Change.Finished -> "Ligne d'arrivée : P${c.position} sur ${c.cars}" +
+                    (if (c.source != PositionTracker.LINE_PACKET) " (paquet de la ligne sans rang cohérent : ${c.source})" else "")
                 PositionTracker.Change.Lost -> "Position plus transmise par GT7"
                 is PositionTracker.Change.LapCrossed -> "Tour ${c.lap} bouclé : P${c.position} sur ${c.cars} (ligne)"
                 is PositionTracker.Change.Revised -> "Classement révisé par GT7 après l'arrivée : ${c.change.text} (cause non transmise)"

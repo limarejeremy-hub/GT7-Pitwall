@@ -58,6 +58,9 @@ class TtsVoiceOutput(context: Context) : VoiceOutput, TextToSpeech.OnInitListene
     private val pending = mutableListOf<EngineerMessage>()
     private val tts = TextToSpeech(context.applicationContext, this)
 
+    /** Décision de préemption d'après toute la file Android (V511, revue #86). */
+    private val preemption = com.gt7pitwall.core.radio.TtsPreemption()
+
     /** V509 : moteur réellement utilisé pour la voix du haut-parleur du Fold (diagnostic). */
     fun engineReport(): com.gt7pitwall.core.radio.VoiceEngineReport {
         val v = runCatching { tts.voice }.getOrNull()
@@ -125,14 +128,25 @@ class TtsVoiceOutput(context: Context) : VoiceOutput, TextToSpeech.OnInitListene
                 val style = SpeechStyle.of(message)
                 tts.setSpeechRate(speechRate * style.rate)
                 tts.setPitch(style.pitch)
-                val flush = message.priority == Priority.CRITICAL
-                if (flush) inFlight.clear()
+                // V511 (revue #86) : décision d'après toute la file (alertes placées mais pas encore commencées
+                // comprises) : une alerte critique n'efface jamais une autre alerte critique ; une annonce non critique
+                // arrivant entre deux alertes attend la fin de la dernière.
+                val flush = when (preemption.decide(message)) {
+                    com.gt7pitwall.core.radio.TtsPreemption.Action.DEFER -> return
+                    com.gt7pitwall.core.radio.TtsPreemption.Action.FLUSH -> true
+                    com.gt7pitwall.core.radio.TtsPreemption.Action.ADD -> false
+                }
+                if (flush) {
+                    inFlight.clear()
+                    preemption.flushed()
+                }
                 _speaking.value = true
                 // Une alerte critique est dite d'un trait : elle ne s'interrompt pas.
                 val parts = if (gaps() && !flush) SpeechStyle.sentences(message.text) else listOf(message.text)
                 parts.forEachIndexed { i, part ->
                     val id = "pitwall-${ids.incrementAndGet()}"
                     inFlight += id
+                    preemption.queued(id, message.priority)
                     messages[id] = message
                     val mode = if (flush && i == 0) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
                     // #73 P1-C : texte de synthèse seulement (« P11 » → « P onze », ponctuation finale) ; écran et journal inchangés.
@@ -140,6 +154,7 @@ class TtsVoiceOutput(context: Context) : VoiceOutput, TextToSpeech.OnInitListene
                     if (i < parts.lastIndex) {
                         val gap = "$GAP_PREFIX${ids.incrementAndGet()}"
                         inFlight += gap
+                        preemption.queued(gap, message.priority)
                         if (tts.playSilentUtterance(SpeechStyle.GAP_MS, TextToSpeech.QUEUE_ADD, gap) != TextToSpeech.SUCCESS) finished(gap)
                     }
                 }
@@ -147,6 +162,7 @@ class TtsVoiceOutput(context: Context) : VoiceOutput, TextToSpeech.OnInitListene
                 // (« onze », /s/, /z/) soit jouée en entier, au lieu d'être coupée par la fermeture de la sortie.
                 val tail = "$TAIL_PREFIX${ids.incrementAndGet()}"
                 inFlight += tail
+                preemption.queued(tail, message.priority)
                 if (tts.playSilentUtterance(TAIL_MS, TextToSpeech.QUEUE_ADD, tail) != TextToSpeech.SUCCESS) finished(tail)
             }
         }
@@ -154,6 +170,7 @@ class TtsVoiceOutput(context: Context) : VoiceOutput, TextToSpeech.OnInitListene
 
     override fun stop() {
         tts.stop()
+        preemption.stopped()
         inFlight.clear()
         messages.clear()
         current = null
@@ -162,11 +179,15 @@ class TtsVoiceOutput(context: Context) : VoiceOutput, TextToSpeech.OnInitListene
     }
 
     private fun finished(utteranceId: String?) {
+        var released = emptyList<EngineerMessage>()
         if (utteranceId != null) {
             inFlight -= utteranceId
             messages.remove(utteranceId)
             if (utteranceId.startsWith(GAP_PREFIX)) _inGap.value = false
+            released = preemption.finished(utteranceId)
         }
+        // Annonces retenues pendant les alertes critiques : dites maintenant, sauf si elles sont devenues fausses.
+        released.filterNot { com.gt7pitwall.core.radio.RoutedVoiceOutput.stale(it, System.currentTimeMillis()) }.forEach(::speak)
         if (inFlight.isEmpty()) {
             current = null
             _inGap.value = false

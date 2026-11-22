@@ -19,8 +19,11 @@ interface LiveHints {
  */
 class SimulatedLiveServer(
     private val clock: () -> Long,
-    /** Texte → PCM16 mono 24 kHz, ou null si la synthèse échoue. */
-    private val voice: (String) -> ShortArray?,
+    /**
+     * Texte → PCM16 mono 24 kHz (null si la synthèse échoue), rendu par le rappel. V511 : ASYNCHRONE : la synthèse ne
+     * bloque plus le fil de la session (avant : jusqu'à ~20 s sans limite de durée ni coupure possible).
+     */
+    private val voice: (String, (ShortArray?) -> Unit) -> Unit,
     /** Morceaux d'audio émis à chaque [pump] (20 ms chacun) : 2 = deux fois le temps réel, comme un service qui devance la lecture. */
     private val chunksPerPump: Int = 2,
 ) : LiveTransport, LiveHints {
@@ -32,6 +35,8 @@ class SimulatedLiveServer(
     private var started = false
     private var delegations = 0
     private var pendingDelegation: String? = null
+    /** Réponse en cours de synthèse ; son audio est jeté si une nouvelle phrase arrive avant (coupure). */
+    private var synthesizing: String? = null
     private val out = ArrayDeque<ShortArray>()
 
     /** Échantillons de micro reçus (preuve que l'audio est bien envoyé ; le simulateur ne le comprend pas). */
@@ -62,12 +67,14 @@ class SimulatedLiveServer(
                 if (!started || event.delegationId != pendingDelegation) return
                 pendingDelegation = null
                 emit(LiveServerEvent.OutputTranscriptDelta(event.content))
-                val pcm = voice(event.content)
-                if (pcm == null) {
-                    emit(LiveServerEvent.Error("synthèse impossible"))
-                    return
+                val id = event.delegationId
+                synthesizing = id
+                voice(event.content) { pcm ->
+                    // Rappel sur le fil de la session : réponse coupée ou session fermée entre-temps : jamais jouée.
+                    if (!started || synthesizing != id) return@voice
+                    synthesizing = null
+                    if (pcm == null) emit(LiveServerEvent.Error("synthèse impossible")) else out.addAll(LiveAudio.chunks(pcm))
                 }
-                out.addAll(LiveAudio.chunks(pcm))
             }
             is LiveClientEvent.Close -> close()
         }
@@ -82,12 +89,14 @@ class SimulatedLiveServer(
         if (!started) return
         // Full duplex : tu parles, la génération de la réponse en cours s'arrête aussitôt.
         out.clear()
+        synthesizing = null
         emit(LiveServerEvent.InputTranscriptDelta("", offset(), offset()))
     }
 
     override fun hintUtterance(text: String) {
         if (!started || text.isBlank()) return
         out.clear()
+        synthesizing = null
         val o = offset()
         emit(LiveServerEvent.InputTranscriptDelta(text, o, o))
         val id = "deleg_sim_${++delegations}"
@@ -99,6 +108,7 @@ class SimulatedLiveServer(
         if (!started) return
         started = false
         out.clear()
+        synthesizing = null
         emit(LiveServerEvent.UsageUpdated(offset() / 1000.0))
         emit(LiveServerEvent.Closed("fermée par Pitwall"))
     }
@@ -179,11 +189,15 @@ class LiveSession(
         playUntilMs = 0
     }
 
-    /** Toutes les 20 ms : limite de durée, puis audio simulé suivant. */
+    /**
+     * Toutes les 20 ms : limite de durée, puis audio simulé suivant. V511 : contre-pression, l'audio n'est demandé que si
+     * moins de [MAX_LEAD_MS] attendent déjà dans le casque (file bornée ; une coupure n'a presque rien à vider).
+     */
     fun tick() {
         if (state != State.OPEN) return
-        if (clock() - startMs >= maxMs) return stop("limite de ${maxMs / 60_000} minutes atteinte")
-        (transport as? SimulatedLiveServer)?.pump()
+        val now = clock()
+        if (now - startMs >= maxMs) return stop("limite de ${maxMs / 60_000} minutes atteinte")
+        if (playUntilMs - now < MAX_LEAD_MS) (transport as? SimulatedLiveServer)?.pump()
     }
 
     /** Micro du casque (24 kHz) vers le service. */
@@ -279,5 +293,8 @@ class LiveSession(
     companion object {
         /** Premier essai au casque : cinq minutes au plus. */
         const val FIRST_TRIAL_MAX_MS = 5 * 60_000L
+
+        /** Audio d'avance au plus dans la file du casque. */
+        const val MAX_LEAD_MS = 600L
     }
 }
