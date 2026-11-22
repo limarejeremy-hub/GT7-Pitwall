@@ -58,6 +58,19 @@ class TtsVoiceOutput(context: Context) : VoiceOutput, TextToSpeech.OnInitListene
     private val pending = mutableListOf<EngineerMessage>()
     private val tts = TextToSpeech(context.applicationContext, this)
 
+    /** V509 : moteur réellement utilisé pour la voix du haut-parleur du Fold (diagnostic). */
+    fun engineReport(): com.gt7pitwall.core.radio.VoiceEngineReport {
+        val v = runCatching { tts.voice }.getOrNull()
+        return com.gt7pitwall.core.radio.VoiceEngineReport(
+            route = "Haut-parleur du Fold",
+            enginePackage = runCatching { tts.defaultEngine }.getOrNull(),
+            voiceName = v?.name,
+            locale = v?.locale?.toLanguageTag(),
+            networkVoice = v?.isNetworkConnectionRequired,
+            quality = v?.quality,
+        )
+    }
+
     override fun onInit(status: Int) {
         if (status != TextToSpeech.SUCCESS) {
             _state.value = VoiceState.UNAVAILABLE
