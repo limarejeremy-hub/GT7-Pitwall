@@ -48,7 +48,10 @@ Ingénieur de course Android natif (Galaxy Fold) pour Gran Turismo 7 sur PS5 : t
   jamais de code privé, de trace ni de secret.
 - **Parallel Search** (MCP) : recherche web et lecture de pages pour la veille et les docs non couvertes par Context7.
 - **GitHub** (intégration Claude Code) : PR, CI, journaux de jobs.
-- Serena : non installé (serveur de langage Kotlin non téléchargeable dans l'environnement actuel).
+- **Serena** (MCP du dépôt, `.mcp.json`, projet `.serena/project.yml`, langage Kotlin) : symboles, définitions et
+  références (`serena_repl` : `s.lsp.find_symbol`, `s.lsp.find_referencing_symbols`, `s.lsp.get_symbols_overview`).
+  Le premier démarrage d'une nouvelle session télécharge le serveur Kotlin (~40 s) puis indexe (~50 s). Préférer
+  Serena à la lecture de fichiers entiers pour naviguer dans `RaceController.kt`.
 - **pitwall-lab** (MCP du dépôt, `.mcp.json`) : `lab_list_traces`, `lab_inspect`, `lab_replay` sur les traces locales.
 
 ## Économie de quota
