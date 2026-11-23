@@ -5,12 +5,16 @@ Outils :
   lab_list_traces  -> traces .gt7trace disponibles (dossier PITWALL_TRACES ou dossier donné)
   lab_inspect      -> mesures brutes d'une trace (MESURE uniquement)
   lab_replay       -> rejeu dans le moteur Pitwall réel (archives et messages : CALCUL)
+  lab_anomalies    -> incohérences de télémétrie et événements suspects (MESURE)
+  lab_compare      -> même trace rejouée par deux versions du moteur : différences de résultats, alertes, messages,
+                      décisions et positions (lab/compare.sh, worktrees git, aucune branche modifiée)
 
 Règles : aucune télémétrie inventée ; les traces sont privées (lues sur place, jamais copiées ni publiées) ;
 aucun réseau, aucun secret. Le Lab est compilé à la demande : ./gradlew -p lab/standalone :lab:installDist
 """
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -42,6 +46,29 @@ TOOLS = [
                 "type": {"type": "string", "description": "RACE ou QUALIFYING (défaut RACE)"},
             },
             "required": ["trace"],
+        },
+    },
+    {
+        "name": "lab_anomalies",
+        "description": "Anomalies d'une trace GT7 lues dans les paquets (MESURE) : trous de flux, numéros de paquet qui "
+                       "reculent ou sautent, tours qui reculent ou sautent, nombre de tours qui change, 0x84/0x86 "
+                       "incohérents en course, peloton en hausse, carburant en hausse en roulant, télémétrie figée, "
+                       "chrono absent. Gravité info (transition normale de GT7) ou suspect (à examiner).",
+        "inputSchema": {"type": "object", "properties": {"trace": {"type": "string"}}, "required": ["trace"]},
+    },
+    {
+        "name": "lab_compare",
+        "description": "Rejoue la même trace avec deux versions du moteur (branches, étiquettes ou commits, V508 et "
+                       "suivantes) et renvoie les différences : résultats archivés, compteurs, alertes, messages de "
+                       "Véga, décisions et positions. Plusieurs minutes (deux compilations).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "trace": {"type": "string"},
+                "version_a": {"type": "string", "description": "ex. claude/v510-live-b-sim"},
+                "version_b": {"type": "string", "description": "ex. claude/v511-reliability ou HEAD"},
+            },
+            "required": ["trace", "version_a", "version_b"],
         },
     },
 ]
@@ -90,6 +117,20 @@ def call(name, a):
         if a.get("serie") or a.get("type"):
             args += [a.get("serie") or "DAILY_B", a.get("type") or "RACE"]
         return run_lab(args)
+    if name == "lab_anomalies":
+        return run_lab(["anomalies", resolve_trace(a["trace"])])
+    if name == "lab_compare":
+        for k in ("version_a", "version_b"):
+            if not re.fullmatch(r"[A-Za-z0-9._/\-]{1,120}", a.get(k, "")) or a[k].startswith("-"):
+                raise ValueError("version invalide : %s" % a.get(k))
+        p = subprocess.run(
+            [os.path.join(ROOT, "lab", "compare.sh"), a["version_a"], a["version_b"], resolve_trace(a["trace"])],
+            cwd=ROOT, capture_output=True, text=True, encoding="utf-8", timeout=2400,
+            env=dict(os.environ, JAVA_TOOL_OPTIONS=os.environ.get("JAVA_TOOL_OPTIONS", "")),
+        )
+        if p.returncode != 0:
+            raise RuntimeError(p.stderr.strip()[-800:] or "échec de la comparaison")
+        return p.stdout.strip()
     raise ValueError("outil inconnu : %s" % name)
 
 
