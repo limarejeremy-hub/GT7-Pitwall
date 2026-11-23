@@ -44,6 +44,7 @@
 | Connecteur | Test effectué | Résultat | Intérêt Pitwall |
 |---|---|---|---|
 | GitHub (intégration Claude Code) | lecture des PR, journaux d'un job CI échoué | opérationnel | PR, CI, issues, revue |
+| **Context7** (connecté par le pilote le 23/11) | `resolve-library-id` « Jetpack Compose » → `/websites/developer_android_reference_kotlin_androidx_compose` ; `query-docs` → documentation officielle de `TextMeasurer.measure` (API du tableau de bord GT3) | **opérationnel et testé** | docs à jour Android, Compose, Kotlin, coroutines |
 | Gmail, Google Calendar, Google Drive, Google Sheets | listés par `ListConnectors` (connectés) | connectés, non testés ici | Drive : dépôt de traces et journaux (privé) ; Sheets : suivi de validation PS5 |
 | Microsoft 365 | — | connexion inachevée | aucun |
 
@@ -52,7 +53,7 @@
 | Outil | MCP réel | Coût et quotas | Compatible Fold / Claude Code cloud | Intérêt | Risques, doublons | Verdict |
 |---|---|---|---|---|---|---|
 | **Pitwall Lab (maison)** | oui (stdio, ce dépôt) | 0 € | sessions Claude Code cloud | **très élevé** : rejeu réel, archives, messages | traces privées, jamais commitées | **construit et testé** |
-| **Context7** | oui, distant (`mcp.context7.com/mcp`), dans l'annuaire claude.ai | gratuit (clé gratuite = quotas plus hauts ; chiffres non publiés) | oui, via l'annuaire claude.ai (mobile et Claude Code) | élevé : docs à jour Kotlin, Compose, Coroutines, MediaCodec | faible (lecture de docs publiques) | **à connecter par toi** |
+| **Context7** | oui, distant (`mcp.context7.com/mcp`), dans l'annuaire claude.ai | gratuit (clé gratuite = quotas plus hauts ; chiffres non publiés) | oui, via l'annuaire claude.ai (mobile et Claude Code) | élevé : docs à jour Kotlin, Compose, Coroutines, MediaCodec | faible (lecture de docs publiques) ; ne jamais y envoyer de code privé ni de secret | **connecté et testé (23/11)** |
 | **Exa** | oui, distant (`mcp.exa.ai/mcp`), dans l'annuaire claude.ai | offre gratuite (sources contradictoires sur le volume) | oui, via l'annuaire | moyen : recherche de code et veille ; recoupe la recherche web intégrée | faible | optionnel |
 | **Parallel Search** | oui, dans l'annuaire, sans compte | gratuit | oui | moyen : doublon d'Exa | faible | optionnel (un seul des deux) |
 | **Figma MCP** | oui, distant, dans l'annuaire | Starter : 6 à 20 appels **par mois** (docs contradictoires) ; utile seulement en payant | oui | faible à 0 € | quota quasi nul | non retenu |
@@ -159,7 +160,7 @@ consomment ton quota Claude. Elles ne seront créées qu'avec ton accord.
 
 | Priorité | Action | Qui | Coût |
 |---|---|---|---|
-| 1 | Connecter **Context7** sur claude.ai (Paramètres → Connecteurs → Context7) | toi | 0 € |
+| 1 | ~~Connecter **Context7** sur claude.ai~~ : **fait le 23/11, testé** | toi | 0 € |
 | 2 | Utiliser Pitwall Lab sur chaque nouvelle trace (dépôt dans la session ou Drive) | Claude | 0 € |
 | 3 | Lab `compare` et `anomalies` (non-régression sur traces réelles) | Claude | 0 € |
 | 4 | Tests d'interface Maestro sur émulateur dans GitHub Actions (dépôt public) | Claude, puis ton accord | 0 € (minutes Actions publiques) |

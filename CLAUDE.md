@@ -42,6 +42,13 @@ Ingénieur de course Android natif (Galaxy Fold) pour Gran Turismo 7 sur PS5 : t
 - Réponses au pilote en français, claires, avec résultats de tests et liens d'APK.
 - Commits : trailers d'attribution de la session ; PR : brouillon, rapport en français.
 
+## Outils connectés
+- **Context7** (MCP) : documentation à jour des bibliothèques (Android, Compose, Kotlin, coroutines, MediaCodec…).
+  L'utiliser avant d'écrire du code qui dépend d'une API de bibliothèque. Requêtes : questions génériques seulement,
+  jamais de code privé, de trace ni de secret.
+- **GitHub** (intégration Claude Code) : PR, CI, journaux de jobs.
+- **pitwall-lab** (MCP du dépôt, `.mcp.json`) : `lab_list_traces`, `lab_inspect`, `lab_replay` sur les traces locales.
+
 ## Économie de quota
 - Lire ce fichier et le doc de référence du domaine AVANT de réexplorer le dépôt.
 - Utiliser les agents spécialisés (`.claude/agents/`) seulement quand la tâche le demande ; leur donner un objectif
