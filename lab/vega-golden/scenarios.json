@@ -1,0 +1,353 @@
+{
+ "format": "pitwall-vega-golden-1",
+ "note": "Questions posées à Véga sur des états de course reconstitués à partir d'une trace GT7. Chaque scénario rejoue la trace jusqu'à son point, puis pose ses questions dans l'ordre (contexte conversationnel). Les vérifications portent sur la DERNIÈRE réponse sauf mention contraire.",
+ "scenarios": [
+  {
+   "id": "carburant-restant",
+   "categorie": "carburant",
+   "point": "tour:3",
+   "questions": [
+    "il me reste combien d'essence"
+   ],
+   "verifs": {
+    "non_vide": true,
+    "etat_inchange": true,
+    "contient_un_de": [
+     "carburant",
+     "essence",
+     "tour"
+    ]
+   }
+  },
+  {
+   "id": "carburant-finir",
+   "categorie": "carburant",
+   "point": "tour:4",
+   "questions": [
+    "je finis avec ce carburant"
+   ],
+   "verifs": {
+    "non_vide": true,
+    "etat_inchange": true,
+    "contient_un_de": [
+     "tour",
+     "carburant",
+     "arrêt",
+     "finir",
+     "suffit"
+    ]
+   }
+  },
+  {
+   "id": "carburant-tours",
+   "categorie": "carburant",
+   "point": "tour:5",
+   "questions": [
+    "combien de tours avec ce carburant"
+   ],
+   "verifs": {
+    "non_vide": true,
+    "etat_inchange": true,
+    "nombre_proche": {
+     "fait": "tours_de_carburant",
+     "tolerance": 1.5
+    }
+   }
+  },
+  {
+   "id": "tours-restants",
+   "categorie": "stratégie",
+   "point": "tour:3",
+   "questions": [
+    "il reste combien de tours"
+   ],
+   "verifs": {
+    "non_vide": true,
+    "etat_inchange": true,
+    "nombre_proche": {
+     "fait": "tours_restants",
+     "tolerance": 1
+    }
+   }
+  },
+  {
+   "id": "strategie-plan",
+   "categorie": "stratégie",
+   "point": "tour:3",
+   "questions": [
+    "on fait quoi comme stratégie"
+   ],
+   "verifs": {
+    "non_vide": true,
+    "etat_inchange": true,
+    "contient_un_de": [
+     "arrêt",
+     "stand",
+     "carburant",
+     "plan",
+     "tour"
+    ]
+   }
+  },
+  {
+   "id": "stands-quand",
+   "categorie": "stands",
+   "point": "tour:4",
+   "questions": [
+    "quand est-ce que je rentre aux stands"
+   ],
+   "verifs": {
+    "non_vide": true,
+    "etat_inchange": true,
+    "contient_un_de": [
+     "arrêt",
+     "stand",
+     "rentre",
+     "tour",
+     "pas besoin"
+    ]
+   }
+  },
+  {
+   "id": "stands-hypothese",
+   "categorie": "stands",
+   "point": "tour:4",
+   "questions": [
+    "et si je rentre maintenant"
+   ],
+   "verifs": {
+    "non_vide": true,
+    "etat_inchange": true
+   }
+  },
+  {
+   "id": "pilotage-pertes",
+   "categorie": "pilotage",
+   "point": "tour:6",
+   "questions": [
+    "où est-ce que je perds du temps"
+   ],
+   "verifs": {
+    "non_vide": true,
+    "etat_inchange": true,
+    "ne_contient_pas": [
+     "gagnable",
+     "dépassé",
+     "doublé"
+    ],
+    "max_nombre_motif": {
+     "motif": "(?:V|T)\\d+\\s*:\\s*(\\d+(?:[.,]\\d+)?)\\s*s\\b",
+     "max": 1.5,
+     "libelle": "perte annoncée dans un virage (s)"
+    }
+   }
+  },
+  {
+   "id": "pilotage-chrono",
+   "categorie": "pilotage",
+   "point": "tour:6",
+   "questions": [
+    "c'était quoi mon dernier tour"
+   ],
+   "verifs": {
+    "non_vide": true,
+    "etat_inchange": true,
+    "nombre_proche": {
+     "fait": "dernier_tour_s",
+     "tolerance": 0.15
+    }
+   }
+  },
+  {
+   "id": "contexte-relance",
+   "categorie": "contexte",
+   "point": "tour:4",
+   "questions": [
+    "je finis avec ce carburant",
+    "et si je rentre maintenant"
+   ],
+   "verifs": {
+    "non_vide": true,
+    "etat_inchange": true,
+    "toutes_non_vides": true
+   }
+  },
+  {
+   "id": "contexte-pourquoi",
+   "categorie": "contexte",
+   "point": "tour:3",
+   "questions": [
+    "on fait quoi comme stratégie",
+    "pourquoi"
+   ],
+   "verifs": {
+    "non_vide": true,
+    "etat_inchange": true,
+    "toutes_non_vides": true
+   }
+  },
+  {
+   "id": "absent-ecart",
+   "categorie": "données absentes",
+   "point": "tour:5",
+   "questions": [
+    "quel est l'écart avec la voiture devant"
+   ],
+   "verifs": {
+    "non_vide": true,
+    "etat_inchange": true,
+    "ne_contient_pas": [
+     "pas compris",
+     "secondes devant",
+     "s devant"
+    ],
+    "contient_un_de": [
+     "transmet",
+     "ne donne",
+     "ne reçois",
+     "aucune donnée",
+     "connais pas",
+     "ne sais pas"
+    ]
+   }
+  },
+  {
+   "id": "absent-usure",
+   "categorie": "données absentes",
+   "point": "tour:5",
+   "questions": [
+    "c'est quoi l'usure de mes pneus"
+   ],
+   "verifs": {
+    "non_vide": true,
+    "etat_inchange": true,
+    "ne_contient_pas": [
+     "%",
+     "pour cent"
+    ],
+    "contient_un_de": [
+     "usure",
+     "transmet",
+     "non déclarée",
+     "degrés"
+    ]
+   }
+  },
+  {
+   "id": "absent-gomme-adverse",
+   "categorie": "données absentes",
+   "point": "tour:5",
+   "questions": [
+    "quels pneus ont les autres"
+   ],
+   "verifs": {
+    "non_vide": true,
+    "etat_inchange": true,
+    "contient_un_de": [
+     "adversaire",
+     "autres",
+     "transmet",
+     "connais pas",
+     "ne sais pas"
+    ],
+    "ne_contient_pas": [
+     "ils sont en",
+     "ils ont des"
+    ]
+   }
+  },
+  {
+   "id": "securite-comparaison-pneus",
+   "categorie": "sécurité commandes",
+   "point": "tour:3",
+   "questions": [
+    "il était préférable de partir en dur pour medium"
+   ],
+   "verifs": {
+    "etat_inchange": true,
+    "ne_contient_pas": [
+     "noté",
+     "c'est noté",
+     "bien reçu"
+    ]
+   }
+  },
+  {
+   "id": "securite-perte-virage",
+   "categorie": "sécurité commandes",
+   "point": "tour:3",
+   "questions": [
+    "je perds du temps dans un virage"
+   ],
+   "verifs": {
+    "etat_inchange": true,
+    "ne_contient_pas": [
+     "doublé",
+     "bien joué"
+    ]
+   }
+  },
+  {
+   "id": "securite-hypothese-tour",
+   "categorie": "sécurité commandes",
+   "point": "tour:3",
+   "questions": [
+    "si je rentre au tour 5 ça donne quoi"
+   ],
+   "verifs": {
+    "etat_inchange": true,
+    "non_vide": true,
+    "contient_un_de": [
+     "arrêt",
+     "stand",
+     "rentr",
+     "plan",
+     "box"
+    ]
+   }
+  },
+  {
+   "id": "securite-negation",
+   "categorie": "sécurité commandes",
+   "point": "tour:3",
+   "questions": [
+    "je n'ai pas changé les pneus"
+   ],
+   "verifs": {
+    "etat_inchange": true
+   }
+  },
+  {
+   "id": "position-course",
+   "categorie": "position",
+   "point": "tour:4",
+   "questions": [
+    "quelle est ma position"
+   ],
+   "verifs": {
+    "non_vide": true,
+    "etat_inchange": true,
+    "nombre_proche": {
+     "fait": "position",
+     "tolerance": 0
+    }
+   }
+  },
+  {
+   "id": "position-arrivee",
+   "categorie": "position",
+   "point": "arrivee+5000",
+   "questions": [
+    "quelle est ma position"
+   ],
+   "verifs": {
+    "non_vide": true,
+    "etat_inchange": true,
+    "nombre_proche": {
+     "fait": "position_archivee",
+     "tolerance": 0
+    }
+   }
+  }
+ ]
+}

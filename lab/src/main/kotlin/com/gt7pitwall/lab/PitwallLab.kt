@@ -32,6 +32,8 @@ import kotlin.system.exitProcess
  *   replay  <trace> [série] [type]      rejeu dans RaceController : archives, classement, messages produits
  *   anomalies <trace>                   incohérences de télémétrie et événements suspects (MESURE)
  *   diff    <a.json> <b.json> [la] [lb] [rapport.md]  différences entre deux rapports `replay` (voir lab/compare.sh)
+ *   vega    <trace> [scenarios] [md]    banc vega-golden : questions à Véga sur des états reconstitués (moteur déterministe)
+ *   vega-diff <a.json> <b.json> [la] [lb] [md]  améliorations et régressions de Véga entre deux versions
  *   list    <dossier>                   traces disponibles
  *   gabarit <dossier>                   trace FABRIQUÉE pour les tests (jamais une mesure)
  * Sortie : JSON sur la sortie standard. Les traces sont privées : le Lab ne les copie ni ne les publie.
@@ -59,6 +61,15 @@ object PitwallLab {
         )
         "list" -> list(File(args.getOrNull(1) ?: error("list <dossier>")))
         "anomalies" -> Anomalies.scan(File(args.getOrNull(1) ?: error("anomalies <trace>")))
+        "vega" -> VegaGolden.run(
+            File(args.getOrNull(1) ?: error("vega <trace> [scenarios.json] [rapport.md]")),
+            File(args.getOrNull(2)?.takeIf { it.isNotBlank() } ?: "lab/vega-golden/scenarios.json"),
+        ).also { r -> args.getOrNull(3)?.let { File(it).writeText(VegaReport.markdown(r)) } }
+        "vega-diff" -> VegaReport.diff(
+            JSONObject(File(args.getOrNull(1) ?: error("vega-diff <a.json> <b.json> [la] [lb] [rapport.md]")).readText()),
+            JSONObject(File(args.getOrNull(2) ?: error("vega-diff <a.json> <b.json>")).readText()),
+            args.getOrNull(3) ?: "A", args.getOrNull(4) ?: "B",
+        ).also { d -> args.getOrNull(5)?.let { File(it).writeText(VegaReport.diffMarkdown(d)) } }
         "diff" -> Compare.diff(
             JSONObject(File(args.getOrNull(1) ?: error("diff <rapportA.json> <rapportB.json> [libelléA] [libelléB]")).readText()),
             JSONObject(File(args.getOrNull(2) ?: error("diff <rapportA.json> <rapportB.json>")).readText()),
@@ -66,7 +77,7 @@ object PitwallLab {
         ).also { d -> args.getOrNull(5)?.let { File(it).writeText(Compare.markdown(d)) } }
         "gabarit" -> JSONObject().put("gabarit", Gabarit.write(File(args.getOrNull(1) ?: error("gabarit <dossier>"))).absolutePath)
             .put("nature", "Trace FABRIQUÉE pour tester le Lab ; jamais une mesure.")
-        else -> error("commande inconnue : inspect | replay | anomalies | diff | list | gabarit")
+        else -> error("commande inconnue : inspect | replay | anomalies | diff | vega | vega-diff | list | gabarit")
     }
 
     /** Trace fabriquée (gabarit de test) : signalée en tête de tout rapport. */

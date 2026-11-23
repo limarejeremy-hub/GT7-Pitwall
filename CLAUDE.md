@@ -26,7 +26,9 @@ Ingénieur de course Android natif (Galaxy Fold) pour Gran Turismo 7 sur PS5 : t
 ## Commandes (sans SDK Android)
 - Tests du cœur et du Lab : `./gradlew -p lab/standalone :core:test :lab:test`
 - Lab : `./gradlew -p lab/standalone :lab:installDist` puis `lab/build/install/lab/bin/lab inspect|replay|anomalies|list|gabarit ...` ;
-  comparaison de deux versions du moteur : `lab/compare.sh <versionA> <versionB> <trace>` (mode d'emploi : `docs/PITWALL_LAB.md`).
+  comparaison de deux versions du moteur : `lab/compare.sh <versionA> <versionB> <trace>` (mode d'emploi : `docs/PITWALL_LAB.md`) ;
+  banc de Véga : `lab vega <trace>` et `LAB_MODE=vega lab/compare.sh …` (`docs/VEGA_GOLDEN.md`, scénarios dans
+  `lab/vega-golden/scenarios.json` : ajouter un scénario à chaque défaut de radio constaté en course).
 - Traces réelles : jamais dans le dépôt (`*.gt7trace` ignoré). Dossier local via `PITWALL_TRACES`, puis
   `PITWALL_TRACES=<dossier> ./gradlew -p lab/standalone :core:test --tests '*RealTraceReplay*'`.
 - CI GitHub Actions (`.github/workflows/android.yml`) : tests, APK debug (artefact), captures d'écran Robolectric.
@@ -54,7 +56,7 @@ Ingénieur de course Android natif (Galaxy Fold) pour Gran Turismo 7 sur PS5 : t
   Le premier démarrage d'une nouvelle session télécharge le serveur Kotlin (~40 s) puis indexe (~50 s). Préférer
   Serena à la lecture de fichiers entiers pour naviguer dans `RaceController.kt`.
 - **pitwall-lab** (MCP du dépôt, `.mcp.json`, approuvé dans `.claude/settings.json`) : `lab_list_traces`, `lab_inspect`,
-  `lab_replay`, `lab_anomalies`, `lab_compare` sur les traces locales. Avant de proposer un changement du moteur, le
+  `lab_replay`, `lab_anomalies`, `lab_vega`, `lab_compare` (mode `replay` ou `vega`) sur les traces locales. Avant de proposer un changement du moteur, le
   comparer à la version précédente sur les traces réelles disponibles (`lab_compare`).
 
 ## Économie de quota

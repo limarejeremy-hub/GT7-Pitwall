@@ -5,6 +5,8 @@
 # Chaque version est extraite dans un worktree git séparé ; le Lab ACTUEL y est copié puis compilé contre le moteur
 # (core) de cette version. Rien n'est modifié dans les branches ; les worktrees restent dans lab/build/compare.
 # Versions prises en charge : celles dont l'archive contient le rang de ligne (V508 et suivantes).
+# LAB_MODE=vega : compare les réponses de Véga (banc vega-golden, mêmes scénarios pour les deux versions : ceux de la
+# version courante du Lab) au lieu des rejeux.
 set -euo pipefail
 [ $# -ge 3 ] || { echo "usage : lab/compare.sh <versionA> <versionB> <trace.gt7trace> [sortie]" >&2; exit 2; }
 ROOT="$(git rev-parse --show-toplevel)"
@@ -35,6 +37,11 @@ run_version() {
   (cd "$ROOT/lab" && tar --exclude=./build -cf - .) | (cd "$dir/lab" && tar -xf -)
   (cd "$dir" && ./gradlew -q --no-daemon -p lab/standalone :lab:installDist) >&2 \
     || { echo "compilation du Lab impossible contre le moteur de $ref (version antérieure à V508 ?)" >&2; exit 3; }
+  if [ "${LAB_MODE:-replay}" = vega ]; then
+    "$dir/lab/build/install/lab/bin/lab" vega "$TRACE" "$ROOT/lab/vega-golden/scenarios.json" > "$OUT/vega-$safe.json"
+    echo "$OUT/vega-$safe.json"
+    return
+  fi
   "$dir/lab/build/install/lab/bin/lab" replay "$TRACE" > "$OUT/$safe.json"
   echo "$OUT/$safe.json"
 }
@@ -44,6 +51,11 @@ JA="$(run_version "$A")"
 echo "Rejeu avec $B…" >&2
 JB="$(run_version "$B")"
 (cd "$ROOT" && ./gradlew -q --no-daemon -p lab/standalone :lab:installDist) >&2
-MD="$OUT/compare-$(echo "$A" | tr '/:' '__')-vs-$(echo "$B" | tr '/:' '__').md"
-"$ROOT/lab/build/install/lab/bin/lab" diff "$JA" "$JB" "$A" "$B" "$MD"
+if [ "${LAB_MODE:-replay}" = vega ]; then
+  MD="$OUT/vega-$(echo "$A" | tr '/:' '__')-vs-$(echo "$B" | tr '/:' '__').md"
+  "$ROOT/lab/build/install/lab/bin/lab" vega-diff "$JA" "$JB" "$A" "$B" "$MD"
+else
+  MD="$OUT/compare-$(echo "$A" | tr '/:' '__')-vs-$(echo "$B" | tr '/:' '__').md"
+  "$ROOT/lab/build/install/lab/bin/lab" diff "$JA" "$JB" "$A" "$B" "$MD"
+fi
 echo "Rapport Markdown : $MD" >&2
