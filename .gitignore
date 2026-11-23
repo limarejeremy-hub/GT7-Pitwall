@@ -6,3 +6,6 @@ local.properties
 .DS_Store
 captures/
 .kotlin/
+
+# Traces télémétriques du pilote : privées, jamais dans le dépôt (Pitwall Lab les lit sur place).
+*.gt7trace
