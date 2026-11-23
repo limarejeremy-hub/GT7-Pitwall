@@ -125,9 +125,10 @@ class TtsVoiceOutput(context: Context) : VoiceOutput, TextToSpeech.OnInitListene
             // Sans voix française, on parle quand même avec la voix par défaut plutôt que se taire.
             VoiceState.READY, VoiceState.FRENCH_MISSING -> {
                 // Débit et hauteur selon le message (alerte plus directe, réaction plus vive), sans jamais le retarder.
-                val style = SpeechStyle.of(message)
-                tts.setSpeechRate(speechRate * style.rate)
-                tts.setPitch(style.pitch)
+                // Voix neuronale (moteur tiers) : débit et hauteur naturels, sinon un accent apparaît (essai du 23/11).
+                val sent = SpeechStyle.applied(runCatching { tts.defaultEngine }.getOrNull(), speechRate, SpeechStyle.of(message))
+                tts.setSpeechRate(sent.rate)
+                tts.setPitch(sent.pitch)
                 // V511 (revue #86) : décision d'après toute la file (alertes placées mais pas encore commencées
                 // comprises) : une alerte critique n'efface jamais une autre alerte critique ; une annonce non critique
                 // arrivant entre deux alertes attend la fin de la dernière.

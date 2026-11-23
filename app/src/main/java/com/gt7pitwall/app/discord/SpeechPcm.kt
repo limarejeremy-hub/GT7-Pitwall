@@ -63,7 +63,12 @@ class SpeechPcm(context: Context) {
     suspend fun synthesize(text: String): ShortArray? {
         if (withTimeoutOrNull(INIT_TIMEOUT_MS) { ready.await() } != true) return null
         tts.language = Locale.FRANCE
-        tts.setSpeechRate(speechRate)
+        // Même règle que le haut-parleur : voix neuronale (moteur tiers) à débit et hauteur naturels.
+        val sent = com.gt7pitwall.core.radio.SpeechStyle.applied(
+            runCatching { tts.defaultEngine }.getOrNull(), speechRate, com.gt7pitwall.core.radio.SpeechStyle.NEUTRAL,
+        )
+        tts.setSpeechRate(sent.rate)
+        tts.setPitch(sent.pitch)
         val id = UUID.randomUUID().toString()
         val file = File(cacheDir, "discord-$id.wav")
         val done = CompletableDeferred<Boolean>()
