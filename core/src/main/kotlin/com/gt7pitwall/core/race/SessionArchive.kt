@@ -14,6 +14,12 @@ enum class SessionOutcome {
 
     /** Session quittée, télémétrie arrêtée ou application fermée avant l'arrivée. */
     INTERRUPTED,
+
+    /**
+     * Télémétrie coupée pendant le dernier tour (Le Mans 23/11 : tour 14/14, puis « 0 tour » et données figées). Ce
+     * n'est PAS une arrivée : aucun résultat n'en est déduit, seule la dernière position mesurée en course est gardée.
+     */
+    LAST_LAP_CUT,
 }
 
 /**
@@ -121,6 +127,10 @@ data class SessionRecord(
     val postFinishChanges: List<PositionTracker.PostFinishChange> = emptyList(),
     /** Bilan de pilotage de fin de course (absent des anciennes sessions et des courses interrompues). */
     val report: List<String> = emptyList(),
+    /** Dernière position 0x84 valide mesurée EN COURSE (jamais un résultat), avec le peloton et le tour. */
+    val lastRacePosition: Int? = null,
+    val lastRaceCars: Int? = null,
+    val lastRaceLap: Int? = null,
 ) {
     val completedLaps: Int get() = laps.size
 

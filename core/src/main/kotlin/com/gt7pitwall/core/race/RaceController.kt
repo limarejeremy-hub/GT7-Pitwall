@@ -589,8 +589,10 @@ class RaceController(
             events.any { it is SessionEvent.LapCompleted }
         ) {
             tyreLifeAsked = true
+            // GT7 ne transmet ni le coefficient d'usure ni l'usure : le coefficient vient de la fiche, jamais d'une mesure.
+            val origin = if (staleSportSheet) "D'après une fiche Sport pas à jour, l'usure serait fois ${rules.tyreMultiplier}" else "Règlement : usure des pneus fois ${rules.tyreMultiplier}"
             out += EngineerMessage(
-                "Usure des pneus fois ${rules.tyreMultiplier}, mais GT7 ne me donne pas leur usure. Combien de tours tiennent " +
+                "$origin, mais GT7 ne me donne pas leur usure. Combien de tours tiennent " +
                     "tes pneus ? Dis par exemple « les pneus tiennent huit tours », et je te dirai quand les changer.",
                 Priority.HIGH,
                 MessageCategory.FUEL,
@@ -606,6 +608,7 @@ class RaceController(
         if (sessionId != null && !sessionFinished && !sessionIdentitySettled && snapshot.laps.size <= 2) identifySession(out)
         if (sessionId != null && !sessionFinished) applyHandoff(p, out)
         if (sessionId != null && !sessionFinished) sportCandidateWithoutLaps(p, out)
+        if (sessionId != null && !sessionFinished && !replay) noteRaceState(p, out)
         lastTotalLaps = p.totalLaps
         lastSessionPacketMs = packetMs
         if (p.carCode > 0) lastCarCode = p.carCode
@@ -1348,6 +1351,40 @@ class RaceController(
         )
     }
 
+    /** Mémorise le dernier état de course valide (MESURE) et vérifie que la fiche Sport ne contredit pas GT7. */
+    private fun noteRaceState(p: TelemetryPacket, out: MutableList<EngineerMessage>) {
+        if (p.isLoading || p.isPaused || p.totalLaps <= 0 || p.currentLap !in 1..p.totalLaps) return
+        sessionGameLaps = p.totalLaps
+        val valid = p.preRaceCarCount in 1..40 && p.preRacePosition in 1..p.preRaceCarCount
+        lastRaceState = LastRaceState(p.currentLap, p.totalLaps, p.preRacePosition.takeIf { valid }, p.preRaceCarCount.takeIf { valid })
+        out += staleSheetCheck(p)
+    }
+
+    /**
+     * Fiche Sport sans édition courante (programme périmé) dont le nombre de tours contredit GT7 : les tours de GT7 font
+     * foi (le planificateur les utilise déjà), et les coefficients de la fiche (usure, carburant, arrêts, gommes) ne sont
+     * plus présentés comme le règlement de cette course. Une seule annonce par session.
+     */
+    private fun staleSheetCheck(p: TelemetryPacket): List<EngineerMessage> {
+        if (staleSportSheet || !profile.id.sport || edition != null) return emptyList()
+        val declared = rules.totalLaps?.takeIf { it > 0 } ?: return emptyList()
+        if (declared == p.totalLaps) return emptyList()
+        staleSportSheet = true
+        val text = "Fiche Sport pas à jour : elle prévoit $declared tours, GT7 en annonce ${p.totalLaps}. Je calcule sur les " +
+            "${p.totalLaps} tours de GT7 et la consommation mesurée. Usure, arrêt obligatoire et gommes de cette fiche sont à vérifier dans la carte Course."
+        journal.record(
+            JournalType.STRATEGY, JournalSource.ENGINE, text,
+            decision = "tours GT7 prioritaires ; coefficients de la fiche non vérifiés",
+            details = mapOf(
+                "tours_gt7" to p.totalLaps.toString(), "tours_fiche" to declared.toString(),
+                "usure_fiche" to rules.tyreMultiplier.toString(), "carburant_fiche" to rules.fuelMultiplier.toString(),
+                "programme_perime" to if (schedule?.stale == true) "oui" else "non",
+            ),
+            lap = p.currentLap,
+        )
+        return listOf(EngineerMessage(text, Priority.HIGH, MessageCategory.ALERT, dedupKey = "stale-sheet:$sessionId"))
+    }
+
     /** Jalons de phase lus dans les paquets : grille, course lancée, session sans tours annoncés, stands. */
     private fun phaseMilestones(p: TelemetryPacket, events: List<SessionEvent>) {
         if (sessionId == null || p.isLoading) return
@@ -1357,7 +1394,9 @@ class RaceController(
             p.totalLaps > 0 && p.currentLap >= 1 ->
                 milestone(Milestone.RACE_STARTED, "télémétrie", "mesurée", "${p.totalLaps} tours annoncés par GT7")
             // totalLaps = 0 ne prouve pas une qualification (chrono, essais libres, course au temps) : supposée seulement.
-            p.totalLaps <= 0 && p.currentLap >= 1 ->
+            // Le Mans 23/11 : GT7 a envoyé « 0 tour » au tour 14/14 juste avant de figer la télémétrie. Une session qui a
+            // déjà annoncé ses tours reste une course : pas de « qualification supposée ».
+            p.totalLaps <= 0 && p.currentLap >= 1 && sessionGameLaps == null ->
                 milestone(Milestone.QUALIFYING_SUSPECTED, "télémétrie", "supposée", "GT7 n'annonce aucun nombre de tours")
         }
         val open = tracker.pitVisitOpen
@@ -1427,6 +1466,20 @@ class RaceController(
     private data class SessionHandoff(val carCode: Int, val trackId: Int?, val candidate: SessionMatcher.Result.Match?, val atMs: Long)
     private var handoff: SessionHandoff? = null
     private var lastTotalLaps = 0
+
+    /** Dernier état de course mesuré (tour, tours GT7, position 0x84 valide) : sert quand la session finit sans ligne. */
+    private data class LastRaceState(val lap: Int, val totalLaps: Int, val position: Int?, val cars: Int?)
+    private var lastRaceState: LastRaceState? = null
+
+    /** Nombre de tours annoncé par GT7 pour la session en cours (dernière valeur valide en course) : prioritaire sur la fiche. */
+    private var sessionGameLaps: Int? = null
+
+    /**
+     * Course du Mans du 23/11 : programme de la semaine périmé, la fiche Suzuka du 16/11 (13 tours, usure ×3) restait
+     * appliquée alors que GT7 annonçait 14 tours. Vrai quand GT7 contredit la fiche Sport sans édition courante.
+     */
+    var staleSportSheet = false
+        private set
     private var lastCarCode = 0
     /** Heure du dernier paquet traité (celui de la session qui se termine, quand la suivante commence). */
     private var lastSessionPacketMs = 0L
@@ -1743,6 +1796,9 @@ class RaceController(
 
     private fun startSession() {
         keepHandoff()
+        lastRaceState = null
+        sessionGameLaps = null
+        staleSportSheet = false
         forgetStaleStartTyre()
         driverDeclaredDuringPitNumber = null
         gridPosition = null
@@ -1846,7 +1902,8 @@ class RaceController(
     fun currentRecord(outcome: SessionOutcome = if (sessionFinished) SessionOutcome.FINISHED else SessionOutcome.IN_PROGRESS): SessionRecord? {
         val id = sessionId ?: return null
         // Les tours bouclés après l'arrivée (retour au stand) ne sont pas des tours de course.
-        val total = snapshot.packet?.totalLaps?.takeIf { it > 0 } ?: rules.totalLaps
+        // Tours de GT7 de CETTE session d'abord (le dernier paquet peut annoncer 0 tour à la coupure), la fiche ensuite.
+        val total = sessionGameLaps ?: snapshot.packet?.totalLaps?.takeIf { it > 0 } ?: rules.totalLaps
         val laps = snapshot.laps.filter { total == null || it.lapNumber <= total }
         if (laps.isEmpty()) return null
         return SessionRecord(
@@ -1869,6 +1926,9 @@ class RaceController(
             lineFinishCars = lineFinish?.second,
             finishConsolidated = finishConsolidated,
             postFinishChanges = postFinish.toList(),
+            lastRacePosition = lastRaceState?.position,
+            lastRaceCars = lastRaceState?.cars,
+            lastRaceLap = lastRaceState?.lap,
         )
     }
 
@@ -1987,7 +2047,14 @@ class RaceController(
     private fun closeSession(outcome: SessionOutcome) {
         if (replay) return
         val dna = driverCoach.close(fuel?.perLap)
-        val final = if (sessionFinished) SessionOutcome.FINISHED else outcome
+        // Le Mans 23/11 : télémétrie coupée au tour 14/14 (P5/9 mesuré en course), archivée « interrompue » sans plus de
+        // précision. Une coupure dans le dernier tour n'est PAS une arrivée : elle est classée à part, sans résultat.
+        val cut = lastRaceState?.takeIf { !sessionFinished && outcome == SessionOutcome.INTERRUPTED && it.totalLaps >= 2 && it.lap == it.totalLaps }
+        val final = when {
+            sessionFinished -> SessionOutcome.FINISHED
+            cut != null -> SessionOutcome.LAST_LAP_CUT
+            else -> outcome
+        }
         // A finished session may have been reset by GT7 before the journal is closed.
         // Use the last saved session instead of falsely reporting zero measured laps.
         val measuredLapsAtClose = snapshot.laps.size.takeIf { it > 0 }
@@ -2007,6 +2074,9 @@ class RaceController(
             lineFinishCars = lineFinish?.second,
             finishConsolidated = finishConsolidated,
             postFinishChanges = postFinish.toList(),
+            lastRacePosition = lastRaceState?.position,
+            lastRaceCars = lastRaceState?.cars,
+            lastRaceLap = lastRaceState?.lap,
         )
         if (r != null) {
             sessions[r.id] = r
@@ -2028,9 +2098,17 @@ class RaceController(
             when (final) {
                 SessionOutcome.FINISHED -> "Fin de session : course terminée"
                 SessionOutcome.INTERRUPTED -> "Fin de session : interrompue (télémétrie arrêtée ou nouvelle session)"
+                SessionOutcome.LAST_LAP_CUT -> "Fin de session : télémétrie coupée pendant le dernier tour (tour ${cut?.lap} sur ${cut?.totalLaps}) ; " +
+                    "arrivée non confirmée, aucun résultat déduit" + (cut?.position?.let { ". Dernière position mesurée en course : P$it sur ${cut.cars}" } ?: "")
                 SessionOutcome.IN_PROGRESS -> "Fin de session"
             },
-            details = mapOf("issue" to final.name.lowercase(), "tours_mesures" to measuredLapsAtClose.toString()),
+            details = listOfNotNull(
+                "issue" to final.name.lowercase(), "tours_mesures" to measuredLapsAtClose.toString(),
+                lastRaceState?.let { "dernier_tour_en_course" to "${it.lap}/${it.totalLaps}" },
+                lastRaceState?.position?.let { "derniere_position_mesuree" to "P$it sur ${lastRaceState?.cars}" },
+                "position_ligne" to (lineFinish?.let { "P${it.first} sur ${it.second}" } ?: "inconnue"),
+                "resultat_officiel" to if (finishConsolidated && finishPosition != null) "P$finishPosition sur $finishCars (consolidé)" else "non vérifiable",
+            ).toMap(),
         )
     }
 
@@ -2615,7 +2693,7 @@ class RaceController(
         } else {
             switchKey = null
         }
-        if (reason == null && previous != null && next != null) reason = planChangeReason(previous, next, p.currentLap)
+        if (reason == null && previous != null && next != null) reason = planChangeReason(previous, next, p.currentLap, p.fuelLevel, currentLapRemaining)
         plan = next
         strategy = report
         if (reason != null) {
@@ -2631,17 +2709,50 @@ class RaceController(
                 JournalType.STRATEGY, JournalSource.ENGINE,
                 if (stopLaps.isEmpty()) "Plan : aucun arrêt prévu" else "Plan : arrêts à la fin des tours ${stopLaps.joinToString(", ")}",
                 decision = reason ?: "plan calculé",
-                details = listOfNotNull(
+                details = (listOfNotNull(
                     plan?.perLap?.let { "consommation_par_tour" to "%.2f".format(java.util.Locale.ROOT, it) },
                     plan?.fuelSource?.let { "source_consommation" to it.name },
                     plan?.totalLaps?.let { "tours_prevus" to it.toString() },
-                ).toMap(),
+                    plan?.lapsSource?.let { "source_tours" to it.name },
+                ) + planChangeDetails(previous, plan, reason, report, p)).toMap(),
             )
             while (planLog.size > MAX_PLANS) planLog.removeAt(0)
         }
         engineer.obligationCaveat = obligationCaveat().trim().takeIf { it.isNotEmpty() }
         return engineer.onPlan(plan, p.currentLap)
     }
+
+    /**
+     * Détails journalisés d'un changement de plan : ancien et nouveau plan, données qui ont changé, gain attendu si un
+     * calcul l'a donné, incertitude. Rien n'est estimé ici : chaque valeur vient du plan ou du comparateur.
+     */
+    private fun planChangeDetails(old: RacePlan?, new: RacePlan?, reason: String?, report: StrategyReport?, p: TelemetryPacket): List<Pair<String, String>> {
+        if (reason == null || old == null || new == null) return emptyList()
+        fun stops(pl: RacePlan) = pl.stops.map { it.endOfLap }.ifEmpty { null }?.joinToString(", ", "fin des tours ") ?: "aucun arrêt"
+        val changed = buildList {
+            if (old.totalLaps != new.totalLaps) add("tours ${old.totalLaps} → ${new.totalLaps} (${new.lapsSource.name})")
+            val op = old.perLap
+            val np = new.perLap
+            if (op == null && np != null) add("consommation connue : ${"%.2f".format(java.util.Locale.ROOT, np)} (${new.fuelSource?.name})")
+            else if (op != null && np != null && kotlin.math.abs(np - op) > 0.01f) add("consommation ${"%.2f".format(java.util.Locale.ROOT, op)} → ${"%.2f".format(java.util.Locale.ROOT, np)}")
+            missedStop(old, p.currentLap)?.let { add("arrêt prévu fin du tour $it non effectué") }
+            if (ledger.stopCount > 0 && ledger.stopList.last().lap >= p.currentLap - 1) add("arrêt effectué au tour ${ledger.stopList.last().lap}")
+        }
+        val gain = report?.recommendedOption?.deltaMs?.takeIf { report.recommended != OptionKind.NORMAL }
+        return listOf(
+            "plan_precedent" to stops(old),
+            "plan_nouveau" to stops(new),
+            "donnees_changees" to (changed.joinToString(" ; ").ifEmpty { "aucune donnée identifiée" }),
+            "carburant_mesure" to "%.1f".format(java.util.Locale.ROOT, p.fuelLevel),
+            "gain_attendu" to (gain?.let { "%+.1f s (CALCUL du comparateur)".format(java.util.Locale.ROOT, -it / 1000.0) } ?: "non calculable"),
+            "incertitude" to (report?.uncertaintyMs?.let { "± %.1f s".format(java.util.Locale.ROOT, it / 1000.0) } ?: "non chiffrée"),
+        )
+    }
+
+    /** Arrêt du plan précédent dont le tour est passé sans passage au stand (le pilote est resté en piste). */
+    private fun missedStop(old: RacePlan, lap: Int): Int? = old.stops.map { it.endOfLap }
+        .filter { it < lap && it >= lap - 2 }
+        .firstOrNull { planned -> ledger.stopList.none { it.lap == planned || it.lap == planned + 1 } }
 
     /** Dernier changement de plan, et pourquoi (pour « pourquoi tu changes notre stratégie ? »). */
     data class PlanChange(val lap: Int, val reason: String)
@@ -2667,9 +2778,21 @@ class RaceController(
      * Pourquoi les tours d'arrêt à venir ont changé, d'après ce qui a été mesuré ou déclaré ; null si rien n'a changé
      * (un arrêt effectué qui sort du plan n'est pas un changement).
      */
-    private fun planChangeReason(old: RacePlan, new: RacePlan, lap: Int): String? {
+    private fun planChangeReason(old: RacePlan, new: RacePlan, lap: Int, fuelNow: Float? = null, lapRemaining: Float = 1f): String? {
         val before = old.stops.map { it.endOfLap }.filter { it >= lap }
         val after = new.stops.map { it.endOfLap }
+        // Le Mans 23/11 : arrêt prévu fin du tour 7, pilote resté en piste ; au tour 8 le moteur a dit « Un arrêt devient
+        // nécessaire, fin du tour 9 », comme si rien n'était prévu. On nomme la vraie cause : l'arrêt non effectué.
+        val missed = missedStop(old, lap)
+        if (missed != null && after.isNotEmpty()) {
+            val next = after.first()
+            val perLap = new.perLap
+            // Limite carburant : impossible de boucler un tour de plus après l'arrêt choisi (même marge que le planificateur).
+            val fuelLimited = perLap != null && perLap > 0f && fuelNow != null &&
+                fuelNow / perLap - (next - lap + lapRemaining) < 1f + RacePlanner.SAFETY_LAPS
+            return "Arrêt du tour $missed non effectué : " +
+                if (fuelLimited) "le tour $next est le dernier possible avec le carburant mesuré." else "prochain arrêt fin du tour $next."
+        }
         if (before == after) return null
         // Un arrêt qui vient d'être fait sort du plan : le reste est inchangé.
         if (ledger.stopList.lastOrNull()?.let { lap - it.lap in 0..1 } == true && before.drop(1) == after) return null
@@ -2954,6 +3077,7 @@ class RaceController(
         (sessionIdentity as? SessionMatcher.Result.Match)
             ?.takeIf { it.confidence == SessionMatcher.Confidence.PROBABLE && profile.id.mode == SessionMode.SPORT_IDENTIFIED }
             ?.let { reasons += "course ${it.series.letter} seulement probable" }
+        if (staleSportSheet) reasons += "fiche Sport pas à jour"
         val st = profile.ruleStatus
         fun singleSource(f: RuleField): Boolean = st[f] == com.gt7pitwall.core.sport.FieldStatus.PROBABLE
         val weak = buildList {

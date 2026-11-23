@@ -133,6 +133,7 @@ private fun SessionList(
                         s.id == liveId -> "en cours d'enregistrement"
                         s.outcome == SessionOutcome.FINISHED -> "terminée"
                         s.outcome == SessionOutcome.INTERRUPTED -> "interrompue"
+                        s.outcome == SessionOutcome.LAST_LAP_CUT -> "coupée au dernier tour (arrivée non confirmée)"
                         s.outcome == SessionOutcome.IN_PROGRESS -> "fermée brutalement"
                         else -> "sans tour mesuré"
                     }

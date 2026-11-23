@@ -6,7 +6,7 @@ Ingénieur de course Android natif (Galaxy Fold) pour Gran Turismo 7 sur PS5 : t
 ## Branches (vérifier avant de partir d'une base)
 - `main` n'est PAS l'application : commit initial + workflows CI seulement.
 - L'application vit sur une pile de PR brouillons empilées (chacune a pour base la précédente). La plus récente
-  connue : `claude/v511-reliability` (PR #86). Vérifier `git branch -r --sort=-committerdate` : une version plus
+  connue : `claude/v512-lot1-strategie-fin` (V512 lot 1, base `claude/le-mans-lab` PR #90 ; V511 = PR #86). Vérifier `git branch -r --sort=-committerdate` : une version plus
   récente peut exister.
 - PR #64 (veille automatique #63) est hors pile.
 - Toujours travailler sur une nouvelle branche `claude/<sujet>` partant de la dernière version, PR en brouillon,
@@ -21,7 +21,7 @@ Ingénieur de course Android natif (Galaxy Fold) pour Gran Turismo 7 sur PS5 : t
   Compilé seulement par la CI (pas de SDK Android dans les sessions cloud).
 - `lab/` : Pitwall Lab (rejeu de traces, hors APK). `tools/pitwall-lab-mcp/` : serveur MCP du Lab.
 - Docs de référence : `docs/V511_AUDIT.md` (état, matrice, P0-P2), `docs/UDP_FIELDS.md`, `docs/POSITION_RADIO.md`,
-  `docs/DEV_ECOSYSTEM.md` (outils et agents), `docs/LE_MANS_2026.md` (Le Mans 14 tours).
+  `docs/DEV_ECOSYSTEM.md` (outils et agents), `docs/LE_MANS_2026.md` (Le Mans 14 tours), `docs/V512_LE_MANS.md` (analyse de la course du 23/11, lots V512).
 
 ## Commandes (sans SDK Android)
 - Tests du cœur et du Lab : `./gradlew -p lab/standalone :core:test :lab:test`

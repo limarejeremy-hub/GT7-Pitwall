@@ -14,6 +14,17 @@ object SpeechStyle {
 
     val NEUTRAL = Prosody(1.0f, 1.0f)
 
+    /** Moteurs pour lesquels le débit et la hauteur de Pitwall ont été réglés (voix Google et Samsung). */
+    val TUNED_ENGINES = setOf("com.google.android.tts", "com.samsung.SMT")
+
+    /**
+     * Débit et hauteur réellement envoyés au moteur. Essai du pilote (23/11) : avec la voix neuronale sherpa-onnx Piper,
+     * l'accélération (×1,05, jusqu'à ×1,18 pour une alerte) donnait un accent absent de l'exemple du téléphone. Un
+     * moteur hors de [TUNED_ENGINES] parle donc à débit et hauteur naturels. Moteur inconnu (null) : réglage habituel.
+     */
+    fun applied(enginePackage: String?, baseRate: Float, style: Prosody): Prosody =
+        if (enginePackage == null || enginePackage in TUNED_ENGINES) Prosody(baseRate * style.rate, style.pitch) else NEUTRAL
+
     private val CELEBRATION = Regex("^(bien joué|ah ça|magnifique|superbe|énorme)", RegexOption.IGNORE_CASE)
 
     fun of(m: EngineerMessage): Prosody = when {

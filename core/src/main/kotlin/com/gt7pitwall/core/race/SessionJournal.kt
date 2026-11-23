@@ -379,6 +379,7 @@ object JournalExport {
     private fun outcome(o: SessionOutcome) = when (o) {
         SessionOutcome.FINISHED -> "course terminée"
         SessionOutcome.INTERRUPTED -> "session interrompue"
+        SessionOutcome.LAST_LAP_CUT -> "télémétrie coupée dans le dernier tour, arrivée non confirmée"
         SessionOutcome.IN_PROGRESS -> "en cours ou application fermée brutalement"
     }
 
