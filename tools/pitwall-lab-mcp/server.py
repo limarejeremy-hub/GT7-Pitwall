@@ -6,6 +6,7 @@ Outils :
   lab_inspect      -> mesures brutes d'une trace (MESURE uniquement)
   lab_replay       -> rejeu dans le moteur Pitwall réel (archives et messages : CALCUL)
   lab_anomalies    -> incohérences de télémétrie et événements suspects (MESURE)
+  lab_vega         -> banc vega-golden : questions à Véga sur des états reconstitués (moteur déterministe)
   lab_compare      -> même trace rejouée par deux versions du moteur : différences de résultats, alertes, messages,
                       décisions et positions (lab/compare.sh, worktrees git, aucune branche modifiée)
 
@@ -57,6 +58,14 @@ TOOLS = [
         "inputSchema": {"type": "object", "properties": {"trace": {"type": "string"}}, "required": ["trace"]},
     },
     {
+        "name": "lab_vega",
+        "description": "Banc vega-golden : rejoue la trace jusqu'à chaque point de scénario (tour N, après l'arrivée) et pose "
+                       "les questions de lab/vega-golden/scenarios.json à la vraie conversation radio. Vérifie les nombres "
+                       "contre les faits mesurés, l'absence de modification de la course, les termes attendus ou interdits. "
+                       "Réponses du moteur DÉTERMINISTE : aucun modèle cloud n'est appelé ni validé.",
+        "inputSchema": {"type": "object", "properties": {"trace": {"type": "string"}}, "required": ["trace"]},
+    },
+    {
         "name": "lab_compare",
         "description": "Rejoue la même trace avec deux versions du moteur (branches, étiquettes ou commits, V508 et "
                        "suivantes) et renvoie les différences : résultats archivés, compteurs, alertes, messages de "
@@ -67,6 +76,7 @@ TOOLS = [
                 "trace": {"type": "string"},
                 "version_a": {"type": "string", "description": "ex. claude/v510-live-b-sim"},
                 "version_b": {"type": "string", "description": "ex. claude/v511-reliability ou HEAD"},
+                "mode": {"type": "string", "enum": ["replay", "vega"], "description": "replay (défaut) : résultats et messages ; vega : réponses de Véga au banc vega-golden"},
             },
             "required": ["trace", "version_a", "version_b"],
         },
@@ -119,6 +129,8 @@ def call(name, a):
         return run_lab(args)
     if name == "lab_anomalies":
         return run_lab(["anomalies", resolve_trace(a["trace"])])
+    if name == "lab_vega":
+        return run_lab(["vega", resolve_trace(a["trace"]), os.path.join(ROOT, "lab", "vega-golden", "scenarios.json")])
     if name == "lab_compare":
         for k in ("version_a", "version_b"):
             if not re.fullmatch(r"[A-Za-z0-9._/\-]{1,120}", a.get(k, "")) or a[k].startswith("-"):
@@ -126,7 +138,8 @@ def call(name, a):
         p = subprocess.run(
             [os.path.join(ROOT, "lab", "compare.sh"), a["version_a"], a["version_b"], resolve_trace(a["trace"])],
             cwd=ROOT, capture_output=True, text=True, encoding="utf-8", timeout=2400,
-            env=dict(os.environ, JAVA_TOOL_OPTIONS=os.environ.get("JAVA_TOOL_OPTIONS", "")),
+            env=dict(os.environ, JAVA_TOOL_OPTIONS=os.environ.get("JAVA_TOOL_OPTIONS", ""),
+                     LAB_MODE="vega" if a.get("mode") == "vega" else "replay"),
         )
         if p.returncode != 0:
             raise RuntimeError(p.stderr.strip()[-800:] or "échec de la comparaison")

@@ -25,6 +25,8 @@ Construction, sans SDK Android : `./gradlew -p lab/standalone :lab:installDist`.
 | `lab/compare.sh <versionA> <versionB> <trace> [sortie]` | même trace rejouée par deux versions du moteur ; différences de résultats, alertes, messages, décisions, positions ; rapport JSON et Markdown | CALCUL |
 | `… diff <a.json> <b.json> [la] [lb] [rapport.md]` | différences entre deux rapports `replay` | CALCUL |
 | `… gabarit <dossier>` | trace fabriquée pour tester le Lab sans trace privée | FABRIQUÉE |
+| `… vega <trace> [scenarios.json] [rapport.md]` | banc vega-golden : questions à Véga sur des états reconstitués, vérifiées contre les mesures (voir `docs/VEGA_GOLDEN.md`) | CALCUL (moteur déterministe) |
+| `LAB_MODE=vega lab/compare.sh <A> <B> <trace>` | améliorations et régressions des réponses de Véga entre deux versions | CALCUL |
 
 **`compare`** extrait chaque version dans un worktree git (`lab/build/compare/worktrees`), sans toucher aux
 branches. Il y copie le Lab actuel et le compile contre le moteur de cette version. Versions prises en charge : V508
