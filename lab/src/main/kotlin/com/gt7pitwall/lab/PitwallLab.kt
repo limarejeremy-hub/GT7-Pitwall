@@ -30,7 +30,10 @@ import kotlin.system.exitProcess
  * Commandes :
  *   inspect <trace>                     mesures brutes : échantillons, formats, trous, pertes UDP, transitions 0x84/0x86
  *   replay  <trace> [série] [type]      rejeu dans RaceController : archives, classement, messages produits
+ *   anomalies <trace>                   incohérences de télémétrie et événements suspects (MESURE)
+ *   diff    <a.json> <b.json> [la] [lb] [rapport.md]  différences entre deux rapports `replay` (voir lab/compare.sh)
  *   list    <dossier>                   traces disponibles
+ *   gabarit <dossier>                   trace FABRIQUÉE pour les tests (jamais une mesure)
  * Sortie : JSON sur la sortie standard. Les traces sont privées : le Lab ne les copie ni ne les publie.
  */
 fun main(args: Array<String>) {
@@ -55,9 +58,15 @@ object PitwallLab {
             args.getOrNull(3)?.let { SessionKind.valueOf(it) } ?: SessionKind.RACE,
         )
         "list" -> list(File(args.getOrNull(1) ?: error("list <dossier>")))
+        "anomalies" -> Anomalies.scan(File(args.getOrNull(1) ?: error("anomalies <trace>")))
+        "diff" -> Compare.diff(
+            JSONObject(File(args.getOrNull(1) ?: error("diff <rapportA.json> <rapportB.json> [libelléA] [libelléB]")).readText()),
+            JSONObject(File(args.getOrNull(2) ?: error("diff <rapportA.json> <rapportB.json>")).readText()),
+            args.getOrNull(3) ?: "A", args.getOrNull(4) ?: "B",
+        ).also { d -> args.getOrNull(5)?.let { File(it).writeText(Compare.markdown(d)) } }
         "gabarit" -> JSONObject().put("gabarit", Gabarit.write(File(args.getOrNull(1) ?: error("gabarit <dossier>"))).absolutePath)
             .put("nature", "Trace FABRIQUÉE pour tester le Lab ; jamais une mesure.")
-        else -> error("commande inconnue : inspect | replay | list | gabarit")
+        else -> error("commande inconnue : inspect | replay | anomalies | diff | list | gabarit")
     }
 
     /** Trace fabriquée (gabarit de test) : signalée en tête de tout rapport. */
@@ -141,6 +150,14 @@ object PitwallLab {
             .put("formats", tagged(MESURE, JSONObject(r.formats)))
             .put("sessions", JSONArray(sessions.map(::session)))
             .put("messages", tagged(CALCUL, JSONArray(spoken.map { JSONObject().put("texte", it.text).put("priorite", it.priority.name).put("categorie", it.category.name) })))
+            .put("journal", tagged(CALCUL, JSONArray(storage.journal.mapNotNull { l ->
+                runCatching {
+                    val o = JSONObject(l)
+                    JSONObject().put("session", o.optString("session")).put("tour", o.opt("lap") ?: JSONObject.NULL)
+                        .put("type", o.optString("type")).put("source", o.optString("source")).put("texte", o.optString("text"))
+                        .put("decision", o.opt("decision") ?: JSONObject.NULL)
+                }.getOrNull()
+            })))
             .put("compteurs", tagged(
                 CALCUL,
                 JSONObject()
@@ -184,4 +201,8 @@ class MemoryStorage : RaceStorage {
     override fun loadSessions(): List<SessionRecord> = sessions.values.mapNotNull(RaceJson::session)
     override fun saveSession(record: SessionRecord) { sessions[record.id] = RaceJson.session(record) }
     fun sessions(): List<SessionRecord> = loadSessions()
+
+    /** Journal de course complet (toutes les sessions de la trace), lignes JSON comme sur le téléphone. */
+    val journal = mutableListOf<String>()
+    override fun appendJournal(sessionId: String, line: String) { journal += line }
 }
