@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "pitwall-lab": {
+      "command": "python3",
+      "args": ["tools/pitwall-lab-mcp/server.py"]
+    }
+  }
+}
