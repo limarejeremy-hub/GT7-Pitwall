@@ -6,6 +6,7 @@ import com.gt7pitwall.core.race.ProfileId
 import com.gt7pitwall.core.race.RaceController
 import com.gt7pitwall.core.race.SessionKind
 import com.gt7pitwall.core.race.Series
+import com.gt7pitwall.core.strategy.RaceRules
 import com.gt7pitwall.core.telemetry.TelemetryPacket
 import com.gt7pitwall.core.telemetry.TelemetryParser
 import com.gt7pitwall.core.telemetry.TelemetryTrace
@@ -65,8 +66,10 @@ object VegaGolden {
         require(trace.isFile) { "trace introuvable : ${trace.name}" }
         val spec = JSONObject(scenarios.readText())
         val list = spec.getJSONArray("scenarios")
+        val serie = spec.optString("profil").takeIf { it.isNotBlank() }?.let { Series.valueOf(it) } ?: series
+        val rules = spec.optJSONObject("regles")?.let(::rulesOf)
         val results = JSONArray()
-        for (i in 0 until list.length()) results.put(runOne(trace, list.getJSONObject(i), series, kind))
+        for (i in 0 until list.length()) results.put(runOne(trace, list.getJSONObject(i), serie, kind, rules))
         val byCat = JSONObject()
         var ok = 0
         var ko = 0
@@ -83,7 +86,8 @@ object VegaGolden {
         }
         return JSONObject()
             .put("trace", trace.name)
-            .put("profil", "${series.name} ${kind.name} (choisi pour le rejeu, pas une détection)")
+            .put("profil", "${serie.name} ${kind.name} (choisi pour le rejeu, pas une détection)")
+            .also { r -> rules?.let { r.put("regles", "${it} (déclaré au moteur avant le rejeu, comme le pilote dans la carte Course)") } }
             .put("nature", "Réponses du moteur DÉTERMINISTE de Pitwall (aucun modèle cloud ni Gemini dans le banc) sur des états reconstitués d'une trace GT7.")
             .put("resume", JSONObject().put("reussis", ok).put("echoues", ko).put("non_evaluables", na).put("par_categorie", byCat))
             .put("scenarios", results)
@@ -98,11 +102,21 @@ object VegaGolden {
 
     private fun JSONObject.increment(k: String) = put(k, getInt(k) + 1)
 
-    private fun runOne(trace: File, sc: JSONObject, series: Series, kind: SessionKind): JSONObject {
+    /** Règlement déclaré (champs du fichier de scénarios) : ce que le pilote saisit, GT7 ne le transmet pas. */
+    fun rulesOf(o: JSONObject) = RaceRules(
+        totalLaps = o.optInt("tours", 0).takeIf { it > 0 },
+        fuelMultiplier = o.optInt("carburant_multiplicateur", 1),
+        tyreMultiplier = o.optInt("usure_multiplicateur", 1),
+        mandatoryStops = o.optInt("arrets_obligatoires", 0),
+    )
+
+    // « tour:N » n'est atteint que si N fait partie de la course (pas le « 8/7 » qui suit l'arrivée d'une course de 7 tours).
+    private fun runOne(trace: File, sc: JSONObject, series: Series, kind: SessionKind, rules: RaceRules? = null): JSONObject {
         val point = sc.getString("point")
         val clock = TelemetryTrace.VirtualClock(0)
         val c = RaceController(storage = MemoryStorage(), clock = clock::now)
         c.selectProfile(ProfileId(series, kind))
+        rules?.let { c.setRules(it) }
         val conv = RadioConversation(c, clock = clock::now)
         var lapStart: Long? = null
         var finishAt: Long? = null
@@ -115,7 +129,7 @@ object VegaGolden {
             val due = when {
                 point.startsWith("tour:") -> {
                     val n = point.removePrefix("tour:").toInt()
-                    if (p.totalLaps > 0 && p.currentLap == n && !p.isLoading && !p.isPaused) {
+                    if (p.totalLaps > 0 && p.currentLap == n && n <= p.totalLaps && !p.isLoading && !p.isPaused) {
                         if (lapStart == null) lapStart = now
                         now - lapStart!! >= LAP_OFFSET_MS
                     } else {

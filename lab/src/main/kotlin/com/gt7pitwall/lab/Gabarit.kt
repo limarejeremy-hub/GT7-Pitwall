@@ -17,13 +17,14 @@ import java.util.zip.GZIPOutputStream
 object Gabarit {
     const val MARK = "GABARIT-NON-MESURE"
 
-    private fun packet(lap: Int, total: Int, pos: Int, cars: Int, id: Int, fuel: Float, speed: Float, lastLapMs: Int): ByteArray {
+    private fun packet(lap: Int, total: Int, pos: Int, cars: Int, id: Int, fuel: Float, speed: Float, lastLapMs: Int, tyreC: Float = 0f): ByteArray {
         val b = ByteBuffer.allocate(PacketFormat.C.size).order(ByteOrder.LITTLE_ENDIAN)
         b.putInt(0x00, 0x47375330) // magie GT7
         b.putFloat(0x04, if (speed > 1f) id * speed / 100f else 0f)
         b.putFloat(0x44, fuel)
         b.putFloat(0x48, 100f)
         b.putFloat(0x4C, speed)
+        for (o in listOf(0x60, 0x64, 0x68, 0x6C)) b.putFloat(o, tyreC)
         b.putInt(0x70, id)
         b.putShort(0x74, lap.toShort())
         b.putShort(0x76, total.toShort())
@@ -67,6 +68,47 @@ object Gabarit {
                 }
                 TelemetryTrace.writeFrame(out, t, packet(lap, total, p, 16, id, fuel, if (lap >= 1) 50f else 0f, lastLap))
                 t += if (anomalies && t == 20_000) 2_000 else 10 // trou de flux de 2 s
+            }
+        }
+        return f
+    }
+
+    /**
+     * Trace GABARIT d'endurance (fabriquée) : 4 tours de 20 s, arrêt au tour 2 (immobile 20 s, plein 30 → 80, les 4
+     * températures retombent à 60 °C comme le 25/10), arrivée P3/8. Sert à tester `endurance` sans trace privée.
+     */
+    fun writeEndurance(dir: File): File {
+        dir.mkdirs()
+        val f = File(dir, "pitwall-endurance-$MARK.gt7trace")
+        DataOutputStream(GZIPOutputStream(f.outputStream())).use { out ->
+            TelemetryTrace.writeHeader(out)
+            val lap = 20_000
+            var id = 0
+            var t = 0
+            var fuel = 50f
+            var lastLap = -1
+            var curLap = 0
+            var lapStart = 0
+            while (t < 2_000 + 4 * lap + 20_000 + 3_000) {
+                id++
+                val race = t - 2_000
+                // Le tour 2 dure 20 s de plus (arrêt de 30 s à 50 s du début de trace).
+                val n = when {
+                    race < 0 -> 0
+                    race < lap -> 1
+                    race < 2 * lap + 20_000 -> 2
+                    race < 3 * lap + 20_000 -> 3
+                    race < 4 * lap + 20_000 -> 4
+                    else -> 5
+                }
+                if (n != curLap) { if (curLap >= 1) lastLap = t - lapStart; lapStart = t; curLap = n }
+                val stopped = t in 30_000 until 50_000
+                val speed = if (n == 0 || stopped) 0f else 200f
+                if (!stopped && n in 1..4) fuel -= 0.001f // 10 ms → 2 L par tour de 20 s
+                if (stopped && t >= 35_000 && fuel < 80f) fuel += 0.05f // plein pendant l'arrêt
+                val tyre = when { stopped && t >= 45_000 -> 60f; else -> 80f }
+                TelemetryTrace.writeFrame(out, t, packet(n, 4, if (n >= 4) 3 else 5, 8, id, fuel, speed, lastLap, tyre))
+                t += 10
             }
         }
         return f

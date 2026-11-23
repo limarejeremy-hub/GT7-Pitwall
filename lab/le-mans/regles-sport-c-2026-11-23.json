@@ -1,0 +1,19 @@
+{
+ "format": "pitwall-regles-1",
+ "epreuve": "Course Sport C, semaine du 23/11/2026 — 24 Heures du Mans Racing Circuit",
+ "nature": "REGLEMENT publié (sources publiques), jamais transmis par GT7. À vérifier sur l'écran de l'épreuve dans le jeu avant la course.",
+ "sources": [
+  "gtsh-rank.com/daily (semaine du 23/11/2026) : Gr.1, RM IM W, BoP On, réglages autorisés, dégâts Med, départ lancé, carburant x2, pneus x4, 1 arrêt",
+  "GTPlanet, 22/06/2026, même format : 14 tours, arrêt obligatoire 1, changement d'heure avec risque de pluie",
+  "racinggames.gg, édition précédente : 14 tours, BMW M Hybrid V8 '25, Ferrari 499P '23, Peugeot 9X8 '25, Porsche 963 '24, Toyota GR010 '21"
+ ],
+ "tours": 14,
+ "categorie": "Gr.1",
+ "pneus_autorises": ["RM", "IM", "W"],
+ "carburant_multiplicateur": 2,
+ "usure_multiplicateur": 4,
+ "arrets_obligatoires": 1,
+ "changement_pneus_impose": false,
+ "note_pneus": "Aucune source publiée n'impose de changer de pneus ou de gomme : un arrêt obligatoire n'implique pas de pneus neufs. À confirmer sur l'écran de l'épreuve.",
+ "meteo": "Changement d'heure et risque de pluie annoncés pour le format ; GT7 ne transmet aucune donnée météo par UDP."
+}

@@ -1,0 +1,232 @@
+{
+ "format": "pitwall-vega-golden-1",
+ "note": "Scénarios Le Mans (Course Sport C, 14 tours, 1 arrêt obligatoire, aucun changement de pneus imposé). Le règlement est déclaré au moteur avant le rejeu, comme le pilote le saisit dans la carte Course. Questions rejouées sur une trace réelle du Mans ; sur une trace plus courte, les points non atteints sont NON_EVALUABLE.",
+ "profil": "DAILY_C",
+ "regles": {
+  "tours": 14,
+  "carburant_multiplicateur": 2,
+  "usure_multiplicateur": 4,
+  "arrets_obligatoires": 1
+ },
+ "scenarios": [
+  {
+   "id": "lm-arret-obligatoire",
+   "categorie": "règlement",
+   "point": "tour:2",
+   "questions": [
+    "combien d'arrêts obligatoires"
+   ],
+   "verifs": {
+    "non_vide": true,
+    "etat_inchange": true,
+    "contient_un_de": [
+     "arrêt",
+     "obligatoire"
+    ]
+   }
+  },
+  {
+   "id": "lm-pneus-non-imposes",
+   "categorie": "règlement",
+   "point": "tour:2",
+   "questions": [
+    "est-ce que je dois changer les pneus à l'arrêt"
+   ],
+   "verifs": {
+    "non_vide": true,
+    "etat_inchange": true,
+    "ne_contient_pas": [
+     "changement de pneus obligatoire",
+     "pneus obligatoires",
+     "tu dois changer les pneus",
+     "obligé de changer"
+    ]
+   }
+  },
+  {
+   "id": "lm-quand-rentrer",
+   "categorie": "stands",
+   "point": "tour:4",
+   "questions": [
+    "quand est-ce que je rentre aux stands"
+   ],
+   "verifs": {
+    "non_vide": true,
+    "etat_inchange": true,
+    "contient_un_de": [
+     "tour",
+     "arrêt",
+     "stands",
+     "rentre"
+    ]
+   }
+  },
+  {
+   "id": "lm-tours-restants",
+   "categorie": "stratégie",
+   "point": "tour:8",
+   "questions": [
+    "il reste combien de tours"
+   ],
+   "verifs": {
+    "non_vide": true,
+    "etat_inchange": true,
+    "nombre_proche": {
+     "fait": "tours_restants",
+     "tolerance": 1
+    }
+   }
+  },
+  {
+   "id": "lm-carburant-tours",
+   "categorie": "carburant",
+   "point": "tour:6",
+   "questions": [
+    "j'ai du carburant pour combien de tours"
+   ],
+   "verifs": {
+    "non_vide": true,
+    "etat_inchange": true,
+    "nombre_proche": {
+     "fait": "tours_de_carburant",
+     "tolerance": 1.5
+    }
+   }
+  },
+  {
+   "id": "lm-carburant-finir",
+   "categorie": "carburant",
+   "point": "tour:11",
+   "questions": [
+    "je finis avec ce carburant"
+   ],
+   "verifs": {
+    "non_vide": true,
+    "etat_inchange": true,
+    "contient_un_de": [
+     "tour",
+     "carburant",
+     "arrêt",
+     "finir",
+     "suffit"
+    ]
+   }
+  },
+  {
+   "id": "lm-meteo",
+   "categorie": "données absentes",
+   "point": "tour:5",
+   "questions": [
+    "est-ce qu'il va pleuvoir"
+   ],
+   "verifs": {
+    "non_vide": true,
+    "etat_inchange": true,
+    "ne_contient_pas": [
+     "radar",
+     "dans deux tours",
+     "va pleuvoir dans"
+    ],
+    "contient_un_de": [
+     "météo",
+     "pluie",
+     "transmet",
+     "pas d'information",
+     "ne sais pas"
+    ]
+   }
+  },
+  {
+   "id": "lm-usure",
+   "categorie": "données absentes",
+   "point": "tour:9",
+   "questions": [
+    "c'est quoi l'usure de mes pneus"
+   ],
+   "verifs": {
+    "non_vide": true,
+    "etat_inchange": true,
+    "ne_contient_pas": [
+     "%",
+     "pour cent"
+    ],
+    "contient_un_de": [
+     "usure",
+     "transmet",
+     "non déclarée",
+     "degrés"
+    ]
+   }
+  },
+  {
+   "id": "lm-pertes",
+   "categorie": "pilotage",
+   "point": "tour:10",
+   "questions": [
+    "où est-ce que je perds du temps"
+   ],
+   "verifs": {
+    "non_vide": true,
+    "etat_inchange": true,
+    "ne_contient_pas": [
+     "gagnable",
+     "dépassé",
+     "doublé"
+    ],
+    "max_nombre_motif": {
+     "motif": "(?:V|T)\\d+\\s*:\\s*(\\d+(?:[.,]\\d+)?)\\s*s\\b",
+     "max": 1.5,
+     "libelle": "perte annoncée dans un virage (s)"
+    }
+   }
+  },
+  {
+   "id": "lm-dernier-tour",
+   "categorie": "pilotage",
+   "point": "tour:7",
+   "questions": [
+    "c'était combien mon dernier tour"
+   ],
+   "verifs": {
+    "non_vide": true,
+    "etat_inchange": true,
+    "nombre_proche": {
+     "fait": "dernier_tour_s",
+     "tolerance": 0.15
+    }
+   }
+  },
+  {
+   "id": "lm-position",
+   "categorie": "position",
+   "point": "tour:12",
+   "questions": [
+    "quelle est ma position"
+   ],
+   "verifs": {
+    "non_vide": true,
+    "etat_inchange": true,
+    "nombre_proche": {
+     "fait": "position",
+     "tolerance": 0
+    }
+   }
+  },
+  {
+   "id": "lm-position-arrivee",
+   "categorie": "position",
+   "point": "arrivee+5000",
+   "questions": [
+    "quelle est ma position"
+   ],
+   "verifs": {
+    "non_vide": true,
+    "etat_inchange": true,
+    "nombre_proche": {
+     "fait": "position_archivee",
+     "tolerance": 0
+    }
+   }
+  }
+ ]
+}
