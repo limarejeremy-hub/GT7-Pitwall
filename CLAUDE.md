@@ -46,7 +46,9 @@ Ingénieur de course Android natif (Galaxy Fold) pour Gran Turismo 7 sur PS5 : t
 - **Context7** (MCP) : documentation à jour des bibliothèques (Android, Compose, Kotlin, coroutines, MediaCodec…).
   L'utiliser avant d'écrire du code qui dépend d'une API de bibliothèque. Requêtes : questions génériques seulement,
   jamais de code privé, de trace ni de secret.
+- **Parallel Search** (MCP) : recherche web et lecture de pages pour la veille et les docs non couvertes par Context7.
 - **GitHub** (intégration Claude Code) : PR, CI, journaux de jobs.
+- Serena : non installé (serveur de langage Kotlin non téléchargeable dans l'environnement actuel).
 - **pitwall-lab** (MCP du dépôt, `.mcp.json`) : `lab_list_traces`, `lab_inspect`, `lab_replay` sur les traces locales.
 
 ## Économie de quota

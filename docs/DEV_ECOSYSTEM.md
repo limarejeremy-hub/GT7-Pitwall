@@ -44,6 +44,7 @@
 | Connecteur | Test effectué | Résultat | Intérêt Pitwall |
 |---|---|---|---|
 | GitHub (intégration Claude Code) | lecture des PR, journaux d'un job CI échoué | opérationnel | PR, CI, issues, revue |
+| **Parallel Search** (connecté par le pilote le 23/11) | `web_search` sur l'installation de Serena → documentation officielle oraios.github.io (commande Claude Code, support Kotlin) | **opérationnel et testé** | recherche technique et veille, sans compte ni coût |
 | **Context7** (connecté par le pilote le 23/11) | `resolve-library-id` « Jetpack Compose » → `/websites/developer_android_reference_kotlin_androidx_compose` ; `query-docs` → documentation officielle de `TextMeasurer.measure` (API du tableau de bord GT3) | **opérationnel et testé** | docs à jour Android, Compose, Kotlin, coroutines |
 | Gmail, Google Calendar, Google Drive, Google Sheets | listés par `ListConnectors` (connectés) | connectés, non testés ici | Drive : dépôt de traces et journaux (privé) ; Sheets : suivi de validation PS5 |
 | Microsoft 365 | — | connexion inachevée | aucun |
@@ -60,7 +61,7 @@
 | **Google Stitch** | MCP communautaires (non officiels) ; export HTML/CSS, pas Compose | gratuit (Labs) | partiel | faible : les captures Robolectric de la CI couvrent déjà le contrôle visuel | serveurs tiers | non retenu |
 | **ElevenLabs** | oui (annuaire : gestion d'agents vocaux) | 10 000 crédits/mois (≈ 10 min), usage non commercial avec attribution | oui | faible : trop peu pour la radio, envoie le texte à un tiers | doublon du TTS local | non retenu |
 | **Voix locale Android (sherpa-onnx : Piper, Kokoro)** | pas de MCP (bibliothèque déjà dans l'app) | 0 €, hors ligne | oui (dans l'APK) | **élevé** pour une voix plus naturelle sans cloud | taille des modèles | piste V512+ (hors périmètre infra) |
-| **Serena** | oui (stdio local, `uvx`) | gratuit, open source | possible dans le conteneur cloud (PyPI autorisé) ; serveur de langage Kotlin encore jeune | moyen : navigation sémantique sur un gros dépôt | téléchargement du serveur de langage ; doublon partiel de Grep/Read | à essayer plus tard |
+| **Serena** | oui (stdio local, `uvx --from git+https://github.com/oraios/serena serena start-mcp-server --context claude-code --project-from-cwd`) ; absent de l'annuaire claude.ai | gratuit, open source | Serena s'installe dans le conteneur cloud (testé le 23/11) ; le **serveur de langage Kotlin** (officiel JetBrains, « pré-alpha ») se télécharge depuis `download.jetbrains.com`, **bloqué** par le réseau de l'environnement (403 du proxy) ; ajout de l'hôte refusé par le pilote | moyen : navigation sémantique sur un gros dépôt | doublon partiel de Grep/Read ; serveur Kotlin jeune | **non réalisable dans les conditions actuelles** (réalisable si l'hôte JetBrains est autorisé) |
 | **Maestro** | oui (`maestro mcp`, dans la CLI) | gratuit en local ; Maestro Cloud ≈ 250 $/appareil/mois | pas sur le Fold sans PC ; **possible dans GitHub Actions** (émulateur, minutes gratuites en dépôt public) | élevé pour les tests d'interface | aucun si en CI | feuille de route (CI) |
 | **Google ARTEMIS** | oui (MCP, agent Android en langage naturel) | open source, gratuit | exige un appareil ou un émulateur par ADB : pas depuis le Fold seul | moyen | litige d'attribution signalé (non vérifié) ; doublon de Maestro | non retenu (Maestro d'abord) |
 | **Firebase Crashlytics (MCP Firebase)** | oui (MCP Firebase local, outils Crashlytics) | Crashlytics gratuit | serveur local (npx) | moyen | **envoie des rapports de plantage à Google : contraire à « zéro collecte »** ; modifie l'app | refusé sans décision explicite |
@@ -165,7 +166,7 @@ consomment ton quota Claude. Elles ne seront créées qu'avec ton accord.
 | 3 | Lab `compare` et `anomalies` (non-régression sur traces réelles) | Claude | 0 € |
 | 4 | Tests d'interface Maestro sur émulateur dans GitHub Actions (dépôt public) | Claude, puis ton accord | 0 € (minutes Actions publiques) |
 | 5 | Lab `fuel-scenarios` (SIMULATION étiquetée) et `vega-golden` | Claude | 0 € |
-| 6 | Exa **ou** Parallel Search, si la recherche web intégrée ne suffit pas | toi | 0 € |
-| 7 | Essai de Serena dans une session cloud | Claude | 0 € |
+| 6 | ~~Parallel Search~~ : **connecté le 23/11, testé** (Exa inutile : doublon) | toi | 0 € |
+| 7 | Serena : bloqué tant que `download.jetbrains.com` n'est pas autorisé dans l'environnement (refusé le 23/11) | toi | 0 € |
 | 8 | Voix locale plus naturelle (sherpa-onnx Piper ou Kokoro), si tu le demandes | V512+ | 0 € |
 | — | Décisions à prendre : Crashlytics (contraire à « zéro collecte »), relais GPT-Live (payant), workflows Claude de `main` (à réparer ou supprimer) | toi | — |
