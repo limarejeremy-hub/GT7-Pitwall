@@ -21,6 +21,7 @@ Construction, sans SDK Android : `./gradlew -p lab/standalone :lab:installDist`.
 | `lab/build/install/lab/bin/lab list <dossier>` | traces disponibles | — |
 | `… inspect <trace>` | échantillons, formats, trous, pertes UDP, transitions 0x84/0x86, carburant | MESURE |
 | `… replay <trace> [série] [type]` | sessions archivées, ligne, résultat consolidé, révisions, arrêts, messages de Véga, journal (décisions, positions), compteurs | MESURE + CALCUL |
+| `… endurance <trace> [regles.json]` | course longue : tours, carburant, arrêts (plein, indice de pneus neufs), flux ; contrôle du règlement (`lab/le-mans/…`, voir `docs/LE_MANS_2026.md`) | MESURE + CALCUL + INDICE |
 | `… anomalies <trace>` | incohérences et événements suspects, avec gravité `info` ou `suspect` et contexte (tour, vitesse) | MESURE |
 | `lab/compare.sh <versionA> <versionB> <trace> [sortie]` | même trace rejouée par deux versions du moteur ; différences de résultats, alertes, messages, décisions, positions ; rapport JSON et Markdown | CALCUL |
 | `… diff <a.json> <b.json> [la] [lb] [rapport.md]` | différences entre deux rapports `replay` | CALCUL |
@@ -46,8 +47,8 @@ Les seuils sont des règles du Lab, à ajuster avec les essais.
 
 ## Serveur MCP `pitwall-lab`
 
-Il est déclaré dans `.mcp.json` et approuvé dans `.claude/settings.json`. Il expose 5 outils : `lab_list_traces`,
-`lab_inspect`, `lab_replay`, `lab_anomalies` et `lab_compare`.
+Il est déclaré dans `.mcp.json` et approuvé dans `.claude/settings.json`. Il expose 7 outils : `lab_list_traces`,
+`lab_inspect`, `lab_replay`, `lab_anomalies`, `lab_endurance`, `lab_vega` et `lab_compare`.
 
 Garde-fous :
 - une trace doit finir par `.gt7trace` ;

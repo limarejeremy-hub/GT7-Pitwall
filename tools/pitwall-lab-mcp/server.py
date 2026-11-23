@@ -6,6 +6,7 @@ Outils :
   lab_inspect      -> mesures brutes d'une trace (MESURE uniquement)
   lab_replay       -> rejeu dans le moteur Pitwall réel (archives et messages : CALCUL)
   lab_anomalies    -> incohérences de télémétrie et événements suspects (MESURE)
+  lab_endurance    -> bilan d'une course longue (tours, carburant, arrêts, flux) et contrôle du règlement (Le Mans)
   lab_vega         -> banc vega-golden : questions à Véga sur des états reconstitués (moteur déterministe)
   lab_compare      -> même trace rejouée par deux versions du moteur : différences de résultats, alertes, messages,
                       décisions et positions (lab/compare.sh, worktrees git, aucune branche modifiée)
@@ -58,12 +59,20 @@ TOOLS = [
         "inputSchema": {"type": "object", "properties": {"trace": {"type": "string"}}, "required": ["trace"]},
     },
     {
+        "name": "lab_endurance",
+        "description": "Bilan d'endurance d'une trace GT7 sans moteur : par tour chrono, carburant et consommation, position "
+                       "0x84, trous de flux ; arrêts détectés (durée, plein, indice de pneus neufs) ; tours par plein et arrêts "
+                       "carburant nécessaires (CALCUL). Avec « regles » (ex. lab/le-mans/regles-sport-c-2026-11-23.json), "
+                       "contrôle tours, arrivée et arrêt obligatoire. Météo, usure et gomme : NON_MESURABLE.",
+        "inputSchema": {"type": "object", "properties": {"trace": {"type": "string"}, "regles": {"type": "string", "description": "fichier JSON de règlement dans lab/ (facultatif)"}}, "required": ["trace"]},
+    },
+    {
         "name": "lab_vega",
         "description": "Banc vega-golden : rejoue la trace jusqu'à chaque point de scénario (tour N, après l'arrivée) et pose "
                        "les questions de lab/vega-golden/scenarios.json à la vraie conversation radio. Vérifie les nombres "
                        "contre les faits mesurés, l'absence de modification de la course, les termes attendus ou interdits. "
                        "Réponses du moteur DÉTERMINISTE : aucun modèle cloud n'est appelé ni validé.",
-        "inputSchema": {"type": "object", "properties": {"trace": {"type": "string"}}, "required": ["trace"]},
+        "inputSchema": {"type": "object", "properties": {"trace": {"type": "string"}, "scenarios": {"type": "string", "description": "fichier de scénarios dans lab/vega-golden (défaut scenarios.json ; le-mans.json pour Le Mans)"}}, "required": ["trace"]},
     },
     {
         "name": "lab_compare",
@@ -104,6 +113,16 @@ def resolve_trace(path):
     raise ValueError("trace introuvable ou extension différente de .gt7trace : %s" % os.path.basename(path))
 
 
+def resolve_lab_json(name, sub):
+    """Fichier JSON du dépôt sous lab/ uniquement (règlement, scénarios) : jamais un chemin arbitraire."""
+    lab = os.path.realpath(os.path.join(ROOT, "lab"))
+    for c in (os.path.join(lab, sub, name), os.path.join(ROOT, name)):
+        r = os.path.realpath(c)
+        if r.startswith(lab + os.sep) and r.endswith(".json") and os.path.isfile(r):
+            return r
+    raise ValueError("fichier JSON introuvable sous lab/ : %s" % os.path.basename(name))
+
+
 def run_lab(args):
     ensure_lab()
     env = dict(os.environ, JAVA_TOOL_OPTIONS=os.environ.get("JAVA_TOOL_OPTIONS", ""))
@@ -129,8 +148,13 @@ def call(name, a):
         return run_lab(args)
     if name == "lab_anomalies":
         return run_lab(["anomalies", resolve_trace(a["trace"])])
+    if name == "lab_endurance":
+        args = ["endurance", resolve_trace(a["trace"])]
+        if a.get("regles"):
+            args.append(resolve_lab_json(a["regles"], "le-mans"))
+        return run_lab(args)
     if name == "lab_vega":
-        return run_lab(["vega", resolve_trace(a["trace"]), os.path.join(ROOT, "lab", "vega-golden", "scenarios.json")])
+        return run_lab(["vega", resolve_trace(a["trace"]), resolve_lab_json(a.get("scenarios") or "scenarios.json", "vega-golden")])
     if name == "lab_compare":
         for k in ("version_a", "version_b"):
             if not re.fullmatch(r"[A-Za-z0-9._/\-]{1,120}", a.get(k, "")) or a[k].startswith("-"):

@@ -21,14 +21,16 @@ Ingénieur de course Android natif (Galaxy Fold) pour Gran Turismo 7 sur PS5 : t
   Compilé seulement par la CI (pas de SDK Android dans les sessions cloud).
 - `lab/` : Pitwall Lab (rejeu de traces, hors APK). `tools/pitwall-lab-mcp/` : serveur MCP du Lab.
 - Docs de référence : `docs/V511_AUDIT.md` (état, matrice, P0-P2), `docs/UDP_FIELDS.md`, `docs/POSITION_RADIO.md`,
-  `docs/DEV_ECOSYSTEM.md` (outils et agents).
+  `docs/DEV_ECOSYSTEM.md` (outils et agents), `docs/LE_MANS_2026.md` (Le Mans 14 tours).
 
 ## Commandes (sans SDK Android)
 - Tests du cœur et du Lab : `./gradlew -p lab/standalone :core:test :lab:test`
 - Lab : `./gradlew -p lab/standalone :lab:installDist` puis `lab/build/install/lab/bin/lab inspect|replay|anomalies|list|gabarit ...` ;
   comparaison de deux versions du moteur : `lab/compare.sh <versionA> <versionB> <trace>` (mode d'emploi : `docs/PITWALL_LAB.md`) ;
   banc de Véga : `lab vega <trace>` et `LAB_MODE=vega lab/compare.sh …` (`docs/VEGA_GOLDEN.md`, scénarios dans
-  `lab/vega-golden/scenarios.json` : ajouter un scénario à chaque défaut de radio constaté en course).
+  `lab/vega-golden/scenarios.json` : ajouter un scénario à chaque défaut de radio constaté en course) ;
+  course longue : `lab endurance <trace> lab/le-mans/regles-sport-c-2026-11-23.json` et `lab vega <trace> lab/vega-golden/le-mans.json`
+  (`docs/LE_MANS_2026.md`).
 - Traces réelles : jamais dans le dépôt (`*.gt7trace` ignoré). Dossier local via `PITWALL_TRACES`, puis
   `PITWALL_TRACES=<dossier> ./gradlew -p lab/standalone :core:test --tests '*RealTraceReplay*'`.
 - CI GitHub Actions (`.github/workflows/android.yml`) : tests, APK debug (artefact), captures d'écran Robolectric.
