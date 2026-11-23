@@ -55,8 +55,14 @@ object PitwallLab {
             args.getOrNull(3)?.let { SessionKind.valueOf(it) } ?: SessionKind.RACE,
         )
         "list" -> list(File(args.getOrNull(1) ?: error("list <dossier>")))
-        else -> error("commande inconnue : inspect | replay | list")
+        "gabarit" -> JSONObject().put("gabarit", Gabarit.write(File(args.getOrNull(1) ?: error("gabarit <dossier>"))).absolutePath)
+            .put("nature", "Trace FABRIQUÉE pour tester le Lab ; jamais une mesure.")
+        else -> error("commande inconnue : inspect | replay | list | gabarit")
     }
+
+    /** Trace fabriquée (gabarit de test) : signalée en tête de tout rapport. */
+    private fun warn(f: File, o: JSONObject): JSONObject =
+        if (Gabarit.MARK in f.name) o.put("avertissement", "Trace GABARIT fabriquée pour les tests : aucune valeur n'est une mesure réelle de GT7.") else o
 
     private fun tagged(source: String, value: Any?): JSONObject = JSONObject().put("source", source).put("valeur", value ?: JSONObject.NULL)
 
@@ -99,7 +105,7 @@ object PitwallLab {
                 }
             }
         }
-        return JSONObject()
+        return warn(f, JSONObject())
             .put("trace", f.name)
             .put("nature", "Mesures brutes lues dans les paquets GT7 ; aucun calcul du moteur.")
             .put("echantillons", tagged(MESURE, r.frames))
@@ -127,7 +133,7 @@ object PitwallLab {
         val r = TelemetryTrace.replay(f.inputStream(), clock) { p -> said += c.onPacket(p) }
         val sessions = storage.sessions().sortedBy { it.startedAtMs }
         val spoken = said.filter { it.category != MessageCategory.DRIVER }
-        return JSONObject()
+        return warn(f, JSONObject())
             .put("trace", f.name)
             .put("profil", "${series.name} ${kind.name} (choisi pour le rejeu, pas une détection)")
             .put("nature", "Archives et messages CALCULÉS par le moteur Pitwall à partir des mesures de la trace.")
