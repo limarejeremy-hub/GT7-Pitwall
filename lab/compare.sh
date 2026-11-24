@@ -35,6 +35,12 @@ run_version() {
   rm -rf "$dir/lab"
   mkdir -p "$dir/lab"
   (cd "$ROOT/lab" && tar --exclude=./build -cf - .) | (cd "$dir/lab" && tar -xf -)
+  # Commandes du Lab qui dépendent d'un module du moteur absent de cette version : retirées pour la compilation
+  # (ex. `carburant` a besoin de FuelIntelligence, V512 lot 2). Les rejeux comparés n'en dépendent pas.
+  if [ ! -f "$dir/core/src/main/kotlin/com/gt7pitwall/core/strategy/FuelIntelligence.kt" ]; then
+    rm -f "$dir/lab/src/main/kotlin/com/gt7pitwall/lab/FuelReplay.kt" "$dir/lab/src/test/kotlin/com/gt7pitwall/lab/FuelReplayTest.kt"
+    sed -i '/"carburant" -> FuelReplay.run/d' "$dir/lab/src/main/kotlin/com/gt7pitwall/lab/PitwallLab.kt"
+  fi
   (cd "$dir" && ./gradlew -q --no-daemon -p lab/standalone :lab:installDist) >&2 \
     || { echo "compilation du Lab impossible contre le moteur de $ref (version antérieure à V508 ?)" >&2; exit 3; }
   if [ "${LAB_MODE:-replay}" = vega ]; then
