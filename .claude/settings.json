@@ -1,3 +1,8 @@
 {
-  "enabledMcpjsonServers": ["pitwall-lab", "serena"]
+  "enabledMcpjsonServers": [
+    "pitwall-lab",
+    "serena",
+    "deepwiki",
+    "duckdb"
+  ]
 }

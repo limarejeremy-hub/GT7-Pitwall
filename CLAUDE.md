@@ -57,6 +57,13 @@ Ingénieur de course Android natif (Galaxy Fold) pour Gran Turismo 7 sur PS5 : t
   références (`serena_repl` : `s.lsp.find_symbol`, `s.lsp.find_referencing_symbols`, `s.lsp.get_symbols_overview`).
   Le premier démarrage d'une nouvelle session télécharge le serveur Kotlin (~40 s) puis indexe (~50 s). Préférer
   Serena à la lecture de fichiers entiers pour naviguer dans `RaceController.kt`.
+- **DeepWiki** (MCP du dépôt, `.mcp.json`, HTTP `mcp.deepwiki.com`, gratuit sans compte) : documentation générée des
+  dépôts GitHub **publics** (projets GT7 open source : télémétrie, découpage des virages, analyse de relais). Questions
+  sur ces dépôts publics seulement : jamais de code privé de Pitwall, de trace, de journal ni de secret. Vérifier la
+  licence avant de reprendre une idée de code.
+- **DuckDB** (MCP du dépôt, `.mcp.json`, `mcp-server-motherduck==1.1.1` en local, base en mémoire : rien ne
+  persiste) : SQL sur des CSV/Parquet/JSON locaux (exports du Lab, journaux). Aucun compte MotherDuck, aucun jeton, rien
+  n'est envoyé hors du conteneur.
 - **pitwall-lab** (MCP du dépôt, `.mcp.json`, approuvé dans `.claude/settings.json`) : `lab_list_traces`, `lab_inspect`,
   `lab_replay`, `lab_anomalies`, `lab_vega`, `lab_compare` (mode `replay` ou `vega`) sur les traces locales. Avant de proposer un changement du moteur, le
   comparer à la version précédente sur les traces réelles disponibles (`lab_compare`).
