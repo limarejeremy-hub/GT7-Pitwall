@@ -6,7 +6,8 @@ Ingénieur de course Android natif (Galaxy Fold) pour Gran Turismo 7 sur PS5 : t
 ## Branches (vérifier avant de partir d'une base)
 - `main` n'est PAS l'application : commit initial + workflows CI seulement.
 - L'application vit sur une pile de PR brouillons empilées (chacune a pour base la précédente). La plus récente
-  connue : `claude/v512-lot2-carburant-stands` (V512 lot 2, base `claude/v512-lot1-strategie-fin` PR #91 ; V511 = PR #86). Vérifier `git branch -r --sort=-committerdate` : une version plus
+  connue : `claude/v513-endurance-intelligence` (V513, PR #93, Lab et docs seulement), base `claude/v512-lot2-carburant-stands`
+  (V512 lot 2, PR #92, dernière version du moteur et de l'APK ; lot 1 = PR #91 ; V511 = PR #86). Vérifier `git branch -r --sort=-committerdate` : une version plus
   récente peut exister.
 - PR #64 (veille automatique #63) est hors pile.
 - Toujours travailler sur une nouvelle branche `claude/<sujet>` partant de la dernière version, PR en brouillon,
@@ -44,6 +45,11 @@ Ingénieur de course Android natif (Galaxy Fold) pour Gran Turismo 7 sur PS5 : t
   données, pas de backend imposé, pas de service payant ni de facturation automatique.
 - Traces et journaux du pilote : privés, jamais publiés ni commités.
 - Ne pas copier de code sous licence incompatible (vérifier la licence des projets GT7 open source).
+- **Nenkai/PDTools est exclu de toute recherche, analyse ou génération assistée par IA** (demande de son auteur,
+  `AGENTS.md` du dépôt : lecture, indexation, analyse et génération interdites aux IA). Ne pas le lire, l'interroger
+  (DeepWiki, Parallel, Playwright, Context7, GitHub) ni s'en inspirer pour un nouveau travail. Sources de remplacement :
+  MacManley/gt7-udp et zetetos/gt-telemetry (MIT). Les citations historiques et leur attribution restent en place :
+  ne pas les supprimer ni modifier du code pour effacer sa provenance (revue : `docs/PROVENANCE.md`).
 - Réponses au pilote en français, claires, avec résultats de tests et liens d'APK.
 - Commits : trailers d'attribution de la session ; PR : brouillon, rapport en français.
 
@@ -67,6 +73,22 @@ Ingénieur de course Android natif (Galaxy Fold) pour Gran Turismo 7 sur PS5 : t
 - **pitwall-lab** (MCP du dépôt, `.mcp.json`, approuvé dans `.claude/settings.json`) : `lab_list_traces`, `lab_inspect`,
   `lab_replay`, `lab_anomalies`, `lab_vega`, `lab_compare` (mode `replay` ou `vega`) sur les traces locales. Avant de proposer un changement du moteur, le
   comparer à la version précédente sur les traces réelles disponibles (`lab_compare`).
+
+## Connecteurs et agents : règle de chaque mission (demande du pilote, 24/11)
+1. Au début : inventorier les connecteurs MCP, outils et sous-agents **chargés dans la session** et vérifier lesquels
+   répondent vraiment (un serveur déclaré dans `.mcp.json` n'est chargé qu'au démarrage d'une session).
+2. Utiliser chaque connecteur pertinent pour une contribution concrète ; croiser les sources quand c'est possible.
+3. Un connecteur non pertinent, indisponible ou limité par son quota : le dire, avec la raison. **Aucune utilisation
+   fictive.** Un serveur non chargé peut être utilisé par son accès direct (HTTP public, ligne de commande locale) en le
+   signalant comme tel.
+4. Chercher d'autres outils spécialisés seulement si leur valeur ajoutée est démontrable ; gratuit uniquement.
+5. Répartition : GitHub (code, PR, CI), Serena (symboles Kotlin), Context7 (API), Parallel Search et Playwright (web,
+   sources GT7), Pitwall Lab (traces, statistiques), Hugging Face (modèles, voix), DeepWiki (projets publics), DuckDB
+   (SQL local), Google Drive (traces et documents privés, seulement si nécessaire), Maestro (tests Android si un
+   émulateur existe), sous-agents (`.claude/agents/`).
+6. **Compte rendu de fin de mission obligatoire** : tableau par connecteur — disponible, utilisé, action exécutée,
+   résultat concret, limitation.
+7. Jamais de trace privée envoyée à un service tiers non autorisé ; aucune dépense ; aucune fusion automatique.
 
 ## Économie de quota
 - Lire ce fichier et le doc de référence du domaine AVANT de réexplorer le dépôt.
