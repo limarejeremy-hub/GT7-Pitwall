@@ -61,6 +61,7 @@ object PitwallLab {
         )
         "list" -> list(File(args.getOrNull(1) ?: error("list <dossier>")))
         "anomalies" -> Anomalies.scan(File(args.getOrNull(1) ?: error("anomalies <trace>")))
+        "carburant" -> FuelReplay.run(File(args.getOrNull(1) ?: error("carburant <journal.json>")))
         "endurance" -> Endurance.run(
             File(args.getOrNull(1) ?: error("endurance <trace> [regles.json]")),
             args.getOrNull(2)?.takeIf { it.isNotBlank() }?.let(::File),
@@ -82,7 +83,7 @@ object PitwallLab {
         "gabarit" -> JSONObject().put("gabarit", Gabarit.write(File(args.getOrNull(1) ?: error("gabarit <dossier>"))).absolutePath)
             .put("gabarit_endurance", Gabarit.writeEndurance(File(args[1])).absolutePath)
             .put("nature", "Trace FABRIQUÉE pour tester le Lab ; jamais une mesure.")
-        else -> error("commande inconnue : inspect | replay | anomalies | endurance | diff | vega | vega-diff | list | gabarit")
+        else -> error("commande inconnue : inspect | replay | anomalies | endurance | carburant | diff | vega | vega-diff | list | gabarit")
     }
 
     /** Trace fabriquée (gabarit de test) : signalée en tête de tout rapport. */

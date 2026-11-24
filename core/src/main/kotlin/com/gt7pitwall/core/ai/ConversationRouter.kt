@@ -107,7 +107,7 @@ object ConversationRouter {
         return Turn(question, topic, complex, query = query, followUp = inConversation)
     }
 
-    private val STATUS_ASKS = setOf(StrategyDialogue.Ask.TyreStatus, StrategyDialogue.Ask.TyreLife, StrategyDialogue.Ask.FuelToFinish)
+    private val STATUS_ASKS = setOf(StrategyDialogue.Ask.TyreStatus, StrategyDialogue.Ask.TyreLife, StrategyDialogue.Ask.FuelToFinish, StrategyDialogue.Ask.FuelSave)
 
     /** « Comment sont les pneus ? », « combien d'essence ? » : une mesure, pas une discussion. */
     private val STATUS = Regex("^(radio )?(comment (sont|vont|va)|ca va|est ce que (mes|les|j'ai)|il me reste|combien)")
@@ -129,7 +129,7 @@ object ConversationRouter {
 
     fun topicOf(ask: StrategyDialogue.Ask): Topic = when (ask) {
         StrategyDialogue.Ask.TyreStatus, StrategyDialogue.Ask.TyreLife, StrategyDialogue.Ask.TyreChange, is StrategyDialogue.Ask.GripQuestion -> Topic.TYRES
-        StrategyDialogue.Ask.FuelToFinish -> Topic.FUEL
+        StrategyDialogue.Ask.FuelToFinish, StrategyDialogue.Ask.FuelSave -> Topic.FUEL
         StrategyDialogue.Ask.CompareStints -> Topic.PACE
         StrategyDialogue.Ask.Recall -> Topic.MEMORY
         else -> Topic.PLAN

@@ -6,7 +6,7 @@ Ingénieur de course Android natif (Galaxy Fold) pour Gran Turismo 7 sur PS5 : t
 ## Branches (vérifier avant de partir d'une base)
 - `main` n'est PAS l'application : commit initial + workflows CI seulement.
 - L'application vit sur une pile de PR brouillons empilées (chacune a pour base la précédente). La plus récente
-  connue : `claude/v512-lot1-strategie-fin` (V512 lot 1, base `claude/le-mans-lab` PR #90 ; V511 = PR #86). Vérifier `git branch -r --sort=-committerdate` : une version plus
+  connue : `claude/v512-lot2-carburant-stands` (V512 lot 2, base `claude/v512-lot1-strategie-fin` PR #91 ; V511 = PR #86). Vérifier `git branch -r --sort=-committerdate` : une version plus
   récente peut exister.
 - PR #64 (veille automatique #63) est hors pile.
 - Toujours travailler sur une nouvelle branche `claude/<sujet>` partant de la dernière version, PR en brouillon,
@@ -21,7 +21,7 @@ Ingénieur de course Android natif (Galaxy Fold) pour Gran Turismo 7 sur PS5 : t
   Compilé seulement par la CI (pas de SDK Android dans les sessions cloud).
 - `lab/` : Pitwall Lab (rejeu de traces, hors APK). `tools/pitwall-lab-mcp/` : serveur MCP du Lab.
 - Docs de référence : `docs/V511_AUDIT.md` (état, matrice, P0-P2), `docs/UDP_FIELDS.md`, `docs/POSITION_RADIO.md`,
-  `docs/DEV_ECOSYSTEM.md` (outils et agents), `docs/LE_MANS_2026.md` (Le Mans 14 tours), `docs/V512_LE_MANS.md` (analyse de la course du 23/11, lots V512).
+  `docs/DEV_ECOSYSTEM.md` (outils et agents), `docs/LE_MANS_2026.md` (Le Mans 14 tours), `docs/V512_LE_MANS.md` (analyse de la course du 23/11, lots V512), `docs/V512_LOT2.md` (carburant, stands, radio, pneus).
 
 ## Commandes (sans SDK Android)
 - Tests du cœur et du Lab : `./gradlew -p lab/standalone :core:test :lab:test`
@@ -30,7 +30,7 @@ Ingénieur de course Android natif (Galaxy Fold) pour Gran Turismo 7 sur PS5 : t
   banc de Véga : `lab vega <trace>` et `LAB_MODE=vega lab/compare.sh …` (`docs/VEGA_GOLDEN.md`, scénarios dans
   `lab/vega-golden/scenarios.json` : ajouter un scénario à chaque défaut de radio constaté en course) ;
   course longue : `lab endurance <trace> lab/le-mans/regles-sport-c-2026-11-23.json` et `lab vega <trace> lab/vega-golden/le-mans.json`
-  (`docs/LE_MANS_2026.md`).
+  (`docs/LE_MANS_2026.md`) ; décision carburant sur un journal exporté : `lab carburant <journal.json>` (`docs/V512_LOT2.md`).
 - Traces réelles : jamais dans le dépôt (`*.gt7trace` ignoré). Dossier local via `PITWALL_TRACES`, puis
   `PITWALL_TRACES=<dossier> ./gradlew -p lab/standalone :core:test --tests '*RealTraceReplay*'`.
 - CI GitHub Actions (`.github/workflows/android.yml`) : tests, APK debug (artefact), captures d'écran Robolectric.
@@ -57,6 +57,13 @@ Ingénieur de course Android natif (Galaxy Fold) pour Gran Turismo 7 sur PS5 : t
   références (`serena_repl` : `s.lsp.find_symbol`, `s.lsp.find_referencing_symbols`, `s.lsp.get_symbols_overview`).
   Le premier démarrage d'une nouvelle session télécharge le serveur Kotlin (~40 s) puis indexe (~50 s). Préférer
   Serena à la lecture de fichiers entiers pour naviguer dans `RaceController.kt`.
+- **DeepWiki** (MCP du dépôt, `.mcp.json`, HTTP `mcp.deepwiki.com`, gratuit sans compte) : documentation générée des
+  dépôts GitHub **publics** (projets GT7 open source : télémétrie, découpage des virages, analyse de relais). Questions
+  sur ces dépôts publics seulement : jamais de code privé de Pitwall, de trace, de journal ni de secret. Vérifier la
+  licence avant de reprendre une idée de code.
+- **DuckDB** (MCP du dépôt, `.mcp.json`, `mcp-server-motherduck==1.1.1` en local, base en mémoire : rien ne
+  persiste) : SQL sur des CSV/Parquet/JSON locaux (exports du Lab, journaux). Aucun compte MotherDuck, aucun jeton, rien
+  n'est envoyé hors du conteneur.
 - **pitwall-lab** (MCP du dépôt, `.mcp.json`, approuvé dans `.claude/settings.json`) : `lab_list_traces`, `lab_inspect`,
   `lab_replay`, `lab_anomalies`, `lab_vega`, `lab_compare` (mode `replay` ou `vega`) sur les traces locales. Avant de proposer un changement du moteur, le
   comparer à la version précédente sur les traces réelles disponibles (`lab_compare`).

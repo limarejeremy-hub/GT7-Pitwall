@@ -131,6 +131,8 @@ data class SessionRecord(
     val lastRacePosition: Int? = null,
     val lastRaceCars: Int? = null,
     val lastRaceLap: Int? = null,
+    /** Fraction de tour où la voiture s'est immobilisée pour ravitailler (MESURE), par arrêt. */
+    val pitBoxProgress: List<Float> = emptyList(),
 ) {
     val completedLaps: Int get() = laps.size
 

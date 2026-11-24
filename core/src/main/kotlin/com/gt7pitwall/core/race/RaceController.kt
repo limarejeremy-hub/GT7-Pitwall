@@ -46,6 +46,7 @@ import com.gt7pitwall.core.sport.SessionMatcher
 import com.gt7pitwall.core.sport.SportAnnouncement
 import com.gt7pitwall.core.sport.SportAutofill
 import com.gt7pitwall.core.strategy.DataSource
+import com.gt7pitwall.core.strategy.FuelIntelligence
 import com.gt7pitwall.core.strategy.FuelReport
 import com.gt7pitwall.core.strategy.FuelStrategy
 import com.gt7pitwall.core.strategy.FuelUnits
@@ -609,6 +610,7 @@ class RaceController(
         if (sessionId != null && !sessionFinished) applyHandoff(p, out)
         if (sessionId != null && !sessionFinished) sportCandidateWithoutLaps(p, out)
         if (sessionId != null && !sessionFinished && !replay) noteRaceState(p, out)
+        tracker.liveLapProgress()?.let { lastLapProgress = it }
         lastTotalLaps = p.totalLaps
         lastSessionPacketMs = packetMs
         if (p.carCode > 0) lastCarCode = p.carCode
@@ -643,36 +645,79 @@ class RaceController(
         out += briefingNow
         out += startTyreAdviceIfDue(p, deferred = briefingNow.isNotEmpty())
         out += localRulesQuestionIfDue(p)
-        out += finalSectorPitCall(p)
+        // Un seul appel par paquet : busy() avance l'horloge des paquets et garde le paquet précédent (V512 lot 2 : il
+        // était appelé deux fois, ce qui doublait cette horloge et neutralisait la détection de décélération).
+        val busy = pacer.busy(p)
+        out += finalSectorPitCall(p, busy)
         updateMood(events, positionChanges, p)
         if (events.any { it is SessionEvent.LapCompleted || it is SessionEvent.RaceFinished || it is SessionEvent.PitVisitEnded }) saveSession()
         // Messages non urgents différés pendant un gros freinage ou un virage (au plus quelques secondes).
         if (events.any { it is SessionEvent.SessionReset }) pacer.clear()
-        val busy = pacer.busy(p)
         return deliver(pacer.pace(out, busy, pacer.packetClockMs, p.currentLap))
     }
 
 
+    /**
+     * Fenêtre du rappel « Box à la fin de ce tour », en fraction de tour (distance). Par défaut 0,70–0,90. Quand la
+     * position de la zone d'arrêt est VALIDÉE (au moins deux arrêts mesurés sur ce circuit à moins de 2 % l'un de
+     * l'autre), la fenêtre se termine 8 % de tour avant elle (entrée de la voie supposée plus tôt : marge, ESTIMATION).
+     */
+    private fun pitCallWindow(): Pair<Float, Float> {
+        val box = validatedPitBox() ?: return DEFAULT_PIT_WINDOW
+        val end = (box - PIT_BOX_MARGIN).coerceIn(0.50f, 0.92f)
+        return (end - 0.18f).coerceAtLeast(0.40f) to end
+    }
+
+    /** Fraction de tour où la voiture s'est immobilisée au stand (MESURE de la position de CETTE voiture), par arrêt. */
+    private val pitBoxThisRace = mutableListOf<Float>()
+    /** Dernière fraction de tour connue (le suivi s'arrête pendant un passage au stand) et celle de l'arrêt en cours. */
+    private var lastLapProgress: Float? = null
+    private var pendingPitBox: Float? = null
+
+    private fun pitBoxSamples(): List<Float> {
+        val track = course?.id ?: rules.trackId
+        val archived = if (track == null) emptyList() else sessions.values
+            .filter { it.id != sessionId && it.context.rules.trackId == track }
+            .flatMap { it.pitBoxProgress }
+        return archived + pitBoxThisRace
+    }
+
+    private fun validatedPitBox(): Float? {
+        val s = pitBoxSamples().sorted()
+        if (s.size < 2) return null
+        val med = s[s.size / 2]
+        return med.takeIf { s.count { kotlin.math.abs(it - med) <= 0.02f } >= 2 }
+    }
+
+    private fun pitBoxSource(): String = validatedPitBox()?.let { "zone d'arrêt validée à %.2f".format(java.util.Locale.ROOT, it) }
+        ?: "fenêtre par défaut (zone d'arrêt non validée : ${pitBoxSamples().size} mesure(s))"
+
     /** A second, one-shot call in Pitwall's last equal-distance sector. */
-    private fun finalSectorPitCall(p: TelemetryPacket): List<EngineerMessage> {
+    private fun finalSectorPitCall(p: TelemetryPacket, busy: Boolean): List<EngineerMessage> {
         if (!raceMode || sessionFinished || p.isPaused || p.isLoading || p.speedKmh < 20f) return emptyList()
-        // Wait for a calmer point in the last sector; never call "Box" at a heavy braking point.
-        if (pacer.busy(p)) return emptyList()
         val end = p.totalLaps.takeIf { it > 0 } ?: return emptyList()
         // Manual, *confirmed* "I pit this lap" is independent of a potentially
         // misidentified weekly profile. Automated calls require a matching event.
         val voluntary = driverRequestedPitLap == p.currentLap
+        // V512 lot 2 (Le Mans 23/11, deux courses) : sans programme de la semaine, `edition` est nul et le rappel du
+        // dernier secteur était abandonné en silence. Une fiche contredite par GT7 bloque toujours le rappel ; une fiche
+        // absente non : le plan suit déjà les tours de GT7.
         val reference = if (voluntary) null
-            else if (profile.id.sport) edition?.laps?.value ?: return emptyList()
+            else if (profile.id.sport) edition?.laps?.value
             else null
+        val progress = tracker.liveLapProgress()
+        val window = pitCallWindow()
+        // Attendre un moment calme (jamais « Box » au freinage), mais pas au point de perdre le rappel : en fin de fenêtre,
+        // il part même si le pilote est occupé.
+        if (busy && (progress == null || progress < window.second - FORCE_CALL_BEFORE_END)) return emptyList()
         val planned = if (voluntary) com.gt7pitwall.core.strategy.PlannedStop(
             endOfLap = p.currentLap, fuel = null, forFuel = false, mandatory = false,
         ) else plan?.nextStop(p.currentLap)
-        val progress = tracker.liveLapProgress()
         val stop = pitApproachReminder.onProgress(
             lap = p.currentLap, totalLaps = end, referenceLaps = reference,
             progress = progress, plannedStop = planned,
             pitVisitOpen = tracker.pitVisitOpen,
+            window = window,
         ) ?: return emptyList()
         // Course du 27/10 : « Dernier secteur. Box à la fin de ce tour. Sans ravitaillement. » était trop long. Le pilote
         // veut l'ordre seul ; une précision seulement si elle change ce qu'il fait au stand (gomme à monter, pneus).
@@ -688,6 +733,10 @@ class RaceController(
             "Rappel de stand dernier secteur Pitwall : ${stop.endOfLap}",
             lap = p.currentLap, details = mapOf(
                 "fraction_piste" to "%.2f".format(java.util.Locale.ROOT, progress ?: 0f),
+                "fenetre" to "%.2f-%.2f (%s)".format(java.util.Locale.ROOT, window.first, window.second, pitBoxSource()),
+                "pilote_occupe" to if (busy) "oui (fin de fenêtre : rappel donné quand même)" else "non",
+                "fiche_sport" to if (profile.id.sport && edition == null) "absente : tours GT7" else "conforme ou hors Sport",
+                "etape" to "calculé",
                 "preuve" to "tour complet précédent et arrêt du plan",
                 "reglement" to (regulationDoubt()?.let { "à confirmer : $it" } ?: "confirmé ou sans obligation"),
             ),
@@ -1400,7 +1449,10 @@ class RaceController(
                 milestone(Milestone.QUALIFYING_SUSPECTED, "télémétrie", "supposée", "GT7 n'annonce aucun nombre de tours")
         }
         val open = tracker.pitVisitOpen
-        if (open && !pitOpenBefore) milestone(Milestone.PIT_VISIT_STARTED, "télémétrie", "mesurée", "tour ${p.currentLap}", unique = false)
+        if (open && !pitOpenBefore) {
+            milestone(Milestone.PIT_VISIT_STARTED, "télémétrie", "mesurée", "tour ${p.currentLap}", unique = false)
+            pendingPitBox = lastLapProgress
+        }
         pitOpenBefore = open
         events.filterIsInstance<SessionEvent.PitVisitEnded>().forEach {
             milestone(Milestone.PIT_VISIT_ENDED, "télémétrie", "mesurée", "tour ${it.visit.lap}", unique = false)
@@ -1480,6 +1532,57 @@ class RaceController(
      */
     var staleSportSheet = false
         private set
+
+    /** V512 lot 2 : plein réel comparé au plein recommandé, consommé au prochain recalcul du plan. */
+    private data class RefuelCheck(val lap: Int, val recommended: Int, val added: Float)
+    private var refuelCheck: RefuelCheck? = null
+
+    /** Dernière décision carburant (économie ou arrêt) quand l'essence ne suffit pas avec la marge. */
+    var fuelDecision: com.gt7pitwall.core.strategy.FuelIntelligence.Result? = null
+        private set
+    private var fuelFeedbackLap = 0
+
+    /** Ravitaillements mesurés de cette course (MESURE) : base du coût d'un arrêt court. */
+    private data class RefuelSample(val lap: Int, val added: Float, val stoppedS: Float)
+    private val refuelSamples = mutableListOf<RefuelSample>()
+    private var fuelCostFromThisRace = false
+
+    /** Coût d'un arrêt carburant (ms) et sa source. */
+    private data class SplashCost(val ms: Double, val source: String, val fromThisRace: Boolean)
+
+    /**
+     * Arrêt court (ravitaillement de [amount] seulement) estimé d'après un arrêt de CETTE course : perte mesurée
+     * (tour d'entrée + tour de sortie − 2 × tour propre médian) moins le remplissage évité (au débit mesuré de cet
+     * arrêt). Le Mans 23/11 : perte ≈ 33 s pour 37,4 % en 35 s immobile ; un appoint de 6 % ≈ 4 s (ESTIMATION).
+     * Sinon : arrêt carburant entier appris sur les courses comparables (surestime un appoint).
+     */
+    private fun splashCost(amount: Float, model: HistoryModel): SplashCost? {
+        val laps = snapshot.laps
+        val stopLaps = refuelSamples.map { it.lap }.toSet()
+        val clean = laps.filter { it.lapNumber > 1 && !it.refuelled && !it.pitLane && it.lapNumber !in stopLaps &&
+            (it.lapNumber - 1) !in stopLaps && (it.timeMs ?: 0) > 0 }.mapNotNull { it.timeMs }.sorted()
+        val typical = clean.getOrNull(clean.size / 2)
+        val own = refuelSamples.lastOrNull { s -> s.stoppedS >= 3f && s.added > 1f }?.let { s ->
+            val inLap = laps.firstOrNull { it.lapNumber == s.lap }?.timeMs ?: return@let null
+            val outLap = laps.firstOrNull { it.lapNumber == s.lap + 1 }?.timeMs ?: return@let null
+            if (typical == null || clean.size < 3) return@let null
+            val loss = inLap + outLap - 2.0 * typical
+            // Perte plus courte que l'immobilisation : mesure incohérente (Le Mans 23/11 : 29 s pour 35 s immobile), jamais
+            // utilisée pour chiffrer un arrêt court.
+            if (loss < s.stoppedS * 1000.0) return@let null
+            val rate = s.added / s.stoppedS
+            val avoided = ((s.added - amount).coerceAtLeast(0f) / rate) * 1000.0
+            SplashCost(
+                (loss - avoided).coerceAtLeast(MIN_SPLASH_MS),
+                "d'après ton arrêt du tour ${s.lap} : perte ${"%.0f".format(loss / 1000)} s, " +
+                    "${"%.1f".format(java.util.Locale.FRANCE, s.added)} en ${"%.0f".format(s.stoppedS)} s",
+                fromThisRace = true,
+            )
+        }
+        if (own != null) return own
+        return stopCosts(model, course?.pitLaneDeltaS?.let { it * 1000.0 })?.cost(StopKind.FUEL_ONLY)
+            ?.let { SplashCost(it.ms, "arrêt carburant entier, ${it.source}", fromThisRace = false) }
+    }
     private var lastCarCode = 0
     /** Heure du dernier paquet traité (celui de la session qui se termine, quand la suivante commence). */
     private var lastSessionPacketMs = 0L
@@ -1799,6 +1902,15 @@ class RaceController(
         lastRaceState = null
         sessionGameLaps = null
         staleSportSheet = false
+        refuelCheck = null
+        fuelDecision = null
+        fuelFeedbackLap = 0
+        refuelSamples.clear()
+        fuelCostFromThisRace = false
+        pitBoxThisRace.clear()
+        pendingPitBox = null
+        lastLapProgress = null
+        engineer.fuelSaveActive = false
         forgetStaleStartTyre()
         driverDeclaredDuringPitNumber = null
         gridPosition = null
@@ -1929,6 +2041,7 @@ class RaceController(
             lastRacePosition = lastRaceState?.position,
             lastRaceCars = lastRaceState?.cars,
             lastRaceLap = lastRaceState?.lap,
+            pitBoxProgress = pitBoxThisRace.toList(),
         )
     }
 
@@ -2077,6 +2190,7 @@ class RaceController(
             lastRacePosition = lastRaceState?.position,
             lastRaceCars = lastRaceState?.cars,
             lastRaceLap = lastRaceState?.lap,
+            pitBoxProgress = pitBoxThisRace.toList(),
         )
         if (r != null) {
             sessions[r.id] = r
@@ -2693,6 +2807,15 @@ class RaceController(
         } else {
             switchKey = null
         }
+        val fuelOut = mutableListOf<EngineerMessage>()
+        if (next != null) next = applyFuelIntelligence(next, currentLapRemaining, model, p, fuelOut)
+        refuelCheck?.let { rc ->
+            // Plein insuffisant suivi d'un arrêt de plus : la vraie cause est dite (avant : « Un arrêt devient nécessaire »).
+            if (reason == null && next != null && next.stops.any { it.endOfLap >= p.currentLap && it.forFuel }) {
+                reason = refuelShortfallText(rc, p.fuelCapacity) + (fuelDecision?.let { com.gt7pitwall.core.strategy.FuelIntelligence.sentence(it) }?.let { " $it" } ?: "")
+            }
+        }
+        refuelCheck = null
         if (reason == null && previous != null && next != null) reason = planChangeReason(previous, next, p.currentLap, p.fuelLevel, currentLapRemaining)
         plan = next
         strategy = report
@@ -2719,7 +2842,94 @@ class RaceController(
             while (planLog.size > MAX_PLANS) planLog.removeAt(0)
         }
         engineer.obligationCaveat = obligationCaveat().trim().takeIf { it.isNotEmpty() }
-        return engineer.onPlan(plan, p.currentLap)
+        return engineer.onPlan(plan, p.currentLap) + fuelOut
+    }
+
+    private fun refuelShortfallText(rc: RefuelCheck, cap: Float): String {
+        fun pct(x: Float) = String.format(java.util.Locale.FRANCE, "%.0f", if (cap > 0f) x / cap * 100f else x)
+        return "Plein insuffisant : ${pct(rc.added)} % ajoutés pour ${pct(rc.recommended.toFloat())} % prévus."
+    }
+
+    /**
+     * V512 lot 2 (Le Mans 23/11, 14 h) : quand le seul arrêt encore prévu ne sert qu'au carburant, comparer l'économie
+     * jusqu'à l'arrivée et l'arrêt de plus ([com.gt7pitwall.core.strategy.FuelIntelligence]). Économie retenue : l'arrêt
+     * sort du plan et la consommation cible est annoncée ; la décision est revue à chaque recalcul, et l'arrêt revient dès
+     * que l'économie n'est plus réaliste. Rien n'est changé pour un arrêt obligatoire ou des pneus.
+     */
+    private fun applyFuelIntelligence(
+        next: RacePlan, lapRemaining: Float, model: HistoryModel, p: TelemetryPacket, out: MutableList<EngineerMessage>,
+    ): RacePlan {
+        val fi = FuelIntelligence
+        val perLap = next.perLap
+        val upcoming = next.stops.filter { it.endOfLap >= p.currentLap }
+        val fuelOnly = upcoming.filter { it.forFuel && !it.mandatory && !it.changeTyres && it.tyreToFit == null && !it.forTyres }
+        val lapsAfter = next.totalLaps - p.currentLap
+        val lastLapShort = upcoming.isEmpty() && lapsAfter == 0 && perLap != null && p.fuelLevel < lapRemaining * perLap
+        val eligible = perLap != null && next.fuelSource == DataSource.MEASURED && p.fuelCapacity > 0f &&
+            ((upcoming.size == 1 && fuelOnly.size == 1) || lastLapShort)
+        if (!eligible) {
+            if (fuelDecision != null) journal.record(JournalType.STRATEGY, JournalSource.ENGINE, "Décision carburant levée",
+                decision = "plus de déficit à arbitrer", lap = p.currentLap)
+            fuelDecision = null
+            engineer.fuelSaveActive = false
+            return next
+        }
+        val toGo = lapsAfter + lapRemaining
+        val deficitGuess = ((toGo + RacePlanner.SAFETY_LAPS) * perLap!! - p.fuelLevel).coerceAtLeast(0f)
+        // Appoint avec une petite réserve : le déficit plus un demi-tour.
+        val pitLoss = splashCost(deficitGuess + perLap * 0.5f, model)
+        var r = FuelIntelligence.decide(FuelIntelligence.Input(
+            fuelNow = p.fuelLevel, perLap = perLap, lapsToGo = toGo, stopPossible = lapsAfter >= 1,
+            pitLossMs = pitLoss?.ms, tank = p.fuelCapacity,
+        ))
+        val before = fuelDecision
+        // Pas de va-et-vient : une économie engagée reste tant qu'elle est réaliste et que le coût de l'arrêt n'a pas été
+        // remesuré (une nouvelle MESURE de cette course peut, elle, changer la décision une fois).
+        val costRemeasured = pitLoss?.fromThisRace == true && !fuelCostFromThisRace
+        if (before?.kind == FuelIntelligence.Kind.SAVE && r.kind == FuelIntelligence.Kind.STOP && r.savingFraction <= fi.MAX_SAVING_FRACTION && !costRemeasured) r = r.copy(kind = FuelIntelligence.Kind.SAVE)
+        fuelCostFromThisRace = pitLoss?.fromThisRace == true
+        fuelDecision = r
+        val saving = r.kind == FuelIntelligence.Kind.SAVE || r.kind == FuelIntelligence.Kind.SAVE_NO_STOP_LEFT || r.kind == FuelIntelligence.Kind.CRITICAL
+        engineer.fuelSaveActive = saving
+        if (before?.kind != r.kind) {
+            journal.record(
+                JournalType.STRATEGY, JournalSource.ENGINE, "Décision carburant : ${r.kind.name}",
+                decision = fi.sentence(r) ?: "rien ne manque",
+                details = listOfNotNull(
+                    "deficit_avec_marge" to "%.2f".format(java.util.Locale.ROOT, r.deficit),
+                    "deficit_sans_marge" to "%.2f".format(java.util.Locale.ROOT, r.deficitNoMargin),
+                    r.targetPerLap?.let { "cible_par_tour" to "%.2f (CALCUL)".format(java.util.Locale.ROOT, it) },
+                    "economie" to "%.1f %% (CALCUL)".format(java.util.Locale.ROOT, r.savingFraction * 100),
+                    "cout_economie" to (r.liftLossMs?.let { "%.1f s (ESTIMATION, %.1f s par unité)".format(java.util.Locale.ROOT, it / 1000, fi.LIFT_COST_MS_PER_UNIT / 1000) } ?: "—"),
+                    "cout_arret" to (pitLoss?.let { "%.1f s (ESTIMATION, %s)".format(java.util.Locale.ROOT, it.ms / 1000, it.source) } ?: "inconnu"),
+                    "consommation" to "%.2f (MESURE)".format(java.util.Locale.ROOT, perLap),
+                ).toMap(),
+                lap = p.currentLap,
+            )
+            // Arrêt retenu : la phrase passe par l'annonce du plan (raison) ; économie : annoncée ici.
+            if (saving) fi.sentence(r)?.let { s ->
+                val lead = refuelCheck?.let { refuelShortfallText(it, p.fuelCapacity) + " " } ?: ""
+                out += EngineerMessage(lead + s, if (r.kind == FuelIntelligence.Kind.CRITICAL) Priority.CRITICAL else Priority.HIGH, MessageCategory.FUEL,
+                    dedupKey = "fuel-decision:${r.kind}:${p.currentLap}", topic = "fuel-decision")
+                refuelCheck = null
+            }
+        } else if (saving && r.kind != FuelIntelligence.Kind.CRITICAL) {
+            // Suivi tour par tour : consommation réelle du tour bouclé contre la cible.
+            val last = snapshot.laps.lastOrNull()
+            if (last != null && last.lapNumber > fuelFeedbackLap && last.lapNumber >= p.currentLap - 1) {
+                fuelFeedbackLap = last.lapNumber
+                val used = last.fuelUsed
+                if (used != null && !last.refuelled && r.targetPerLap != null) {
+                    fun pc(x: Float) = String.format(java.util.Locale.FRANCE, "%.1f", r.pct(x))
+                    out += EngineerMessage(
+                        "Économie : ${pc(used)} % ce tour, cible ${pc(r.targetPerLap)} %." +
+                            if (r.deficit > 0f) " Il manque encore ${pc(r.deficit)} % avec la marge." else "",
+                        Priority.NORMAL, MessageCategory.FUEL, dedupKey = "fuel-save-lap:${last.lapNumber}", topic = "fuel-decision",
+                    )
+                }
+            }
+        }
+        return if (r.kind == FuelIntelligence.Kind.SAVE) next.copy(stops = next.stops - fuelOnly.toSet()) else next
     }
 
     /**
@@ -3027,6 +3237,7 @@ class RaceController(
                 StrategyDialogue.Ask.Early -> answerEarly()
                 StrategyDialogue.Ask.OthersPitting -> answerOthersPitting()
                 StrategyDialogue.Ask.FuelToFinish -> answerFuelToFinish()
+                StrategyDialogue.Ask.FuelSave -> answerFuelSave()
                 StrategyDialogue.Ask.WhatChanged -> answerWhatChanged()
                 StrategyDialogue.Ask.FollowUp -> answerFollowUp()
                 is StrategyDialogue.Ask.Observe -> answerObservation(ask, question, extra)
@@ -3050,7 +3261,7 @@ class RaceController(
             "un arrêt ne vaut que s'il fait gagner plus de temps qu'il n'en coûte ; je n'ai pas de course en cours pour le chiffrer."
         StrategyDialogue.Ask.Early -> "avancer un arrêt ne vaut que si le rythme chute nettement ou si le règlement l'impose."
         StrategyDialogue.Ask.OthersPitting -> "on suit notre propre plan tant que notre autonomie le permet ; je n'ai de données ni sur eux ni sur nous."
-        StrategyDialogue.Ask.FuelToFinish -> "je ne connais pas ton carburant tant que GT7 ne m'envoie rien."
+        StrategyDialogue.Ask.FuelToFinish, StrategyDialogue.Ask.FuelSave -> "je ne connais pas ton carburant tant que GT7 ne m'envoie rien."
         StrategyDialogue.Ask.WhatChanged -> "pas de course en cours, donc aucun plan à comparer."
         else -> "je n'ai pas de données de course."
     }
@@ -3357,7 +3568,26 @@ class RaceController(
         val brief = strategyBrief ?: return engineer.answer(com.gt7pitwall.core.radio.DriverQuery.FUEL, snapshot, fuel).text
         val next = plan?.nextStop((snapshot.packet?.currentLap ?: 1).coerceAtLeast(1))
         val stop = next?.takeIf { it.forFuel }?.fuel?.let { " Arrêt prévu fin du tour ${next.endOfLap}, environ ${FuelUnits.amount(it.toFloat(), snapshot.packet?.fuelCapacity)}." } ?: ""
-        return brief.fuelToFinish.replaceFirstChar { it.uppercase() } + stop
+        val decision = fuelDecision?.let { FuelIntelligence.sentence(it) }?.let { " $it" } ?: ""
+        return brief.fuelToFinish.replaceFirstChar { it.uppercase() } + (if (decision.isNotEmpty()) decision else stop)
+    }
+
+    /** « Je dois économiser ? », « lift and coast ? » : la décision carburant, sinon la marge mesurée (V512 lot 2). */
+    private fun answerFuelSave(): String {
+        fuelDecision?.let { d -> FuelIntelligence.sentence(d)?.let { return it } }
+        val f = fuel ?: return "Je n'ai pas encore mesuré ta consommation : il me faut un tour complet."
+        val laps = f.lapsOfFuel
+        val toGo = f.raceLapsRemaining
+        if (f.perLap == null || laps == null || toGo == null) return "Je n'ai pas encore mesuré ta consommation : il me faut un tour complet."
+        val margin = laps - toGo
+        val fmt = { x: Float -> String.format(java.util.Locale.FRANCE, "%.1f", x) }
+        val stop = plan?.nextStop((snapshot.packet?.currentLap ?: 1).coerceAtLeast(1))?.takeIf { it.forFuel }
+        return when {
+            stop != null -> "Pas d'économie à faire : l'arrêt carburant de la fin du tour ${stop.endOfLap} est prévu. Autonomie ${fmt(laps)} tours."
+            margin >= 1f -> "Pas besoin d'économiser : marge de ${fmt(margin)} tour${if (margin >= 2f) "s" else ""} à l'arrivée."
+            margin >= 0f -> "Marge faible : ${fmt(margin)} tour à l'arrivée. Vise ${fmt(if (f.fuelCapacity > 0f) f.fuelLevel / toGo.coerceAtLeast(0.1f) / f.fuelCapacity * 100f else f.fuelLevel / toGo)} % par tour."
+            else -> "Il manque ${fmt(-margin)} tour de carburant : économise, lève le pied avant les gros freinages."
+        }
     }
 
     private fun answerWhatChanged(): String {
@@ -4074,8 +4304,27 @@ class RaceController(
             plan?.stops?.any { v.lap - it.endOfLap in 0..1 } == true
         return when (v.assessment) {
             PitAssessment.REFUEL -> {
+                // Zone d'arrêt de CETTE voiture (MESURE), gardée seulement pour un ravitaillement certain.
+                pendingPitBox?.takeIf { it >= 0.5f }?.let { b ->
+                    pitBoxThisRace += b
+                    journal.record(JournalType.PIT, JournalSource.TELEMETRY, "Zone d'arrêt mesurée à %.2f du tour".format(java.util.Locale.FRANCE, b),
+                        decision = pitBoxSource(), lap = v.lap)
+                }
                 val declaration = driverDeclaredDuringPitNumber
                 driverDeclaredDuringPitNumber = null
+                // V512 lot 2 : plein réel (MESURE) contre plein recommandé par le plan (CALCUL).
+                plan?.stops?.firstOrNull { v.lap - it.endOfLap in 0..1 && it.forFuel }?.fuel?.let { recommended ->
+                    val shortBy = recommended - v.refuelAmount
+                    journal.record(
+                        JournalType.PIT, JournalSource.ENGINE,
+                        "Plein : %.1f ajoutés pour %d recommandés".format(java.util.Locale.FRANCE, v.refuelAmount, recommended),
+                        decision = if (shortBy > 1f) "plein insuffisant : recalcul jusqu'à l'arrivée" else "plein conforme",
+                        details = mapOf("ajoute_mesure" to "%.2f".format(java.util.Locale.ROOT, v.refuelAmount), "recommande_calcul" to recommended.toString()),
+                        lap = v.lap,
+                    )
+                    if (shortBy > 1f) refuelCheck = RefuelCheck(v.lap, recommended, v.refuelAmount)
+                }
+                refuelSamples += RefuelSample(v.lap, v.refuelAmount, v.stoppedSeconds)
                 val rec = ledger.recordRefuel(v.lap, v.refuelAmount, declaration)
                 ledger.setThermal(v.lap, thermal.verdict.name)
                 if (declaration != null && rec.number == declaration && ledger.stopCount == rec.number) {
@@ -4335,6 +4584,13 @@ class RaceController(
     }
 
     private companion object {
+        /** Arrêt court : au moins le freinage, l'entrée et la relance (ESTIMATION plancher). */
+        const val MIN_SPLASH_MS = 3_000.0
+        val DEFAULT_PIT_WINDOW = 0.70f to 0.90f
+        /** Fin de la fenêtre de rappel avant la zone d'arrêt validée (fraction de tour). */
+        const val PIT_BOX_MARGIN = 0.08f
+        /** En fin de fenêtre, le rappel part même si le pilote est occupé (fraction de tour). */
+        const val FORCE_CALL_BEFORE_END = 0.03f
         /** Voiture immobile depuis 0,5 s (à 60 paquets/s), à moins de [GRID_STILL_M] près : position de grille examinée. */
         const val GRID_STILL_PACKETS = 30
         const val GRID_STILL_M = 2f

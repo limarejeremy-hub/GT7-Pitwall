@@ -153,6 +153,7 @@ object RaceJson {
                 r.lastRacePosition?.let { o.put("lastRacePosition", it) }
                 r.lastRaceCars?.let { o.put("lastRaceCars", it) }
                 r.lastRaceLap?.let { o.put("lastRaceLap", it) }
+                if (r.pitBoxProgress.isNotEmpty()) o.put("pitBox", JSONArray(r.pitBoxProgress.map { it.toDouble() }))
                 if (r.finishConsolidated) o.put("finishConsolidated", true)
                 if (r.postFinishChanges.isNotEmpty()) {
                     o.put("postFinish", JSONArray(r.postFinishChanges.map {
@@ -234,6 +235,7 @@ object RaceJson {
             lastRacePosition = o.optInt("lastRacePosition", -1).takeIf { it > 0 },
             lastRaceCars = o.optInt("lastRaceCars", -1).takeIf { it > 0 },
             lastRaceLap = o.optInt("lastRaceLap", -1).takeIf { it > 0 },
+            pitBoxProgress = o.optJSONArray("pitBox")?.let { a -> (0 until a.length()).map { a.getDouble(it).toFloat() } }.orEmpty(),
             finishConsolidated = o.optBoolean("finishConsolidated", false),
             postFinishChanges = objects("postFinish").map {
                 PositionTracker.PostFinishChange(it.optInt("from"), it.optInt("fromCars"), it.optInt("to"), it.optInt("toCars"), it.optLong("afterLineMs"))

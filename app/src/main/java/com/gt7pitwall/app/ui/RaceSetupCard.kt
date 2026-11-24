@@ -705,6 +705,7 @@ private fun sourceLabel(laps: DataSource, fuel: DataSource?): String {
 
 private fun warningLabel(w: PlanWarning): String = when (w) {
     PlanWarning.CANNOT_REACH_PITS -> "⚠ Carburant insuffisant pour finir le tour"
+    PlanWarning.CANNOT_FINISH -> "⚠ Carburant insuffisant pour l'arrivée : économie maximale"
     PlanWarning.MANDATORY_STOPS_IMPOSSIBLE -> "⚠ Plus assez de tours pour les arrêts obligatoires"
     PlanWarning.TYRES_IMPOSSIBLE -> "⚠ Plus assez d'arrêts pour les gommes imposées"
     PlanWarning.FUEL_IMPOSSIBLE -> "⚠ Un relais dépasse un plein : économie nécessaire"

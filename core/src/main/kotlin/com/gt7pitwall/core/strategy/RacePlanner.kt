@@ -47,6 +47,9 @@ enum class PlanWarning {
     /** Le carburant à bord ne suffit pas pour finir le tour en cours. */
     CANNOT_REACH_PITS,
 
+    /** Dernier tour : le carburant à bord ne suffit pas pour l'arrivée à la consommation mesurée (aucun stand possible). */
+    CANNOT_FINISH,
+
     /** Plus assez de tours pour faire tous les arrêts obligatoires. */
     MANDATORY_STOPS_IMPOSSIBLE,
 
@@ -158,7 +161,8 @@ object RacePlanner {
         // Sans consommation connue ni obligation, on ne sait rien : pas de plan plutôt qu'un faux « pas d'arrêt ».
         if (perLap == null && mandatoryLeft == 0 && tyresLeft == 0 && rules.tyreStintLaps == null) return null
 
-        if (perLap != null && i.fuelNow < r * perLap) warnings += PlanWarning.CANNOT_REACH_PITS
+        // Dernier tour : plus de stand possible, « rentre aux stands » n'a pas de sens (Le Mans 23/11, tour 14).
+        if (perLap != null && i.fuelNow < r * perLap) warnings += if (lapsAfterCurrent == 0) PlanWarning.CANNOT_FINISH else PlanWarning.CANNOT_REACH_PITS
 
         val fuelStops = if (perLap == null || i.tank <= 0f) {
             0
@@ -180,7 +184,8 @@ object RacePlanner {
         if (k > maxStops) {
             if (mandatoryLeft > maxStops) warnings += PlanWarning.MANDATORY_STOPS_IMPOSSIBLE
             if (tyresLeft > maxStops) warnings += PlanWarning.TYRES_IMPOSSIBLE
-            if (fuelStops > maxStops) warnings += PlanWarning.FUEL_IMPOSSIBLE
+            // Aucun arrêt possible (dernier tour) : ce n'est pas « un relais dépasse un plein », c'est l'arrivée qui est juste.
+            if (fuelStops > maxStops && maxStops > 0) warnings += PlanWarning.FUEL_IMPOSSIBLE
             k = maxStops
         }
         if (k == 0) return result(withTyreStops(emptyList(), i, lapIndex, total, perLap))
