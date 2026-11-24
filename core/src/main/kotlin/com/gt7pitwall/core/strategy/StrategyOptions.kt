@@ -395,10 +395,11 @@ object StrategyOptions {
 
     private const val MIN_UNCERTAINTY_MS = 500L
 
-    private val BLOCKING = setOf(PlanWarning.CANNOT_REACH_PITS, PlanWarning.FUEL_IMPOSSIBLE, PlanWarning.MANDATORY_STOPS_IMPOSSIBLE, PlanWarning.TYRES_IMPOSSIBLE)
+    private val BLOCKING = setOf(PlanWarning.CANNOT_REACH_PITS, PlanWarning.CANNOT_FINISH, PlanWarning.FUEL_IMPOSSIBLE, PlanWarning.MANDATORY_STOPS_IMPOSSIBLE, PlanWarning.TYRES_IMPOSSIBLE)
 
     private fun warningText(w: PlanWarning): String = when (w) {
         PlanWarning.CANNOT_REACH_PITS -> "carburant insuffisant pour finir le tour"
+        PlanWarning.CANNOT_FINISH -> "carburant insuffisant pour l'arrivée"
         PlanWarning.FUEL_IMPOSSIBLE -> "un relais dépasse un plein"
         PlanWarning.MANDATORY_STOPS_IMPOSSIBLE -> "plus assez de tours pour les arrêts obligatoires"
         PlanWarning.TYRES_IMPOSSIBLE -> "plus assez d'arrêts pour les gommes imposées"

@@ -377,7 +377,14 @@ class PitwallEngine(
         refreshBench()
     }
 
-    fun onAudible(message: EngineerMessage, atMs: Long) {
+    /** Messages dont chaque étape (file, son émis, perte) est journalisée. */
+    private fun tracedCritical(m: EngineerMessage): Boolean =
+        m.priority == Priority.CRITICAL || m.topic == "pit-approach" || m.topic == "fuel-decision" || m.text.startsWith("Box")
+
+    fun onAudible(message: EngineerMessage, atMs: Long, route: String? = null) {
+        if (tracedCritical(message)) race.journal.record(JournalType.RADIO, JournalSource.SYSTEM,
+            "Rappel critique entendu${route?.let { " ($it)" } ?: ""} : ${message.text.take(80)}",
+            details = mapOf("etape" to "son émis" + (route?.let { " sur $it" } ?: "")))
         // Fenêtre d'écho à partir du premier son réellement émis (issue #45).
         if (message.category != MessageCategory.DRIVER) race.noteSpoken(message.text)
         if (message.category != MessageCategory.DRIVER) voiceBench.onAudible(atMs)
@@ -1084,10 +1091,20 @@ class PitwallEngine(
         // Les paroles du pilote sont seulement affichées.
         // Prototype B en cours (5 min au plus) : seules les alertes critiques de la voix A sont dites, pour ne pas mêler deux voix.
         val heldForLive = liveRunning && message.priority != Priority.CRITICAL
-        if (voiceEnabled && message.category != MessageCategory.DRIVER && !heldForLive &&
-            !com.gt7pitwall.core.radio.RadioPacer.dropBeforeSpeech(message, voiceBusy())
-        ) {
+        val dropped = com.gt7pitwall.core.radio.RadioPacer.dropBeforeSpeech(message, voiceBusy())
+        if (voiceEnabled && message.category != MessageCategory.DRIVER && !heldForLive && !dropped) {
             voice.speak(message)
+        }
+        // V512 lot 2 : un rappel critique (stand, carburant) ne se perd jamais en silence : chaque étape est journalisée.
+        if (tracedCritical(message)) {
+            val step = when {
+                !voiceEnabled -> "non transmis : voix désactivée"
+                heldForLive -> "non transmis : prototype B en cours"
+                dropped -> "non transmis : écarté avant la synthèse"
+                else -> "mis en file pour la voix"
+            }
+            race.journal.record(JournalType.RADIO, JournalSource.SYSTEM, "Rappel critique $step : ${message.text.take(80)}",
+                details = mapOf("etape" to step, "priorite" to message.priority.name))
         }
         if (message.expectsReply) voiceInput?.expectReply()
     }

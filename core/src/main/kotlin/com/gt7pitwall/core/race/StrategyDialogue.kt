@@ -49,6 +49,9 @@ object StrategyDialogue {
         /** « Combien de carburant pour finir ? », « j'ai assez d'essence pour finir ? » */
         data object FuelToFinish : Ask
 
+        /** « Je dois économiser ? », « lift and coast ? » : consigne de consommation (V512 lot 2). */
+        data object FuelSave : Ask
+
         /** « Qu'est-ce qui a changé depuis le plan initial ? », « pourquoi tu changes la stratégie ? » */
         data object WhatChanged : Ask
 
@@ -135,6 +138,28 @@ object StrategyDialogue {
             )
         ) {
             return Ask.TyreStatus
+        }
+
+        // V512 lot 2 (Le Mans 23/11) : « je peux encore tenir de tours » recevait le numéro du tour. Sans mot « pneu »,
+        // tenir / finir parle d'autonomie de carburant ; « lift and coast » (mal transcrit « livre un cost ») d'économie.
+        if (!tyreWord && has(t, " combien de tours? (je |on )?(peux|peut|pourrai|pourra|vais|va) (encore )?tenir",
+                " (je|on) (peux|peut) (encore )?tenir", " tenir (encore )?combien", " encore combien de tours (je|on) (tient|tiens|peux|peut)",
+            ) && !negated
+        ) {
+            return Ask.FuelToFinish
+        }
+        if (has(t, " (lift|lif|lifte|livre|lift) ?(and|an|en|un|on|et) ?(cost|coast|coste|cote|coaste)", " (dois|faut|faudrait|devrais|doit)( il| je| on)? (economiser|faire (de l'|des )?economies?|lever le pied)",
+                " economis\\w* (du |de l'|l')?(carburant|essence)", " (je )?(dois|faut) (je )?lever le pied", " lever le pied ",
+            ) && !negated
+        ) {
+            return Ask.FuelSave
+        }
+        if (!tyreWord && has(t, " (est ce que )?(je|on) (peux|peut|pourrai|pourra|vais|va) (aller )?(finir|terminer|jusqu au bout|jusqu a l'arrivee)") && !negated) {
+            return Ask.FuelToFinish
+        }
+        // Constat sur les concurrents (« je crois qu'il y a deux concurrents qui rentrent aux stands »).
+        if (has(t, " (deux |des |les |trois |2 |3 )?(concurrents|adversaires|pilotes|voitures) (qui )?(se )?(rentr|s'arret|vont aux stands|passent aux stands|pit)")) {
+            return Ask.OthersPitting
         }
 
         // Observations du pilote (constat, pas une question sur le sujet).

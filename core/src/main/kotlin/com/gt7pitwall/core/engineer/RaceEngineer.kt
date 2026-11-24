@@ -551,7 +551,7 @@ class RaceEngineer {
                 // L'appel au stand remplace le point carburant sur ces tours-là. Sinon, la radio ne parle du carburant que
                 // lorsque la situation change (course du 26/10 : « carburant pour 30,9 tours » à chaque tour, voir FuelRadio).
                 // Le détail reste disponible à la demande (« essence ? », « détails »).
-                else -> if (box == null) {
+                else -> if (box == null && !fuelSaveActive) {
                     val fuelStopPlanned = plan?.stops?.any { it.forFuel && it.endOfLap >= lap.lapNumber } == true
                     fuelRadio.onLap(fuel, fuelStopPlanned)?.let {
                         sb.append(it).append(' ')
@@ -634,6 +634,9 @@ class RaceEngineer {
     /** Obligations du règlement non confirmées, dites avec un plan sans arrêt (jamais « aucune obligation »). */
     var obligationCaveat: String? = null
 
+    /** V512 lot 2 : économie de carburant engagée (FuelIntelligence) : le point carburant de fin de tour s'efface. */
+    var fuelSaveActive: Boolean = false
+
     fun onPlan(newPlan: RacePlan?, currentLap: Int = snapshotLap): List<EngineerMessage> {
         plan = newPlan
         if (raceOver || newPlan == null) return emptyList()
@@ -710,6 +713,7 @@ class RaceEngineer {
 
     private fun warningSentence(w: PlanWarning): String = when (w) {
         PlanWarning.CANNOT_REACH_PITS -> "Carburant critique : tu ne finiras peut-être pas ce tour. Économise au maximum et rentre aux stands."
+        PlanWarning.CANNOT_FINISH -> "Carburant critique pour l'arrivée : lève le pied avant chaque freinage, économise au maximum."
         PlanWarning.MANDATORY_STOPS_IMPOSSIBLE -> "Attention : il ne reste plus assez de tours pour faire tous les arrêts obligatoires."
         PlanWarning.TYRES_IMPOSSIBLE -> "Attention : il ne reste plus assez d'arrêts possibles pour monter toutes les gommes imposées."
         PlanWarning.FUEL_IMPOSSIBLE -> "Attention : avec les arrêts restants, un relais dépasse un plein. Il faudra économiser."

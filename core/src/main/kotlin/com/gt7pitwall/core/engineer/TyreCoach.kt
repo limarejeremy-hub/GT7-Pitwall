@@ -40,6 +40,14 @@ class TyreCoach {
         private set
     private var overheatWarned = false
 
+    /**
+     * Référence du relais avant l'arrêt. Le Mans 23/11 (deux courses) : après le plein, les pneus froids (59–61 °C) se
+     * « stabilisaient » pendant la montée lente et 61 °C devenait la référence ; 76–77 °C, température normale d'avant
+     * l'arrêt, déclenchait « Tes pneus chauffent » quatre fois. Après un arrêt, la nouvelle référence ne peut pas être
+     * prise sous la référence précédente moins [PIT_REF_TOLERANCE].
+     */
+    private var previousStable: Float? = null
+
     // --- Adhérence par tour ---
     private var gripAlertRef: LapRecord? = null
     private var severeActive = false
@@ -55,6 +63,7 @@ class TyreCoach {
         startTemp = null
         warmAnnounced = false
         stableTemp = null
+        previousStable = null
         overheatWarned = false
         gripAlertRef = null
         severeActive = false
@@ -66,6 +75,7 @@ class TyreCoach {
 
     /** Passage aux stands (avec ou sans pneus) : nouvelle montée en température à suivre, l'usure n'est pas remise à zéro. */
     fun pitVisit() {
+        stableTemp?.let { previousStable = it }
         window.clear()
         startTemp = null
         warmAnnounced = false
@@ -98,6 +108,8 @@ class TyreCoach {
             // Gros refroidissement (pluie, longue neutralisation) : nouvelle montée en température à suivre.
             if (t < stable - COOL_DOWN_DROP) {
                 pitVisit()
+                // Refroidissement en piste (pluie, neutralisation) : ce n'est pas un arrêt, la référence repart libre.
+                previousStable = null
                 startTemp = t
                 window.addLast(t)
                 return null
@@ -117,6 +129,9 @@ class TyreCoach {
         val first = window.take(EDGE_SAMPLES).average()
         val last = window.takeLast(EDGE_SAMPLES).average()
         val rise = t - (startTemp ?: t)
+        // Après un arrêt : pas de référence prise sur des pneus encore froids.
+        val floor = previousStable?.let { it - PIT_REF_TOLERANCE }
+        if (floor != null && last < floor) return null
         if (rise >= MIN_WARMUP_RISE && last - first < STABLE_SLOPE) {
             warmAnnounced = true
             stableTemp = last.toFloat()
@@ -216,6 +231,8 @@ class TyreCoach {
         const val COOL_DOWN_DROP = 15f
         const val OVERHEAT_RISE = 15f
         const val OVERHEAT_REARM = 8f
+        /** Écart toléré sous la référence d'avant l'arrêt pour la nouvelle référence (°C). */
+        const val PIT_REF_TOLERANCE = 5f
 
         const val SEVERE_TCS = 0.30f
         const val SEVERE_EVENTS = 10
