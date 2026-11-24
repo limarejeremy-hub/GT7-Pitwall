@@ -1566,7 +1566,10 @@ class RaceController(
             val inLap = laps.firstOrNull { it.lapNumber == s.lap }?.timeMs ?: return@let null
             val outLap = laps.firstOrNull { it.lapNumber == s.lap + 1 }?.timeMs ?: return@let null
             if (typical == null || clean.size < 3) return@let null
-            val loss = (inLap + outLap - 2.0 * typical).coerceAtLeast(0.0)
+            val loss = inLap + outLap - 2.0 * typical
+            // Perte plus courte que l'immobilisation : mesure incohérente (Le Mans 23/11 : 29 s pour 35 s immobile), jamais
+            // utilisée pour chiffrer un arrêt court.
+            if (loss < s.stoppedS * 1000.0) return@let null
             val rate = s.added / s.stoppedS
             val avoided = ((s.added - amount).coerceAtLeast(0f) / rate) * 1000.0
             SplashCost(

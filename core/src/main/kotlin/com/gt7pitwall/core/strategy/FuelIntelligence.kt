@@ -92,8 +92,10 @@ object FuelIntelligence {
         if (deficit <= 0f || toGo <= 0f || perLap <= 0f) {
             return Result(Kind.ENOUGH, deficit, deficitNoMargin, null, 0.0, null, i.pitLossMs, i.tank)
         }
-        // Cible avec la marge : la marge de sécurité reste dans le réservoir à l'arrivée.
-        val usable = max(0f, i.fuelNow - i.safetyLaps * perLap)
+        // Cible avec la marge : la marge de sécurité reste dans le réservoir à l'arrivée. Plus aucun arrêt possible : la
+        // marge ne peut plus être reconstituée, la cible est d'arriver (Le Mans 23/11, tour 14 : cible 8,5 sans marge,
+        // 8,42 consommés réellement, arrivée avec 0,1).
+        val usable = if (i.stopPossible) max(0f, i.fuelNow - i.safetyLaps * perLap) else i.fuelNow
         val target = usable / toGo
         val saving = (1.0 - target / perLap).coerceIn(0.0, 1.0)
         val liftLoss = deficit * i.liftCostMsPerUnit
