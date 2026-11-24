@@ -68,6 +68,22 @@ Ingénieur de course Android natif (Galaxy Fold) pour Gran Turismo 7 sur PS5 : t
   `lab_replay`, `lab_anomalies`, `lab_vega`, `lab_compare` (mode `replay` ou `vega`) sur les traces locales. Avant de proposer un changement du moteur, le
   comparer à la version précédente sur les traces réelles disponibles (`lab_compare`).
 
+## Connecteurs et agents : règle de chaque mission (demande du pilote, 24/11)
+1. Au début : inventorier les connecteurs MCP, outils et sous-agents **chargés dans la session** et vérifier lesquels
+   répondent vraiment (un serveur déclaré dans `.mcp.json` n'est chargé qu'au démarrage d'une session).
+2. Utiliser chaque connecteur pertinent pour une contribution concrète ; croiser les sources quand c'est possible.
+3. Un connecteur non pertinent, indisponible ou limité par son quota : le dire, avec la raison. **Aucune utilisation
+   fictive.** Un serveur non chargé peut être utilisé par son accès direct (HTTP public, ligne de commande locale) en le
+   signalant comme tel.
+4. Chercher d'autres outils spécialisés seulement si leur valeur ajoutée est démontrable ; gratuit uniquement.
+5. Répartition : GitHub (code, PR, CI), Serena (symboles Kotlin), Context7 (API), Parallel Search et Playwright (web,
+   sources GT7), Pitwall Lab (traces, statistiques), Hugging Face (modèles, voix), DeepWiki (projets publics), DuckDB
+   (SQL local), Google Drive (traces et documents privés, seulement si nécessaire), Maestro (tests Android si un
+   émulateur existe), sous-agents (`.claude/agents/`).
+6. **Compte rendu de fin de mission obligatoire** : tableau par connecteur — disponible, utilisé, action exécutée,
+   résultat concret, limitation.
+7. Jamais de trace privée envoyée à un service tiers non autorisé ; aucune dépense ; aucune fusion automatique.
+
 ## Économie de quota
 - Lire ce fichier et le doc de référence du domaine AVANT de réexplorer le dépôt.
 - Utiliser les agents spécialisés (`.claude/agents/`) seulement quand la tâche le demande ; leur donner un objectif

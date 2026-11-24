@@ -201,6 +201,16 @@ Règles :
   - le *chercheur* a comparé les décodeurs open source et relevé la restriction de PDTools ;
   - l'agent *qualité* a relu ce rapport avant toute intégration (voir la PR).
 
+## 8 bis. Recoupements par connecteur (24/11)
+
+| Connecteur | Action exécutée | Résultat concret |
+|---|---|---|
+| DeepWiki (accès HTTP public, dépôt public uniquement) | question sur MacManley/gt7-udp | 1 octet de remplissage et `UNKNOWNFLOATS[8]` ; rayon, rotation et suspension présents ; **aucun champ d'usure**. Concorde avec la piste A. zetetos/gt-telemetry n'est pas indexé par DeepWiki |
+| Parallel Search | « GT7 telemetry tyre wear » | TRACE (ransh2014, MIT) : « GT7 sends no tyre wear, so the tyre figures are estimates ». gt7-datalogger calcule le glissement avec rotation × rayon, comme Pitwall. Concorde |
+| Playwright | lecture du README de gt7-udp | « Packet B… (not available in Sport Mode) », « Packet ~… (not available in Replays) » : rien sur le C, cohérent avec notre C reçu en Sport B (22/11) |
+| DuckDB (local, `uv run`) | SQL sur les tours exportés par `tyre-research` | consommation médiane 6,10 / 6,15 / 6,05 par course (06/11), en accord avec `fuel-performance` (écart dû à l'arrondi). Corrélation consommation ↔ chrono **+0,56 / −0,06 / −0,48** selon la course : confirme que le coût du lift-and-coast n'est pas calibrable |
+| Google Drive (lecture des métadonnées) | recherche de fichiers `.gt7trace` et de journaux Pitwall | 10 fichiers : journaux et APK anciennes, **aucune trace brute du Mans** |
+
 ## 9. Ce qu'il faut maintenant (gratuit)
 
 1. **Trace brute d'une course du Mans** (usure ×4, carburant ×2) : seule voie pour tester la dégradation et le coût
