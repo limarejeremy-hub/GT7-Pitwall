@@ -11,12 +11,15 @@ import kotlin.math.sqrt
  *
  * 1. Fuel delta : consommation de référence par portion de tour (20 segments de distance, médiane des tours propres)
  *    et écart de chaque tour, segment par segment (MESURE + CALCUL).
- * 2. Lift-and-coast observé : par tour, temps « roue libre » (ni gaz ni frein, > 100 km/h) avant chaque freinage fort ;
- *    lien tour par tour entre ce temps, la consommation et le chrono (CALCUL).
+ * 2. Roue libre observée : par tour, temps total « ni gaz ni frein, > 100 km/h », compté sur tout le tour (pas seulement
+ *    avant les freinages : ce n'est donc qu'un indicateur grossier du lift-and-coast) ; lien tour par tour entre ce temps,
+ *    la consommation et le chrono (CALCUL).
  * 3. Coût temps du carburant : pente chrono ↔ consommation sur les tours propres, calibrée sur une course et évaluée
  *    sur les autres (même trace, même voiture). Comparée à l'estimation V512 de 3,2 s par unité (un seul tour réel).
  * 4. Prévision du carburant à l'arrivée après k tours, avec intervalle, comparée au carburant RÉELLEMENT mesuré à
- *    l'arrivée (ou au dernier tour) : erreur et taux de couverture de l'intervalle.
+ *    l'arrivée (courses complètes seulement) : erreur et taux de couverture. Deux intervalles : V513 (± 2 écarts-types ×
+ *    √tours restants) et CALIBRÉ (multiplicateur = quantile 90 % des erreurs normalisées des AUTRES courses : aucune
+ *    course n'évalue son propre calibrage).
  */
 object FuelPerformance {
     const val SEGMENTS = 20
@@ -26,7 +29,7 @@ object FuelPerformance {
     fun run(traces: List<File>): JSONObject {
         val perTrace = JSONArray()
         val costEval = JSONArray()
-        val forecast = JSONArray()
+        val forecast = mutableListOf<JSONObject>()
         val perTraceLaps = JSONObject()
         for (f in traces) {
             val races = RaceLaps.load(f)
@@ -79,30 +82,57 @@ object FuelPerformance {
             }
             // 4. Prévision du carburant à l'arrivée après k tours (médiane des tours propres ± 2 écarts-types × √tours restants).
             races.forEachIndexed { ri, race ->
+                // Course incomplète ou tour manquant : le carburant « à l'arrivée » n'est pas mesuré, rien n'est comparé.
+                if (!race.complete) return@forEachIndexed
                 val all = race.laps
-                val last = all.last()
-                val actualEnd = last.fuelEnd.toDouble()
+                val actualEnd = all.last().fuelEnd.toDouble()
                 val refuelLaps = all.filter { it.refuelled }.map { it.n }.toSet()
-                for (k in 3 until all.size - 1) {
-                    if (refuelLaps.any { it > k }) continue // un plein plus tard fausserait la comparaison
-                    val seen = all.take(k).filter { it.clean }
+                for (idx in 3 until all.size - 1) {
+                    val doneLap = all[idx - 1].n // dernier tour terminé au moment de la prévision
+                    if (refuelLaps.any { it > doneLap }) continue // un plein plus tard fausserait la comparaison
+                    val seen = all.take(idx).filter { it.clean }
                     if (seen.size < 2) continue
                     val per = seen.map { (it.fuelStart - it.fuelEnd).toDouble() }
                     val m = RaceLaps.median(per)!!
                     val s = sd(per).coerceAtLeast(0.02 * m)
-                    val remainingLaps = all.size - k
-                    val fuelNow = all[k - 1].fuelEnd.toDouble()
+                    val remainingLaps = race.totalLaps - doneLap
+                    val fuelNow = all[idx - 1].fuelEnd.toDouble()
                     val pred = fuelNow - m * remainingLaps
-                    val half = 2 * s * sqrt(remainingLaps.toDouble())
-                    forecast.put(JSONObject().put("trace", f.name).put("course", ri + 1).put("apres_tour", k)
+                    val scale = s * sqrt(remainingLaps.toDouble())
+                    val half = 2 * scale
+                    val stopAhead = all.any { it.n > doneLap && it.stopped }
+                    forecast += JSONObject().put("trace", f.name).put("course", ri + 1).put("apres_tour", doneLap)
                         .put("prevision_arrivee_CALCUL", r2(pred)).put("intervalle", r2(half))
                         .put("mesure_arrivee", r2(actualEnd)).put("erreur", r2(pred - actualEnd))
-                        .put("dans_intervalle", abs(pred - actualEnd) <= half))
+                        .put("dans_intervalle", abs(pred - actualEnd) <= half)
+                        .put("arret_a_venir", stopAhead)
+                        .put("erreur_normalisee", (pred - actualEnd) / scale)
                 }
             }
         }
-        val errs = (0 until forecast.length()).map { forecast.getJSONObject(it) }
+        val errs = forecast
         val coverage = if (errs.isEmpty()) null else errs.count { it.getBoolean("dans_intervalle") }.toDouble() / errs.size
+        // Intervalle calibré : pour chaque course, multiplicateur appris sur les erreurs normalisées des AUTRES courses.
+        fun raceKey(o: JSONObject) = o.getString("trace") + "#" + o.getInt("course")
+        var calibratedIn = 0
+        var calibratedN = 0
+        for (o in errs) {
+            val others = errs.filter { raceKey(it) != raceKey(o) }.map { abs(it.getDouble("erreur_normalisee")) }.sorted()
+            if (others.size < 5) { o.put("intervalle_calibre", JSONObject.NULL); continue }
+            val q = others[((others.size - 1) * 0.9).toInt()]
+            val half = q * abs(o.getDouble("intervalle")) / 2
+            o.put("multiplicateur_calibre", r2(q)).put("intervalle_calibre", r2(half))
+                .put("dans_intervalle_calibre", abs(o.getDouble("erreur")) <= half)
+            calibratedN++
+            if (abs(o.getDouble("erreur")) <= half) calibratedIn++
+        }
+        errs.forEach { it.put("erreur_normalisee", r2(it.getDouble("erreur_normalisee"))) }
+        val byTrace = errs.groupBy { it.getString("trace") }.map { (t, os) ->
+            JSONObject().put("trace", t).put("previsions", os.size)
+                .put("erreur_absolue_moyenne", r3(os.map { abs(it.getDouble("erreur")) }.average()))
+                .put("couverture_V513", r2(os.count { it.getBoolean("dans_intervalle") }.toDouble() / os.size))
+                .put("couverture_calibree", os.filter { it.has("dans_intervalle_calibre") }.let { c -> if (c.isEmpty()) JSONObject.NULL else r2(c.count { it.getBoolean("dans_intervalle_calibre") }.toDouble() / c.size) })
+        }
         return JSONObject()
             .put("nature", "Carburant sur traces RÉELLES : MESURE (niveau GT7, pédales, vitesse) et CALCUL (Lab). Aucune trace simulée.")
             .put("tours_par_course", perTraceLaps)
@@ -112,6 +142,10 @@ object FuelPerformance {
                 .put("previsions", errs.size)
                 .put("erreur_absolue_moyenne", if (errs.isEmpty()) JSONObject.NULL else r3(errs.map { abs(it.getDouble("erreur")) }.average()))
                 .put("taux_couverture_intervalle", coverage?.let(::r2) ?: JSONObject.NULL)
+                .put("taux_couverture_calibre_autres_courses", if (calibratedN == 0) JSONObject.NULL else r2(calibratedIn.toDouble() / calibratedN))
+                .put("courses_evaluees", errs.map(::raceKey).distinct().size)
+                .put("par_trace", JSONArray(byTrace))
+                .put("limite", "prévisions d'une même course corrélées ; courses d'un même jour peu indépendantes : la couverture n'est pas un test à 95 %")
                 .put("detail", JSONArray(errs)))
     }
 

@@ -20,7 +20,8 @@ object TyreResearch {
 
     private data class LapRow(val race: Int, val lap: Int, val stint: Int, val stintLap: Int, val timeMs: Int?, val clean: Boolean,
                               val fuel: Float, val temps: List<Double>, val tempMax: List<Double>, val slip: List<Double?>,
-                              val effRadius: List<Double?>, val radius: List<Double>, val locks: Int, val spins: Int, val samples: Int)
+                              val effRadius: List<Double?>, val radius: List<Double>, val locks: Int, val spins: Int, val samples: Int,
+                              val car: Int = 0, val length: Float = 0f)
 
     fun run(traces: List<File>): JSONObject {
         val out = JSONArray()
@@ -46,6 +47,7 @@ object TyreResearch {
             races.forEachIndexed { ri, race ->
                 var stint = 0
                 var stintLap = 0
+                var prevStop = false
                 for (lap in race.laps) {
                     stintLap++
                     val drive = lap.samples.filter { it.p.speedKmh > 50f && it.p.brake == 0 && !it.p.isPaused }
@@ -62,11 +64,14 @@ object TyreResearch {
                         (0 until 4).map { i -> lap.samples.map { it.p.tyreTemps.toList()[i].toDouble() }.average() },
                         (0 until 4).map { i -> lap.samples.maxOf { it.p.tyreTemps.toList()[i].toDouble() } },
                         slip, eff, (0 until 4).map { i -> lap.samples.map { it.p.tyreRadius.toList()[i].toDouble() }.distinct().let { d -> d.average() } },
-                        locks, spins, lap.samples.size,
+                        locks, spins, lap.samples.size, race.carCode, lap.length,
                     )
                     allRows += f.name to row
                     // Nouveau relais pneus/carburant après un arrêt (ravitaillement ou immobilisation au stand).
-                    if (lap.refuelled || lap.stopped) { stint++; stintLap = 0 }
+                    // Deux tours immobiles de suite (28/10 : deux immobilisations en une visite) = un seul nouveau relais.
+                    val stop = lap.refuelled || lap.stopped
+                    if (stop && !prevStop) { stint++; stintLap = 0 }
+                    prevStop = stop
                 }
             }
         }
@@ -96,7 +101,10 @@ object TyreResearch {
         val detector = allRows.groupBy { Triple(it.first, it.second.race, it.second.stint) }.mapNotNull { (k, rows) ->
             val clean = rows.map { it.second }.filter { it.clean }.sortedBy { it.lap }
             if (clean.size < 4) return@mapNotNull null
+            val comparisons = (4 until clean.size).count { clean[it].lap == clean[it - 1].lap + 1 }
             JSONObject().put("trace", k.first).put("course", k.second).put("relais", k.third).put("tours_propres", clean.size)
+                .put("comparaisons_testees", comparisons)
+                .put("testable", comparisons > 0)
                 .put("alerte_premier_tour", degradationAlert(clean) ?: JSONObject.NULL)
                 .put("autonomie", autonomy(clean))
         }
@@ -118,7 +126,9 @@ object TyreResearch {
             .put("detecteur_degradation", JSONObject()
                 .put("regle", "alerte si deux tours propres consécutifs dépassent de plus de ${DEGRADATION_MS / 1000.0} s la médiane des 3 premiers tours propres du relais ET que la température moyenne des pneus a monté (CALCUL)")
                 .put("relais", JSONArray(detector))
-                .put("alertes", detector.count { it.opt("alerte_premier_tour") != JSONObject.NULL }))
+                .put("alertes", detector.count { it.opt("alerte_premier_tour") != JSONObject.NULL })
+                .put("relais_testables", detector.count { it.getBoolean("testable") })
+                .put("limite", "il faut au moins 5 tours propres consécutifs dans un relais (3 de base + 2 consécutifs) : un relais plus court n'est jamais testé, « 0 alerte » n'y prouve rien"))
             .put("tours", laps)
     }
 
@@ -131,6 +141,7 @@ object TyreResearch {
         for (i in 4 until clean.size) {
             val a = clean[i - 1]
             val b = clean[i]
+            if (b.lap != a.lap + 1) continue // deux tours propres réellement consécutifs
             if (a.timeMs!! - base > DEGRADATION_MS && b.timeMs!! - base > DEGRADATION_MS && b.temps.average() > baseTemp) return a.lap
         }
         return null
@@ -152,10 +163,11 @@ object TyreResearch {
         val my = y.average()
         val resid = x.indices.map { y[it] - (my + b * (x[it] - mx)) }
         val se = kotlin.math.sqrt(resid.sumOf { it * it } / (x.size - 2) / x.sumOf { (it - mx) * (it - mx) })
-        val lo = (b - 2 * se).coerceAtLeast(1.0)
+        val lo = b - 2 * se
         val hi = b + 2 * se
         return JSONObject().put("estimation", "fourchette")
-            .put("tours_avant_perte_2s", JSONArray(listOf(r1(2000.0 / hi), r1(2000.0 / lo))))
+            // Pente basse ≤ 0 : la borne haute n'est pas connue (pas de « 2 000 tours » inventés).
+            .put("tours_avant_perte_2s", JSONArray(listOf(r1(2000.0 / hi), if (lo > 0) r1(2000.0 / lo) else JSONObject.NULL)))
             .put("pente_ms_par_tour", r1(b)).put("incertitude_ms", r1(2 * se))
     }
 
@@ -170,17 +182,23 @@ object TyreResearch {
 
     /**
      * Modèles candidats du chrono d'un tour propre (hors tour 1 et tours d'arrêt), évalués en laissant de côté une course
-     * entière (calibration sur les AUTRES courses de la même voiture) :
-     * M0 — moyenne des tours propres de la course jusque-là (aucune dégradation) ;
+     * entière (calibration sur les AUTRES courses de la même voiture, code 0x124, et du même circuit, longueur de tour
+     * médiane à 1 % près) :
+     * M0 — moyenne des tours propres du MÊME relais jusque-là (aucune dégradation) ;
      * M1 — M0 + pente de dégradation par tour de relais apprise sur les autres courses.
      * Erreur absolue moyenne (ms) sur les tours à partir du 4e tour propre de la course évaluée.
      */
     private fun models(rows: List<Pair<LapRow, String>>): JSONObject {
-        val byCar = rows.filter { it.first.clean }.groupBy { it.second }
         val res = JSONArray()
         val races = rows.filter { it.first.clean }.groupBy { it.second to it.first.race }
+        val signature = races.mapValues { (_, rs) -> rs.first().first.car to (RaceLaps.median(rs.map { it.first.length.toDouble() }) ?: 0.0) }
+        fun comparable(a: Pair<String, Int>, b: Pair<String, Int>): Boolean {
+            val (ca, la) = signature.getValue(a)
+            val (cb, lb) = signature.getValue(b)
+            return ca == cb && la > 0 && abs(la - lb) / la < 0.01
+        }
         for ((key, test) in races) {
-            val others = races.filterKeys { it != key && it.first == key.first || (it != key && sameCarTrace(it, key)) }.values.flatten()
+            val others = races.filterKeys { it != key && comparable(it, key) }.values.flatten()
             val slopeLearned = others.groupBy { it.first.race to it.first.stint }.values.mapNotNull { st ->
                 RaceLaps.slope(st.map { it.first.stintLap.toDouble() }, st.map { it.first.timeMs!!.toDouble() })
             }.let { s -> if (s.isEmpty()) null else s.average() }
@@ -189,7 +207,8 @@ object TyreResearch {
             var e1 = 0.0
             var n = 0
             for (i in 3 until t.size) {
-                val past = t.take(i)
+                val past = t.take(i).filter { it.stint == t[i].stint }
+                if (past.size < 2) continue // M0 ne mélange pas deux relais
                 val base = past.map { it.timeMs!!.toDouble() }.average()
                 val baseLap = past.map { it.stintLap.toDouble() }.average()
                 val actual = t[i].timeMs!!.toDouble()
@@ -200,14 +219,14 @@ object TyreResearch {
             }
             if (n == 0) continue
             res.put(JSONObject().put("trace", key.first).put("course", key.second).put("tours_evalues", n)
-                .put("calibration", if (slopeLearned == null) "aucune autre course comparable : M1 = M0" else "autres courses de la même trace")
+                .put("calibration", if (slopeLearned == null) "aucune autre course comparable : M1 = M0" else "autres courses de la même voiture sur le même circuit")
+                .put("courses_de_calibration", others.map { it.second to it.first.race }.distinct().size)
                 .put("pente_apprise_ms_par_tour", slopeLearned?.let(::r1) ?: JSONObject.NULL)
                 .put("erreur_M0_ms", r1(e0 / n)).put("erreur_M1_ms", r1(e1 / n)))
         }
         return JSONObject().put("evaluation", "laisser-une-course-de-côté ; tours propres à partir du 4e").put("resultats", res)
     }
 
-    private fun sameCarTrace(a: Pair<String, Int>, b: Pair<String, Int>) = a.first == b.first
 
     private fun r1(x: Double) = Math.round(x * 10) / 10.0
     private fun r2(x: Double) = Math.round(x * 100) / 100.0

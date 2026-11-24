@@ -21,20 +21,29 @@ object RaceLaps {
         /** Carburant ajouté dans le tour (somme des hausses, MESURE) : à 20 Hz un plein monte d'environ 0,05 par échantillon. */
         val fuelAdded: Float get() = samples.zipWithNext().sumOf { (a, b) -> (b.p.fuelLevel - a.p.fuelLevel).coerceAtLeast(0f).toDouble() }.toFloat()
         val refuelled: Boolean get() = fuelAdded > 0.5f
-        /** Immobile en course pendant au moins 3 s (arrêt au stand ou incident). */
+        /**
+         * Immobile en course pendant au moins 3 s, hors pause (MESURE). Ce n'est PAS forcément un passage au stand : un
+         * tête-à-queue ou une pénalité donnent le même signal ; seul un plein ([refuelled]) le prouve.
+         */
         val stopped: Boolean get() {
             var since: Long? = null
             for (s in samples) {
-                if (s.p.speedKmh < 1f) { if (since == null) since = s.tMs; if (s.tMs - since >= 3_000) return true } else since = null
+                if (s.p.speedKmh < 1f && !s.p.isPaused) { if (since == null) since = s.tMs; if (s.tMs - since >= 3_000) return true } else since = null
             }
             return false
         }
         val length: Float get() = samples.last().dist
-        val clean: Boolean get() = n >= 2 && !refuelled && !stopped && (timeMs ?: 0) > 0
+        /** Tour qui précède un arrêt : il contient l'entrée de voie (observé le 06/11 : 6 à 6,5 s dans la voie). */
+        var beforeStop: Boolean = false
+        val clean: Boolean get() = n >= 2 && !refuelled && !stopped && !beforeStop && (timeMs ?: 0) > 0
     }
 
     class Race(val totalLaps: Int, val carCode: Int, val laps: MutableList<Lap> = mutableListOf()) {
         val format: String get() = laps.firstOrNull()?.samples?.firstOrNull()?.p?.format?.label ?: "?"
+        /** Tours trop courts (≤ 20 échantillons) écartés au découpage : la numérotation des tours a alors des trous. */
+        var droppedLaps: Int = 0
+        /** Course complète : tous les tours de 1 à [totalLaps] sont présents, sans trou. */
+        val complete: Boolean get() = laps.map { it.n } == (1..totalLaps).toList()
     }
 
     fun load(f: File): List<Race> {
@@ -51,7 +60,7 @@ object RaceLaps {
                 val lap = Lap(curLap, cur)
                 lap.timeMs = next?.lastLapMs?.takeIf { it > 0 && next.currentLap == curLap + 1 }
                 r.laps += lap
-            }
+            } else if (curLap >= 1) r.droppedLaps++
             cur = mutableListOf()
             dist = 0f
         }
@@ -76,7 +85,8 @@ object RaceLaps {
                 if (curLap >= 1) close(p)
                 curLap = p.currentLap
             } else if (!p.isPaused) {
-                val dt = ((t - prevT).coerceIn(0, 200)) / 1000f
+                // Trou de flux (jusqu'à 1 s, 3 fois le 19/11) : vitesse supposée constante ; au-delà, la distance n'est pas devinée.
+                val dt = ((t - prevT).coerceIn(0, 1_000)) / 1000f
                 dist += p.speedMps * dt
             }
             cur += Sample(t, p, dist)
@@ -84,6 +94,7 @@ object RaceLaps {
             true
         }
         close(null)
+        for (r in races) r.laps.zipWithNext().forEach { (a, b) -> if (b.n == a.n + 1 && b.stopped) a.beforeStop = true }
         return races.filter { it.laps.size >= 3 }
     }
 
