@@ -4,23 +4,42 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import kotlin.math.abs
+import com.gt7pitwall.core.analysis.SectorTrace
 import kotlin.math.hypot
 
 /**
  * Pitwall Lab — études V515.1 sur traces RÉELLES (MESURE des paquets, CALCUL du Lab). Aucune trace simulée.
  *
  * - `lap-progress` : position dans le tour. Référence = projection GÉOMÉTRIQUE sur la trajectoire X/Z du tour propre le
- *   plus rapide (positions mesurées). Méthodes comparées : distance intégrée (vitesse × temps, rapportée au tour
- *   précédent : celle du rappel « Box ») et carburant consommé (rapporté à la consommation moyenne : celle de V515).
+ *   plus rapide (positions mesurées). Méthodes comparées : distance du moteur (SectorTrace, rapportée au tour de
+ *   référence du moteur : celle du rappel « Box ») et carburant consommé (rapporté à la consommation moyenne : celle de V515).
  * - `refuel-rate` : pleins observés (niveau qui monte à l'arrêt) : début, fin, quantité, durée, débit, linéarité.
  * - `ablation` : prédiction des chronos de fin de relais. Modèles : M0 sans pente, M1 pente des chronos (moindres
  *   carrés), M2 pente robuste (Theil-Sen) ; et utilité de la hauteur de caisse et des suspensions (laisser une course
  *   de côté).
  */
 object PrecisionStudy {
+    /** En dessous, une ablation des pentes n'est pas interprétable (deux ajustements indépendants ne prouvent rien). */
+    private const val MIN_STINTS = 5
     private fun r1(x: Double) = Math.round(x * 10) / 10.0
     private fun r3(x: Double) = Math.round(x * 1000) / 1000.0
     private fun pct(xs: List<Double>, q: Double): Double = xs.sorted().let { if (it.isEmpty()) Double.NaN else it[((it.size - 1) * q).toInt()] }
+
+    /**
+     * Distance du MOTEUR dans le tour, échantillon par échantillon : le vrai [SectorTrace] de l'application (déplacements
+     * 3D, tour invalidé par un saut de plus de 10 m par paquet, une pause ou un chargement). null : tour sans distance.
+     */
+    private fun engineDistance(lap: RaceLaps.Lap): FloatArray? {
+        val tr = SectorTrace()
+        tr.startLap(lap.samples.first().p)
+        val out = FloatArray(lap.samples.size)
+        for ((k, s) in lap.samples.withIndex()) {
+            if (k > 0) tr.add(s.p)
+            if (!tr.isComplete) return null
+            out[k] = tr.lapDistance
+        }
+        return out
+    }
 
     fun lapProgress(traces: List<File>): JSONObject {
         val rows = JSONArray()
@@ -28,50 +47,65 @@ object PrecisionStudy {
         val allFuel = mutableListOf<Double>()
         val callDist = mutableListOf<Double>()
         val callFuel = mutableListOf<Double>()
+        var missedDist = 0; var missedFuel = 0; var calls = 0
         for (f in traces) RaceLaps.load(f).forEachIndexed { ri, race ->
             val clean = race.laps.filter { it.clean }
             val ref = clean.minByOrNull { it.timeMs!! } ?: return@forEachIndexed
             val refPts = ref.samples.filterIndexed { i, _ -> i % 2 == 0 }
             fun geo(x: Float, z: Float): Double = refPts.minByOrNull { hypot(x - it.p.positionX, z - it.p.positionZ) }!!.dist.toDouble() / ref.length
+            val dists = race.laps.associateWith { engineDistance(it) }
             val errD = mutableListOf<Double>()
             val errF = mutableListOf<Double>()
             val cD = mutableListOf<Double>()
             val cF = mutableListOf<Double>()
+            var compared = 0
             for (lap in clean) {
                 if (lap === ref) continue
-                val prev = race.laps.firstOrNull { it.n == lap.n - 1 } ?: continue
+                val own = dists[lap] ?: continue
+                // Référence du moteur (SessionTracker.liveLapProgress) : dernier tour complet hors stands, jamais le tour 1,
+                // d'au moins 1 000 m, dont la distance est valide.
+                val baseline = race.laps.filter { it.n in 2 until lap.n && !it.refuelled && !it.stopped && !it.beforeStop }
+                    .asReversed().firstNotNullOfOrNull { l -> dists[l]?.last()?.takeIf { it >= 1_000f } } ?: continue
                 val per = race.laps.filter { it.clean && it.n < lap.n }.takeLast(3).map { (it.fuelStart - it.fuelEnd).toDouble() }
                     .takeIf { it.isNotEmpty() }?.average() ?: continue
+                compared++
                 var tGeo: Long? = null; var tD: Long? = null; var tF: Long? = null
                 var dGeo = 0.0; var dD = 0.0; var dF = 0.0
-                for (s in lap.samples.filterIndexed { i, _ -> i % 3 == 0 }) {
+                for ((k, s) in lap.samples.withIndex()) {
+                    if (k % 3 != 0) continue
                     val g = geo(s.p.positionX, s.p.positionZ)
-                    if (g !in 0.05..0.95) continue
-                    val d = s.dist.toDouble() / prev.length
+                    val d = own[k].toDouble() / baseline
                     val fu = (lap.fuelStart - s.p.fuelLevel).toDouble() / per
                     if (g in 0.60..0.95) { errD += abs(d - g) * ref.length; errF += abs(fu - g) * ref.length }
-                    // Instant où chaque méthode atteint la fin de la fenêtre de rappel (0,90).
-                    if (tGeo == null && g >= 0.90) { tGeo = s.tMs; dGeo = s.dist.toDouble() }
+                    // Instant où chaque méthode atteint la fin de la fenêtre de rappel (0,90) ; référence géométrique bornée à
+                    // 0,05–0,95 (au-delà, la projection confond fin et début de tour).
+                    if (tGeo == null && g in 0.90..0.95) { tGeo = s.tMs; dGeo = s.dist.toDouble() }
                     if (tD == null && d >= 0.90) { tD = s.tMs; dD = s.dist.toDouble() }
                     if (tF == null && fu >= 0.90) { tF = s.tMs; dF = s.dist.toDouble() }
                 }
-                if (tGeo != null && tD != null) cD += dD - dGeo
-                if (tGeo != null && tF != null) cF += dF - dGeo
+                if (tGeo != null) {
+                    calls++
+                    // Rappel jamais atteint dans le tour : compté comme manqué (pas écarté).
+                    if (tD != null) cD += dD - dGeo else missedDist++
+                    if (tF != null) cF += dF - dGeo else missedFuel++
+                }
             }
             allDist += errD; allFuel += errF; callDist += cD; callFuel += cF
             rows.put(JSONObject().put("trace", f.name.take(8)).put("course", ri + 1).put("longueur_tour_m", r1(ref.length.toDouble()))
-                .put("tours_compares", clean.size - 1)
+                .put("tours_compares", compared)
                 .put("distance_erreur_mediane_m", r1(pct(errD, 0.5))).put("distance_erreur_p95_m", r1(pct(errD, 0.95)))
                 .put("carburant_erreur_mediane_m", r1(pct(errF, 0.5))).put("carburant_erreur_p95_m", r1(pct(errF, 0.95)))
-                .put("rappel_0_90_distance_ecart_median_m", r1(pct(cD, 0.5))).put("rappel_0_90_carburant_ecart_median_m", r1(pct(cF, 0.5)))
+                .put("rappel_0_90_distance_ecart_median_m", r1(pct(cD.map { abs(it) }, 0.5))).put("rappel_0_90_carburant_ecart_median_m", r1(pct(cF.map { abs(it) }, 0.5)))
+                .put("rappel_0_90_distance_ecart_max_m", r1(cD.maxOfOrNull { abs(it) } ?: Double.NaN))
                 .put("rappel_0_90_carburant_ecart_max_m", r1(cF.maxOfOrNull { abs(it) } ?: Double.NaN)))
         }
         return JSONObject()
-            .put("nature", "Position dans le tour sur traces RÉELLES : référence géométrique (X/Z mesurés) ; erreurs en mètres dans la fenêtre 0,60–0,95 du tour (CALCUL).")
+            .put("nature", "Position dans le tour sur traces RÉELLES : référence géométrique (X/Z mesurés) ; distance = SectorTrace du moteur (déplacements 3D) rapportée au tour de référence du moteur ; erreurs en mètres dans la fenêtre 0,60–0,95 du tour (CALCUL). Rappels pris un échantillon sur 3 (≈ 0,15 s, ≈ 7 m à 170 km/h : résolution, pas précision).")
             .put("par_course", rows)
             .put("synthese", JSONObject()
                 .put("distance_erreur_mediane_m", r1(pct(allDist, 0.5))).put("distance_erreur_p95_m", r1(pct(allDist, 0.95)))
                 .put("carburant_erreur_mediane_m", r1(pct(allFuel, 0.5))).put("carburant_erreur_p95_m", r1(pct(allFuel, 0.95)))
+                .put("rappels", calls).put("rappels_distance_manques", missedDist).put("rappels_carburant_manques", missedFuel)
                 .put("rappel_distance_ecart_median_m", r1(pct(callDist.map { abs(it) }, 0.5)))
                 .put("rappel_carburant_ecart_median_m", r1(pct(callFuel.map { abs(it) }, 0.5))))
     }
@@ -127,17 +161,21 @@ object PrecisionStudy {
         val rows = mutableListOf<LapRow>()
         for (f in traces) RaceLaps.load(f).forEachIndexed { ri, race ->
             var stint = 0
+            var stintStart = 1
             for (l in race.laps) {
-                if (l.stopped || l.refuelled) stint++
+                if (l.stopped || l.refuelled) { stint++; stintStart = l.n + 1 }
                 if (!l.clean) continue
                 val key = "${f.name.take(8)}#${ri + 1}"
-                rows += LapRow(key, l.timeMs!!.toDouble(), l.fuelStart.toDouble(), l.n.toDouble(),
+                // Âge dans le relais (remis à zéro à chaque arrêt), pas le numéro du tour.
+                rows += LapRow(key, l.timeMs!!.toDouble(), l.fuelStart.toDouble(), (l.n - stintStart).toDouble(),
                     l.samples.map { it.p.bodyHeight.toDouble() }.average(),
                     l.samples.map { it.p.suspensionHeight.toList().average() }.average(), "$key/$stint")
             }
         }
+        var stints = 0
         for ((_, st) in rows.groupBy { it.stint }) {
             if (st.size < 5) continue
+            stints++
             val fit = st.dropLast(2); val test = st.takeLast(2)
             val m0 = fit.map { it.time }.average()
             val x = fit.map { it.age }; val y = fit.map { it.time }
@@ -157,8 +195,13 @@ object PrecisionStudy {
         for (r in races) {
             val train = rows.filter { it.race != r }; val test = rows.filter { it.race == r }
             if (train.size < 8 || test.isEmpty()) continue
-            // Rythme propre à chaque course (circuits différents) : on prédit l'écart à la moyenne de la course.
-            fun centered(xs: List<LapRow>) = xs.groupBy { it.race }.flatMap { (_, g) -> val m = g.map { it.time }.average(); g.map { it to it.time - m } }
+            // Rythme, voiture et circuit propres à chaque course : TOUTES les variables sont recentrées par course (sinon la
+            // caisse, qui change surtout d'une voiture à l'autre, extrapole entre voitures).
+            fun centered(xs: List<LapRow>) = xs.groupBy { it.race }.flatMap { (_, g) ->
+                val mt = g.map { it.time }.average(); val mf = g.map { it.fuel }.average(); val ma = g.map { it.age }.average()
+                val mb = g.map { it.body }.average(); val ms = g.map { it.susp }.average()
+                g.map { LapRow(it.race, it.time, it.fuel - mf, it.age - ma, it.body - mb, it.susp - ms, it.stint) to it.time - mt }
+            }
             val tr = centered(train); val te = centered(test)
             val a = ols(tr.map { (l, _) -> doubleArrayOf(1.0, l.fuel, l.age) }, tr.map { it.second })
             val b = ols(tr.map { (l, _) -> doubleArrayOf(1.0, l.fuel, l.age, l.body, l.susp) }, tr.map { it.second })
@@ -170,10 +213,12 @@ object PrecisionStudy {
         fun mae(e: List<Double>) = if (e.isEmpty()) JSONObject.NULL else r1(e.average())
         return JSONObject()
             .put("nature", "Ablation sur traces RÉELLES (chronos MESURÉS) ; prédictions évaluées hors calibration (CALCUL).")
-            .put("pente_des_chronos", JSONObject().put("predictions", e0.size)
+            .put("pente_des_chronos", JSONObject().put("predictions", e0.size).put("relais", stints)
+                .put("interpretable", stints >= MIN_STINTS)
+                .put("lecture", if (stints >= MIN_STINTS) "comparaison appariée sur $stints relais" else "moins de $MIN_STINTS relais : aucune conclusion (un tour aberrant suffit à faire pencher une pente)")
                 .put("M0_sans_pente_erreur_ms", mae(e0)).put("M1_pente_moindres_carres_erreur_ms", mae(e1)).put("M2_pente_robuste_erreur_ms", mae(e2)))
             .put("caisse_et_suspensions", JSONObject().put("predictions", eA.size)
                 .put("A_carburant_tour_erreur_ms", mae(eA)).put("B_plus_caisse_suspensions_erreur_ms", mae(eB))
-                .put("lecture", "B n'entre dans le moteur que s'il bat A sur des courses distinctes"))
+                .put("lecture", "B n'entre dans le moteur que s'il bat A sur des courses distinctes ET sans fuite causale : la caisse et les suspensions moyennes du tour sont une CONSÉQUENCE de sa vitesse (appui aérodynamique) et ne sont connues qu'à la fin du tour prédit"))
     }
 }

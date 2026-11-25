@@ -1916,7 +1916,7 @@ class RaceController(
         clearStrategyCommand()
         strategyAssurance.reset()
         lastStrategyPace = null
-        refuelRates.clear(); refuelRiseMs = 0; refuelRiseUnits = 0.0; refuelPrev = null
+        refuelRates.clear(); refuelStart = null; refuelLast = null; refuelFlat = 0; refuelPrev = null
         lastRaceState = null
         sessionGameLaps = null
         staleSportSheet = false
@@ -3157,9 +3157,15 @@ class RaceController(
             pitEntryStillPossible = entryOpen,
         )
         val report = com.gt7pitwall.core.strategy.StrategyEngine.analyze(engineIn)
+        // Secours par le carburant seulement s'il est vraiment calculé (consommation mesurée, niveau au début du tour connu,
+        // pas de plein dans ce tour) ; sinon la fraction n'est qu'une valeur par défaut : position INCONNUE.
+        val snap = snapshot
+        val fuelProgressValid = input.fuelSource == DataSource.MEASURED && snap.fuelAtLapStart != null && !snap.refuelledThisLap
         val state = strategyState(input, pace, total, entryOpen, planNow?.stops ?: emptyList(), now).copy(
+            lapsRemaining = StratSourced(total - lap + fractionLeft, "tours", if (progress != null) "calcul (distance parcourue)" else "calcul (carburant consommé)", StratNature.CALCUL),
             lapProgress = progress?.let { StratSourced(it, "fraction", "distance parcourue dans le tour (vitesse mesurée intégrée)", StratNature.CALCUL, now) }
-                ?: StratSourced(1f - input.currentLapRemaining, "fraction", "carburant consommé dans le tour (approximatif, secours)", StratNature.ESTIMATION, now),
+                ?: if (fuelProgressValid) StratSourced(1f - input.currentLapRemaining, "fraction", "carburant consommé dans le tour (approximatif, secours)", StratNature.ESTIMATION, now)
+                else StratSourced.unknown("fraction", "position dans le tour inconnue (ni distance ni carburant exploitables)"),
         )
         val previous = strategyCommand?.decision
         val decision = strategyAssurance.review(state, report, now) { stops ->
@@ -3225,7 +3231,11 @@ class RaceController(
             pitZoneValidated = validatedPitBox() != null,
             pitEntryStillPossible = entryOpen,
             stopCosts = pace.costs(),
-            refuelMsPerUnit = measuredRefuelMsPerUnit()?.let { StratSourced(it, "ms/unité", "débit mesuré pendant un plein de CETTE course", StratNature.MESURE) }
+            // Débit CALCULÉ sur les hausses de carburant mesurées à l'arrêt ; un seul plein ne dit rien de sa répétabilité.
+            refuelMsPerUnit = measuredRefuelMsPerUnit()?.let {
+                StratSourced(it, "ms/unité", "débit calculé sur ${refuelRates.size} plein${if (refuelRates.size > 1) "s" else ""} de CETTE course", StratNature.CALCUL,
+                    limit = "un seul plein : répétabilité non vérifiée".takeIf { refuelRates.size < 2 })
+            }
                 ?: StratSourced.unknown("ms/unité", "débit de remplissage non mesuré dans cette course"),
             outLapPenaltyMs = StratSourced.unknown("ms", "tour de sortie : effet non démontré"),
             plannedStops = planned,
@@ -3244,10 +3254,10 @@ class RaceController(
      */
     private fun stopCosts(model: HistoryModel, laneMs: Double?): StopCosts? {
         fun c(l: com.gt7pitwall.core.strategy.Learned, what: String) =
-            Cost(l.mean, maxOf(l.spread, l.mean * 0.1), "$what observés (${l.samples} arrêt${if (l.samples > 1) "s" else ""})")
+            Cost(l.mean, maxOf(l.spread, l.mean * 0.1), "$what observés (${l.samples} arrêt${if (l.samples > 1) "s" else ""})", samples = l.samples)
         val observed = model.pitLossByKind.mapValues { (k, l) -> c(l, k.label) }
         val lane = laneMs?.let { Cost(it, it * 0.5, "voie des stands seule (base GT7)") }
-        val unknown = model.pitLossUnknownContent?.let { Cost(it.mean, maxOf(it.spread, it.mean * 0.2), "arrêts passés au contenu non précisé") }
+        val unknown = model.pitLossUnknownContent?.let { Cost(it.mean, maxOf(it.spread, it.mean * 0.2), "arrêts passés au contenu non précisé", samples = it.samples) }
         val (base, withRefuel) = when {
             observed[StopKind.NONE] != null -> observed[StopKind.NONE] to false
             lane != null -> lane to false
@@ -4910,28 +4920,44 @@ class RaceController(
     }
 
     /** Relais pneus en cours pour le diagnostic d'adhérence : indépendant des ravitaillements. */
-    // ---- V515.1 : débit de remplissage MESURÉ dans cette course (niveau GT7 qui monte, voiture immobile).
-    private var refuelRiseMs = 0L
-    private var refuelRiseUnits = 0.0
+    // ---- V515.1 : débit de remplissage CALCULÉ sur le niveau GT7 mesuré qui monte, voiture immobile. Mesure de bout en
+    // bout (instant et niveau au début et à la dernière hausse) : insensible aux rafales de paquets et aux paliers.
+    private var refuelStart: Pair<Long, Float>? = null
+    private var refuelLast: Pair<Long, Float>? = null
+    private var refuelFlat = 0
     private var refuelPrev: Pair<Long, Float>? = null
     private val refuelRates = mutableListOf<Double>()
+    private val REFUEL_GAP_MS = 500L
+    private val REFUEL_FLAT_PACKETS = 5
 
     private fun trackRefuelRate(p: TelemetryPacket, atMs: Long, active: Boolean) {
         val prev = refuelPrev
         refuelPrev = atMs to p.fuelLevel
-        if (!active || p.speedKmh >= 1f || prev == null) {
+        if (!active || p.speedKmh >= 1f || prev == null || atMs - prev.first > REFUEL_GAP_MS) {
             closeRefuelRise(); return
         }
         val rise = p.fuelLevel - prev.second
-        val dt = atMs - prev.first
-        if (rise > 0.001f && dt in 1..500) { refuelRiseMs += dt; refuelRiseUnits += rise }
-        else if (refuelRiseUnits > 0 && rise <= 0.001f) closeRefuelRise()
+        when {
+            rise > 0.001f -> {
+                if (refuelStart == null) refuelStart = prev
+                refuelLast = atMs to p.fuelLevel
+                refuelFlat = 0
+            }
+            rise < -0.001f -> closeRefuelRise()
+            // Niveau inchangé : GT7 peut le mettre à jour par paliers ; le plein n'est fini qu'après quelques paquets plats.
+            refuelStart != null && ++refuelFlat > REFUEL_FLAT_PACKETS -> closeRefuelRise()
+        }
     }
 
     private fun closeRefuelRise() {
-        // Un plein d'au moins 5 unités pendant au moins 1 s : assez pour un débit (MESURE de ce plein seulement).
-        if (refuelRiseUnits >= 5.0 && refuelRiseMs >= 1_000) refuelRates += refuelRiseMs / refuelRiseUnits
-        refuelRiseMs = 0; refuelRiseUnits = 0.0
+        val a = refuelStart; val b = refuelLast
+        if (a != null && b != null) {
+            val units = (b.second - a.second).toDouble()
+            val ms = (b.first - a.first).toDouble()
+            // Un plein d'au moins 5 unités pendant au moins 1 s : assez pour un débit (de ce plein seulement).
+            if (units >= 5.0 && ms >= 1_000) refuelRates += ms / units
+        }
+        refuelStart = null; refuelLast = null; refuelFlat = 0
     }
 
     /** Débit de remplissage (ms par unité) mesuré dans cette course, sinon null (jamais une valeur d'un autre circuit). */

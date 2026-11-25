@@ -129,6 +129,8 @@ object StrategyEngine {
         val parts: Map<String, Double> = emptyMap(),
         /** Écart avec la référence, cause par cause (ms) : ce qui pèse dans la décision. */
         val deltaParts: Map<String, Double>? = null,
+        /** Carburant embarqué intégré sur la course (unités × tours) : sert à juger l'effet du poids, même non calibré. */
+        val fuelLapUnits: Double? = null,
     ) {
         val stopLaps: List<Int> get() = stops.map { it.lap }
         val tyreStops: Int get() = stops.count { it.tyres }
@@ -249,6 +251,7 @@ object StrategyEngine {
         val costs = i.stopCosts
         val pace = i.paceMs
         val parts = mutableMapOf<String, Double>()
+        var fuelLapUnits: Double? = null
         fun add(k: String, v: Double) { parts[k] = (parts[k] ?: 0.0) + v }
         if (pace != null) {
             var t = 0.0
@@ -261,6 +264,18 @@ object StrategyEngine {
                 }
                 // Tour de sortie après un changement de pneus.
                 if (idx > 0 && stopPlans[idx - 1].tyres) i.outLapPenaltyMs?.let { t += it; add(PART_OUTLAP, it) }
+            }
+            // Carburant embarqué intégré relais par relais (moyenne du relais × tours), calculé même sans effet calibré.
+            if (stints.all { it.fuelUsed != null }) {
+                var f = i.fuelNow
+                var acc = 0.0
+                for ((idx, st) in stints.withIndex()) {
+                    if (idx > 0) f += stopPlans[idx - 1].fuelAdded ?: 0f
+                    val u = st.fuelUsed ?: 0f
+                    acc += (f - u / 2).toDouble() * st.laps
+                    f -= u
+                }
+                fuelLapUnits = acc
             }
             i.fuelEffectMsPerUnit?.let { eff ->
                 // Carburant embarqué : intégré relais par relais (moyenne du relais × tours).
@@ -300,7 +315,7 @@ object StrategyEngine {
             kind, stopPlans, stints, feasible, issues.distinct(), total, null, null,
             if (perLap != null && minMargin != Float.MAX_VALUE) minMargin else null,
             if (perLap != null && breakFrac != Float.MAX_VALUE) breakFrac.coerceAtLeast(0f) else null,
-            maxSave, savedUnits * i.saveCostMsPerUnit, unknowns.distinct(), invalidIf, parts,
+            maxSave, savedUnits * i.saveCostMsPerUnit, unknowns.distinct(), invalidIf, parts, fuelLapUnits = fuelLapUnits,
         )
     }
 

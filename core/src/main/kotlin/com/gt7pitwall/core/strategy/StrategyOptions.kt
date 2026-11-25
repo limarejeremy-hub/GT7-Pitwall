@@ -52,7 +52,8 @@ enum class StopKind(val label: String) {
 }
 
 /** Un temps (ms), son incertitude, d'où il vient, et s'il s'agit d'une hypothèse plutôt que d'une mesure. */
-data class Cost(val ms: Double, val spread: Double, val source: String, val assumed: Boolean = false)
+/** [samples] : nombre d'arrêts réels dont le coût est appris (null : hypothèse ou base GT7, pas un apprentissage). */
+data class Cost(val ms: Double, val spread: Double, val source: String, val assumed: Boolean = false, val samples: Int? = null)
 
 /**
  * Coût d'un arrêt selon ce qu'il contient, sans jamais compter deux fois une intervention :
