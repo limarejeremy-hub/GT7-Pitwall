@@ -111,7 +111,8 @@ fun TelemetryScreen(board: TelemetryBoard?, modifier: Modifier = Modifier) {
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Column(Modifier.weight(5f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         LapCard(board)
-                        TyreCard(board)
+                        // V514-A : le diagnostic des pneus prend toute la largeur sous les deux colonnes (cases lisibles).
+                        if (board.tyreBoard == null) TyreCard(board)
                     }
                     Column(Modifier.weight(7f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         SectorCard(board)
@@ -121,10 +122,11 @@ fun TelemetryScreen(board: TelemetryBoard?, modifier: Modifier = Modifier) {
                         }
                     }
                 }
+                board.tyreBoard?.let { TyreDiagnosticCompact(it) }
             } else {
                 LapCard(board)
                 SectorCard(board)
-                TyreCard(board)
+                board.tyreBoard?.let { TyreDiagnosticCompact(it) } ?: TyreCard(board)
                 FuelCard(board)
                 CompoundLegend()
             }

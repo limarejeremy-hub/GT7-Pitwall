@@ -6,7 +6,8 @@ Ingénieur de course Android natif (Galaxy Fold) pour Gran Turismo 7 sur PS5 : t
 ## Branches (vérifier avant de partir d'une base)
 - `main` n'est PAS l'application : commit initial + workflows CI seulement.
 - L'application vit sur une pile de PR brouillons empilées (chacune a pour base la précédente). La plus récente
-  connue : `claude/v513-endurance-intelligence` (V513, PR #93, Lab et docs seulement), base `claude/v512-lot2-carburant-stands`
+  connue : `claude/v514-tyre-fuel-pit` (V514, diagnostic des 4 pneus, `docs/V514.md`), base `claude/v513-endurance-intelligence`
+  (V513, PR #93, Lab et docs seulement), base `claude/v512-lot2-carburant-stands`
   (V512 lot 2, PR #92, dernière version du moteur et de l'APK ; lot 1 = PR #91 ; V511 = PR #86). Vérifier `git branch -r --sort=-committerdate` : une version plus
   récente peut exister.
 - PR #64 (veille automatique #63) est hors pile.

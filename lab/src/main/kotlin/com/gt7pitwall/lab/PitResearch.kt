@@ -24,10 +24,18 @@ object PitResearch {
     const val MARGIN_M = 200f
     const val LANE_MAX_KMH = 105f
 
-    private class P(val tMs: Long, val x: Float, val z: Float, val v: Float, val fuel: Float, val gdist: Float, val lap: Int)
+    private class P(val tMs: Long, val x: Float, val z: Float, val v: Float, val fuel: Float, val gdist: Float, val lap: Int, val temps: List<Float> = emptyList())
+
+    /** Zone d'arrêt validée : au moins [ZONE_MIN_STOPS] arrêts concordants à moins de [ZONE_M] (V514-B). */
+    const val ZONE_M = 15f
+    const val ZONE_MIN_STOPS = 2
+    /** Retour au rythme : premier tour après la visite à moins de 1 % de la médiane des tours propres. */
+    const val PACE_BACK = 1.01
 
     fun run(traces: List<File>): JSONObject {
         val stops = JSONArray()
+        // Arrêts par circuit (signature : longueur du tour de référence à 1 % près) pour la base de zones de stands.
+        val stopPoints = mutableListOf<Triple<Float, Float, Float>>() // longueur de référence, X, Z
         for (f in traces) {
             RaceLaps.load(f).forEachIndexed { ri, race ->
                 val clean = race.laps.filter { it.clean }
@@ -48,8 +56,8 @@ object PitResearch {
                     val next = race.laps.getOrNull(idx + 1)
                     val prev = race.laps.getOrNull(idx - 1)
                     // L'approche peut être dans le tour précédent (arrêt juste après la ligne : observé le 06/11).
-                    val pts = (prev?.samples?.map { P(it.tMs, it.p.positionX, it.p.positionZ, it.p.speedKmh, it.p.fuelLevel, it.dist - prev.length, prev.n) } ?: emptyList()) + (lap.samples.map { P(it.tMs, it.p.positionX, it.p.positionZ, it.p.speedKmh, it.p.fuelLevel, it.dist, lap.n) } +
-                        (next?.samples?.map { P(it.tMs, it.p.positionX, it.p.positionZ, it.p.speedKmh, it.p.fuelLevel, it.dist + lap.length, next.n) } ?: emptyList()))
+                    val pts = (prev?.samples?.map { P(it.tMs, it.p.positionX, it.p.positionZ, it.p.speedKmh, it.p.fuelLevel, it.dist - prev.length, prev.n, it.p.tyreTemps.toList()) } ?: emptyList()) + (lap.samples.map { P(it.tMs, it.p.positionX, it.p.positionZ, it.p.speedKmh, it.p.fuelLevel, it.dist, lap.n, it.p.tyreTemps.toList()) } +
+                        (next?.samples?.map { P(it.tMs, it.p.positionX, it.p.positionZ, it.p.speedKmh, it.p.fuelLevel, it.dist + lap.length, next.n, it.p.tyreTemps.toList()) } ?: emptyList()))
                     val stopStart = firstStop(pts, lap.n, visitEndT)
                     if (stopStart < 0) continue // immobilisation déjà comptée dans la visite précédente (28/10 : T6 puis T7)
                     val stopEnd = (stopStart until pts.size).firstOrNull { pts[it].v >= 1f } ?: continue
@@ -85,11 +93,32 @@ object PitResearch {
                     }
                     visitEndT = pts[visitLast].tMs
                     val refuel = pts.subList(stopStart, visitLast + 1).let { s -> (s.maxOf { it.fuel } - s.first().fuel) }
+                    stopPoints += Triple(refLen, pts[stopStart].x, pts[stopStart].z)
+                    // Changement de pneus : le détecteur thermique DU MOTEUR (TyreChangeHunter) sur 1 échantillon par seconde.
+                    // GT7 ne transmet pas le changement : au mieux « suspecté », jamais confirmé sans le pilote.
+                    val tyreVerdict = run {
+                        val samples = mutableListOf<com.gt7pitwall.core.tyres.ThermalSample>()
+                        var sec = 0
+                        var lastT = Long.MIN_VALUE
+                        val from = pts.indexOfFirst { it.tMs >= pts[stopStart].tMs - 20_000 }.coerceAtLeast(0)
+                        for (i in from..visitLast) {
+                            val q = pts[i]
+                            if (q.tMs - lastT < 1_000 || q.temps.size != 4) continue
+                            lastT = q.tMs
+                            val phase = if (i < stopStart) com.gt7pitwall.core.tyres.ThermalPhase.BEFORE else com.gt7pitwall.core.tyres.ThermalPhase.STOP
+                            samples += com.gt7pitwall.core.tyres.ThermalSample(++sec, phase, q.temps, q.v, q.fuel)
+                        }
+                        com.gt7pitwall.core.tyres.TyreChangeHunter.analyze(lap.n, if (refuel > 0.5f) com.gt7pitwall.core.session.PitAssessment.REFUEL else com.gt7pitwall.core.session.PitAssessment.PIT_LIKE_STOP, samples)
+                    }
                     val o = JSONObject().put("trace", f.name).put("course", ri + 1).put("tour", lap.n)
                         .put("immobile_s_MESURE", r1(immobileMs / 1000.0))
                         .put("immobilisations", immobilisations)
                         .put("carburant_ajoute_MESURE", r1(refuel.toDouble()))
                         .put("entree_voie_detectee", entry < stopStart)
+                        .put("tour_entree", if (entry < stopStart) pts[entry].lap else pts[stopStart].lap)
+                        .put("tour_sortie", rejoin?.let { pts[it].lap } ?: JSONObject.NULL)
+                        .put("pneus", tyreVerdict.verdict.label)
+                        .put("pneus_raison", tyreVerdict.reason)
                     if (entry < stopStart) {
                         val laneSpeed = RaceLaps.median(pts.subList(entry, stopStart).map { it.v.toDouble() })
                         o.put("entree_a_m_du_debut_du_tour", r1(pts[entry].gdist.toDouble()))
@@ -131,6 +160,13 @@ object PitResearch {
                             .put("temps_perdu_s_CALCUL", if (med != null && pitTime != null) r1(pitTime - med) else JSONObject.NULL)
                             .put("temps_perdu_hors_immobilisation_s_CALCUL", if (med != null && pitTime != null) r1(pitTime - med - immobileMs / 1000.0) else JSONObject.NULL)
                     }
+                    // Retour au rythme normal : premier tour complet après la visite à moins de 1 % de la médiane propre.
+                    medClean?.let { med ->
+                        val afterLap = rejoin?.let { pts[it].lap } ?: lap.n
+                        val back = race.laps.firstOrNull { it.n > afterLap && (it.timeMs ?: Int.MAX_VALUE) <= med * PACE_BACK }
+                        o.put("retour_rythme_tour", back?.n ?: JSONObject.NULL)
+                            .put("tours_hors_rythme_apres_sortie", back?.let { it.n - afterLap - 1 } ?: JSONObject.NULL)
+                    }
                     stops.put(o)
                 }
             }
@@ -139,6 +175,7 @@ object PitResearch {
             .put("nature", "Phases du stand et temps perdu sur traces RÉELLES : MESURE (X/Z, vitesse, carburant) et CALCUL (Lab).")
             .put("seuils", JSONObject().put("entree_m", ENTRY_M).put("retour_m", REJOIN_M).put("marge_m", MARGIN_M))
             .put("arrets", stops)
+            .put("zones_de_stands", zones(stopPoints))
     }
 
     /**
@@ -152,6 +189,27 @@ object PitResearch {
         val start = at(a, from) ?: return null
         val end = if (to > 1f) at(b, to - 1f) else if (to < from) at(b, to) else at(a, to)
         return end?.let { (it - start) / 1000.0 }?.takeIf { it > 0 }
+    }
+
+    /**
+     * Base de zones d'arrêt (V514-B) : coordonnées MESURÉES (X/Z GT7) des arrêts d'un même circuit, validées seulement
+     * si au moins [ZONE_MIN_STOPS] arrêts tombent à moins de [ZONE_M] les uns des autres. Aucun emplacement deviné.
+     */
+    private fun zones(points: List<Triple<Float, Float, Float>>): JSONArray {
+        val out = JSONArray()
+        val byTrack = mutableListOf<MutableList<Triple<Float, Float, Float>>>()
+        for (p in points) (byTrack.firstOrNull { kotlin.math.abs(it.first().first - p.first) / p.first < 0.01f } ?: mutableListOf<Triple<Float, Float, Float>>().also { byTrack += it }) += p
+        for (g in byTrack) {
+            val cx = g.map { it.second }.average()
+            val cz = g.map { it.third }.average()
+            val spread = g.maxOf { hypot(it.second - cx.toFloat(), it.third - cz.toFloat()) }
+            val validated = g.size >= ZONE_MIN_STOPS && spread <= ZONE_M
+            out.put(JSONObject().put("longueur_tour_reference_m", r1(g.first().first.toDouble())).put("arrets", g.size)
+                .put("x", r1(cx)).put("z", r1(cz)).put("dispersion_m", r1(spread.toDouble()))
+                .put("validee", validated)
+                .put("statut", if (validated) "zone validée par ${g.size} arrêts concordants (MESURE)" else "non validée : ${if (g.size < ZONE_MIN_STOPS) "un seul arrêt" else "arrêts dispersés"}"))
+        }
+        return out
     }
 
     /** Premier point immobile (< 1 km/h) du tour [lap] tenu au moins 3 s, après [after] ; -1 sinon. Linéaire. */

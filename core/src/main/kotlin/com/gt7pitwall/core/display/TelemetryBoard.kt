@@ -38,6 +38,8 @@ data class TelemetryBoard(
     /** Une case par tour de la course : gomme, arrêt, tour en cours. Vide si le nombre de tours est inconnu. */
     val stints: List<StintCell>,
     val requiredTyres: Set<TyreCompound>,
+    /** V514-A : diagnostic des quatre pneus (null si indisponible). */
+    val tyreBoard: TyreBoard? = null,
 ) {
     enum class SectorColor { BEST, IMPROVED, SLOWER, NONE }
 
@@ -154,6 +156,7 @@ data class TelemetryBoard(
                 fuelLapsLeft = if (fuelPct != null && perLapPct != null && perLapPct > 0f) fuelPct / perLapPct else null,
                 stints = stints(c.rules.totalLaps ?: p?.totalLaps, currentLap, c.rules.startTyre, c.ledger.changes, stopLaps),
                 requiredTyres = c.rules.requiredTyres,
+                tyreBoard = runCatching { TyreBoard.of(c.tyreDiagnostics(), c.tyreTrain()) }.getOrNull(),
             )
         }
 
