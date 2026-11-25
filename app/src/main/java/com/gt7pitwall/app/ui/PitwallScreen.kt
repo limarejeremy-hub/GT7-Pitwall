@@ -407,6 +407,7 @@ fun PitwallScreen(
                     Gt7CareerPanel(gt7Profile, editable = false, localCareer = state.localCareer)
                 }
                 val planning: @Composable () -> Unit = {
+                    telemetryBoard?.strategyBoard?.let { StrategyBoardCard(it) }
                     RaceSetupCard(state, rules, engine.database, engine::setRules, engine::command,
                         engine::selectProfile, engine::updateProfile, engine::confirmRules,
                         onRefreshSchedule, engine::declareRules)

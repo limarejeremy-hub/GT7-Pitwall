@@ -123,10 +123,12 @@ fun TelemetryScreen(board: TelemetryBoard?, modifier: Modifier = Modifier) {
                     }
                 }
                 board.tyreBoard?.let { TyreDiagnosticCompact(it) }
+                board.strategyBoard?.let { StrategyBoardCompact(it) }
             } else {
                 LapCard(board)
                 SectorCard(board)
                 board.tyreBoard?.let { TyreDiagnosticCompact(it) } ?: TyreCard(board)
+                board.strategyBoard?.let { StrategyBoardCompact(it) }
                 FuelCard(board)
                 CompoundLegend()
             }

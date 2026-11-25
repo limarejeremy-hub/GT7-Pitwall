@@ -40,6 +40,8 @@ data class TelemetryBoard(
     val requiredTyres: Set<TyreCompound>,
     /** V514-A : diagnostic des quatre pneus (null si indisponible). */
     val tyreBoard: TyreBoard? = null,
+    /** V515-C : comparateur de stratégies et décision du contrôleur (null tant qu'aucun plan n'est calculé). */
+    val strategyBoard: StrategyBoard? = null,
 ) {
     enum class SectorColor { BEST, IMPROVED, SLOWER, NONE }
 
@@ -157,6 +159,7 @@ data class TelemetryBoard(
                 stints = stints(c.rules.totalLaps ?: p?.totalLaps, currentLap, c.rules.startTyre, c.ledger.changes, stopLaps),
                 requiredTyres = c.rules.requiredTyres,
                 tyreBoard = runCatching { TyreBoard.of(c.tyreDiagnostics(), c.tyreTrain()) }.getOrNull(),
+                strategyBoard = c.strategyCommand?.let { cmd -> runCatching { StrategyBoard.of(cmd.report, cmd.decision) }.getOrNull() },
             )
         }
 
