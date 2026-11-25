@@ -220,6 +220,8 @@ class RaceController(
 
     /** Tyre Change Hunter : diagnostic thermique expérimental des passages aux stands (n'agit jamais seul sur les pneus). */
     val tyreHunter = TyreChangeHunter()
+    /** V514-A : diagnostic des quatre pneus (températures, glissement, anomalies), sans aucune usure inventée. */
+    val tyreDiag = com.gt7pitwall.core.tyres.TyreDiagnostics()
 
     /** Diagnostic du dernier passage, en attente de l'étiquette du pilote (« pneus neufs » / « mêmes pneus »). */
     private var lastThermal: ThermalCapture? = null
@@ -468,6 +470,7 @@ class RaceController(
         if (events.any { it is SessionEvent.SessionReset }) {
             // Une transition de session ne reprend rien : ni capture thermique, ni diagnostic en attente d'étiquette.
             tyreHunter.reset()
+            tyreDiag.reset()
             lastThermal = null
             pendingStopTyreSuspect = false
         }
@@ -475,6 +478,12 @@ class RaceController(
         val raceActive = p.currentLap >= 1 && !sessionFinished && (p.totalLaps <= 0 || p.currentLap <= p.totalLaps) &&
             !p.isPaused && !p.isLoading
         tyreHunter.onPacket(p, tracker.pitVisitOpen, raceActive)?.let(::journalThermal)
+        if (raceActive) {
+            // Relais pneus : ne change que sur un changement confirmé au registre (un plein seul ne remet rien à zéro).
+            val st = ledger.tyreStint(p.currentLap, rules.startTyre)
+            tyreDiag.setStint(st.startLap, st.certain)
+            tyreDiag.onPacket(p, packetMs)
+        }
         gMeter.update(p)?.let { gForce = it }
         // Position mesurée (0x84) : seulement en course ; en qualification, elle n'a pas été validée.
         val nowMs = clock()
@@ -3227,6 +3236,9 @@ class RaceController(
                 StrategyDialogue.Ask.TyreStatus -> answerTyreStatus()
                 StrategyDialogue.Ask.TyreLife -> answerTyreLife()
                 StrategyDialogue.Ask.TyreChange -> answerTyreChange()
+                StrategyDialogue.Ask.TyreWorst -> answerTyreWorst()
+                is StrategyDialogue.Ask.TyreHeat -> answerTyreHeat(ask.front)
+                StrategyDialogue.Ask.PitLoss -> answerPitLoss()
                 StrategyDialogue.Ask.GainPitNow -> answerGainPitNow()
                 StrategyDialogue.Ask.WhyPitWithFuel -> answerWhyPitWithFuel()
                 is StrategyDialogue.Ask.GripQuestion -> answerGripQuestion(ask.kind, question)
@@ -3440,7 +3452,75 @@ class RaceController(
             val rear = (t.rl + t.rr) / 2
             " Avant ${front.roundToInt()}, arrière ${rear.roundToInt()} degrés."
         } ?: ""
-        return "${tyreStintText()}.$temps $body${tyreOrDrivingSentence()}${tractionSentence()}$declared"
+        return "${tyreStintText()}.$temps $body${tyreDiagSentence()}${tyreOrDrivingSentence()}${tractionSentence()}$declared"
+    }
+
+    /** V514-A : anomalie mesurée la plus importante, en une phrase courte (vide s'il n'y en a pas). */
+    private fun tyreDiagSentence(): String {
+        val r = tyreDiagnostics()
+        if (r.recovering) return " Sortie des stands : je laisse les pneus revenir en température avant de juger."
+        val issue = r.issues.filter { it.kind != com.gt7pitwall.core.tyres.TyreDiagnostics.IssueKind.DEGRADATION_SUSPECTED }.minByOrNull { it.kind.ordinal }
+            ?: return ""
+        return " ${issue.kind.label.replaceFirstChar { it.uppercase() }} : ${issue.text.replaceFirstChar { it.lowercase() }}."
+    }
+
+    /** V514-A : « quels pneus souffrent le plus ? ». Mesures relatives au début du relais, jamais une usure. */
+    private fun answerTyreWorst(): String {
+        val r = tyreDiagnostics()
+        if (r.measuredLaps == 0) return "Pas encore de tour complet mesuré : je ne peux pas comparer les pneus."
+        val names = com.gt7pitwall.core.tyres.TyreDiagnostics.NAMES
+        val flagged = r.issues.filter { it.wheel != null }
+        if (flagged.isEmpty()) {
+            val hottest = r.wheels.indices.maxByOrNull { r.wheels[it].lapMeanC ?: 0f } ?: return "Je n'ai pas de températures."
+            val w = r.wheels[hottest]
+            return "Aucun pneu ne montre d'anomalie mesurée. Le plus chaud est l'${names[hottest]}, ${w.lapMeanC?.roundToInt()} degrés en moyenne au dernier tour. GT7 ne transmet pas l'usure."
+        }
+        val worst = r.worstWheel ?: flagged.first().wheel!!
+        val main = flagged.filter { it.wheel == worst }.minByOrNull { it.kind.ordinal }!!
+        return "L'${names[worst]} : ${main.kind.label}, ${main.text.replaceFirstChar { it.lowercase() }}. C'est une mesure, pas une usure."
+    }
+
+    /** V514-A : « mes pneus avant chauffent ? » : écart à la référence stabilisée du relais et à l'autre essieu. */
+    private fun answerTyreHeat(front: Boolean?): String {
+        val r = tyreDiagnostics()
+        if (r.recovering) return "Tu sors des stands : les pneus remontent en température, je ne juge pas encore."
+        val idx = when (front) { true -> listOf(0, 1); false -> listOf(2, 3); null -> listOf(0, 1, 2, 3) }
+        val ws = idx.map { r.wheels[it] }
+        val mean = ws.mapNotNull { it.lapMeanC }.takeIf { it.isNotEmpty() }?.average() ?: return "Pas encore de tour complet mesuré."
+        val since = ws.mapNotNull { it.sinceReferenceC }.takeIf { it.isNotEmpty() }?.average()
+        val where = when (front) { true -> "l'avant"; false -> "l'arrière"; null -> "les pneus" }
+        val other = when (front) {
+            true -> listOf(2, 3); false -> listOf(0, 1); null -> emptyList()
+        }.mapNotNull { r.wheels[it].lapMeanC }.takeIf { it.isNotEmpty() }?.average()
+        val hot = r.issues.any { it.kind == com.gt7pitwall.core.tyres.TyreDiagnostics.IssueKind.TEMPERATURE && it.wheel in idx }
+        return buildString {
+            append(if (hot) "Oui, $where" else where.replaceFirstChar { it.uppercase() })
+            append(" : ${mean.roundToInt()} degrés en moyenne au dernier tour")
+            since?.let { append(if (it >= 0) ", ${it.roundToInt()} de plus" else ", ${(-it).roundToInt()} de moins"); append(" qu'au tour ${r.referenceLap} du relais") }
+            other?.let { append(", l'autre essieu est à ${it.roundToInt()}") }
+            append(".")
+            if (!hot) append(" Pas de chauffe anormale mesurée.")
+            append(" GT7 ne donne pas la plage idéale de la gomme.")
+        }
+    }
+
+    /** V514-B : coût du prochain arrêt, avec sa source et son incertitude ; jamais inventé. */
+    private fun answerPitLoss(): String {
+        val lap = (snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)
+        val next = plan?.nextStop(lap)
+        val kind = when {
+            next == null -> StopKind.FUEL_ONLY
+            next.changeTyres && next.forFuel -> StopKind.FUEL_AND_TYRES
+            next.changeTyres -> StopKind.TYRES_ONLY
+            next.forFuel -> StopKind.FUEL_ONLY
+            else -> StopKind.NONE
+        }
+        val costs = stopCosts(historyModel, course?.pitLaneDeltaS?.let { it * 1000.0 })
+            ?: return "Je ne peux pas le chiffrer : aucun arrêt mesuré dans des courses comparables et pas de temps de voie des stands pour ce circuit."
+        val c = costs.cost(kind) ?: return "Je ne peux pas chiffrer un arrêt ${kind.label} avec nos données."
+        val sure = if (c.assumed || "supposé" in c.source) "ESTIMATION provisoire" else "d'après ${c.source}"
+        return "Arrêt ${kind.label}${next?.let { " fin du tour ${it.endOfLap}" } ?: ""} : environ ${(c.ms / 1000).roundToInt()} secondes, à plus ou moins ${(c.spread / 1000).roundToInt()}, $sure." +
+            if (!costs.baseIncludesRefuel && kind != StopKind.NONE && kind != StopKind.TYRES_ONLY && costs.observed[kind] == null) " Le temps de remplissage n'y est pas compté." else ""
     }
 
     private fun answerTyreLife(): String {
@@ -3528,7 +3608,7 @@ class RaceController(
         } else {
             " Ça peut venir des pneus, mais aussi du trafic, de la piste ou de ta trajectoire."
         }
-        return "Noté, d'après toi. $seen$causes"
+        return "Noté, d'après toi. $seen${tyreDiagSentence()}$causes"
     }
 
     /** Détails sur demande (« pourquoi ? ») après une réponse sur les pneus. */
@@ -4575,6 +4655,36 @@ class RaceController(
     }
 
     /** Relais pneus en cours pour le diagnostic d'adhérence : indépendant des ravitaillements. */
+    /** V514-A : diagnostic courant des quatre pneus (carte PNEUS, réponses de Véga). */
+    fun tyreDiagnostics(): com.gt7pitwall.core.tyres.TyreDiagnostics.Report = runCatching {
+        tyreDiag.report(engineer.grip, driverCoach.traction.last.level)
+    }.getOrElse { diagnostic("diagnostic pneus", it); com.gt7pitwall.core.tyres.TyreDiagnostics.Report.EMPTY }
+
+    /** V514-A : le train de pneus monté (âge depuis le dernier changement confirmé, gomme déclarée, chronos, autonomie). */
+    fun tyreTrain(): com.gt7pitwall.core.tyres.TyreDiagnostics.Train {
+        val lap = (snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)
+        val st = ledger.tyreStint(lap, rules.startTyre)
+        val g = engineer.grip
+        val ctx = tyreStintContext()
+        val behaviour = runCatching { com.gt7pitwall.core.tyres.BalanceTrend.analyze(driverCoach.passes, ctx.startLap, ctx.excludedLaps).text }.getOrNull()
+        return com.gt7pitwall.core.tyres.TyreDiagnostics.Train(
+            ageLaps = ledger.tyreAge(lap), ageCertain = st.certain, compound = st.compound, compoundDeclared = st.compound != null,
+            grip = g.level, paceSlopeMsPerLap = g.slopeMsPerLap, paceLossMs = g.paceLossMs,
+            lossDemonstrated = g.level >= GripLevel.PERSISTENT, autonomy = tyreAutonomyShort(), behaviour = behaviour,
+        )
+    }
+
+    /** Autonomie des pneus en quelques mots : déclarée, estimée sur des relais comparables, ou inconnue. */
+    private fun tyreAutonomyShort(): String {
+        val lap = (snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)
+        val age = ledger.tyreAge(lap)
+        if (ledger.stopList.lastOrNull()?.tyres == TyreService.UNKNOWN) return "inconnue : changement de pneus non confirmé"
+        rules.tyreStintLaps?.let { life -> return "${(life - age).coerceAtLeast(0)} tours restants (durée déclarée : $life)" }
+        val life = tyreModel.performantLaps?.takeIf { it.confidence != Confidence.INSUFFICIENT }
+            ?: return "inconnue : pas assez de relais comparables"
+        return "estimation ${life.confidence.label} : perte nette vers ${life.mean.roundToInt()} tours d'âge"
+    }
+
     private fun tyreStintContext(): com.gt7pitwall.core.tyres.StintContext {
         val lap = (snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)
         val st = ledger.tyreStint(lap, rules.startTyre)

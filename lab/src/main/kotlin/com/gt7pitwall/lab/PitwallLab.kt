@@ -64,6 +64,7 @@ object PitwallLab {
         "carburant" -> FuelReplay.run(File(args.getOrNull(1) ?: error("carburant <journal.json>")))
         "fuel-performance" -> FuelPerformance.run(args.drop(1).map(::File).also { require(it.isNotEmpty()) { "fuel-performance <trace...>" } })
         "pit-research" -> PitResearch.run(args.drop(1).map(::File).also { require(it.isNotEmpty()) { "pit-research <trace...>" } })
+        "tyre-diag" -> TyreDiag.run(args.drop(1).map(::File).also { require(it.isNotEmpty()) { "tyre-diag <trace...>" } })
         "tyre-research" -> TyreResearch.run(args.drop(1).map(::File).also { require(it.isNotEmpty()) { "tyre-research <trace...>" } })
         "endurance" -> Endurance.run(
             File(args.getOrNull(1) ?: error("endurance <trace> [regles.json]")),

@@ -432,6 +432,7 @@ fun PitwallScreen(
                     val car: @Composable () -> Unit = {
                         TrackMapCard(state.snapshot.trackOutline, state.snapshot.packet, state.cornerMarks)
                         LapHistoryCard(state.snapshot.laps)
+                        telemetryBoard?.tyreBoard?.let { TyreDiagnosticDetail(it) }
                         DriveCard(state.snapshot.packet)
                         CarCard(state.snapshot.packet, state.gForce)
                     }

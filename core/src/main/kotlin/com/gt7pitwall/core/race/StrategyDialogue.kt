@@ -28,6 +28,15 @@ object StrategyDialogue {
         /** « Est-ce qu'on doit changer les pneus ? » */
         data object TyreChange : Ask
 
+        /** V514-A : « quels pneus souffrent le plus ? » : le pneu le plus sollicité d'après le diagnostic mesuré. */
+        data object TyreWorst : Ask
+
+        /** V514-A : « mes pneus avant chauffent ? » : températures d'un essieu, relatives au début du relais. */
+        data class TyreHeat(val front: Boolean?) : Ask
+
+        /** V514-B : « combien de temps vais-je perdre aux stands ? » : coût d'arrêt connu et sa nature. */
+        data object PitLoss : Ask
+
         /** « Est-ce qu'on gagnerait du temps en rentrant maintenant ? » */
         data object GainPitNow : Ask
 
@@ -133,6 +142,18 @@ object StrategyDialogue {
         if (tyreWord && has(t, " (doit|faut|faudrait|devrait|devrais|dois)( il| on| je)? (changer|change)", " on change (les )?pneus", " changer (les )?pneus ")) {
             if (asking || has(t, " est ce qu", " faut il ", " faut ")) return Ask.TyreChange
         }
+        // V514-A : le pneu le plus sollicité, et la chauffe d'un essieu.
+        if (has(t, " (quel|quels|quelle|quelles|lequel|lesquels) (pneus? |gommes? )?(souffr|morfl|travaill|est le plus|sont le plus|chauff|prend|prennent)",
+                " pneus? (qui )?(souffr|morfl)\\w* le plus", " (le )?pneu le plus (sollicite|chaud|abime)")) return Ask.TyreWorst
+        if (has(t, " (pneus? |gommes? |l')?(avant|arriere)s? (chauff|surchauff|sont (trop )?chaud|est (trop )?chaud|trop chaud)",
+                " (chauff|surchauff)\\w* (a|de) l'(avant|arriere)", " pneus? (chauff|surchauff)\\w*", " pneus? (sont |trop )?(trop )?chauds?")) {
+            val front = when { has(t, "[ ']avant") -> true; has(t, "[ ']arriere") -> false; else -> null }
+            return Ask.TyreHeat(front)
+        }
+        if (has(t, " (rentable|interessant|vaut le coup|vaut la peine) (de |d')?(changer|rentrer|s'arreter|m'arreter|faire l'arret)",
+                " (changer|rentrer|m'arreter) maintenant .*(rentable|vaut le coup|interet)")) return Ask.GainPitNow
+        if (has(t, " (combien de temps|combien|quel temps) .*(perdre|perd|perds|coute|coutera|perdu)\\w* .*(stand|arret|box|pit)",
+                " temps perdu (aux|au|a l'|en) (stand|arret|box|pit)", " (ca |un arret )(coute|me coute) combien", " cout (d'un|de l') ?arret")) return Ask.PitLoss
         if (has(t, " comment (vont|va|sont) (mes |les )?(pneus|gommes)", " (mes |les )?pneus (ca va|vont bien|sont bons|tiennent)", " (ils|elles) sont encore bon",
                 " etat (de mes|des) pneus", " pneus encore bons",
             )

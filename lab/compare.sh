@@ -41,6 +41,11 @@ run_version() {
     rm -f "$dir/lab/src/main/kotlin/com/gt7pitwall/lab/FuelReplay.kt" "$dir/lab/src/test/kotlin/com/gt7pitwall/lab/FuelReplayTest.kt"
     sed -i '/"carburant" -> FuelReplay.run/d' "$dir/lab/src/main/kotlin/com/gt7pitwall/lab/PitwallLab.kt"
   fi
+  # `tyre-diag` a besoin de TyreDiagnostics (V514-A).
+  if [ ! -f "$dir/core/src/main/kotlin/com/gt7pitwall/core/tyres/TyreDiagnostics.kt" ]; then
+    rm -f "$dir/lab/src/main/kotlin/com/gt7pitwall/lab/TyreDiag.kt"
+    sed -i '/"tyre-diag" -> TyreDiag.run/d' "$dir/lab/src/main/kotlin/com/gt7pitwall/lab/PitwallLab.kt"
+  fi
   (cd "$dir" && ./gradlew -q --no-daemon -p lab/standalone :lab:installDist) >&2 \
     || { echo "compilation du Lab impossible contre le moteur de $ref (version antérieure à V508 ?)" >&2; exit 3; }
   if [ "${LAB_MODE:-replay}" = vega ]; then
