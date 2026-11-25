@@ -481,6 +481,7 @@ class RaceController(
             !p.isPaused && !p.isLoading
         tyreHunter.onPacket(p, tracker.pitVisitOpen, raceActive)?.let(::journalThermal)
         if (!raceActive) tyreDiag.pause()
+        trackRefuelRate(p, packetMs, raceActive)
         if (raceActive) {
             // Relais pneus : ne change que sur un changement confirmé au registre (un plein seul ne remet rien à zéro).
             val st = ledger.tyreStint(p.currentLap, rules.startTyre)
@@ -1915,6 +1916,7 @@ class RaceController(
         clearStrategyCommand()
         strategyAssurance.reset()
         lastStrategyPace = null
+        refuelRates.clear(); refuelRiseMs = 0; refuelRiseUnits = 0.0; refuelPrev = null
         lastRaceState = null
         sessionGameLaps = null
         staleSportSheet = false
@@ -2700,6 +2702,9 @@ class RaceController(
         return replan()
     }
 
+    /** Tests : recalcul du plan à l'instant présent (même chemin qu'en course). */
+    internal fun replanForTest(): List<EngineerMessage> = replan()
+
     private fun replan(): List<EngineerMessage> {
         val snap = tracker.snapshot
         val p = snap.packet ?: return emptyList()
@@ -3135,19 +3140,27 @@ class RaceController(
         val lap = input.currentLap.coerceAtLeast(1)
         val st = ledger.tyreStint(lap, rules.startTyre)
         val planNow = plan
-        // Entrée des stands encore possible : part du tour restante (carburant) au-delà de la fin de la fenêtre de rappel.
-        val entryOpen = input.currentLapRemaining > 1f - pitCallWindow().second
+        // V515.1 : position dans le tour par la DISTANCE parcourue (celle du rappel « Box » : erreur médiane 8 m sur nos
+        // traces, contre 124 m par le carburant consommé). Le carburant ne sert qu'en secours, et la position est alors
+        // déclarée incertaine au contrôleur.
+        val progress = tracker.liveLapProgress()
+        val fractionLeft = progress?.let { 1f - it } ?: input.currentLapRemaining.coerceIn(0f, 1f)
+        val entryOpen = progress?.let { it < pitCallWindow().second } ?: (input.currentLapRemaining > 1f - pitCallWindow().second)
         val engineIn = com.gt7pitwall.core.strategy.StrategyEngine.Input(
-            currentLap = lap, lapFractionLeft = input.currentLapRemaining.coerceIn(0f, 1f), totalLaps = total,
+            currentLap = lap, lapFractionLeft = fractionLeft, totalLaps = total,
             fuelNow = input.fuelNow, tank = input.tank, perLap = input.perLap, perLapMeasured = input.fuelSource == DataSource.MEASURED,
             tyreAge = input.tyreAgeLaps, tyreAgeCertain = st.certain, tyreLifeLaps = rules.tyreStintLaps,
             paceMs = pace.lapMs, paceSpreadMs = pace.lapSpreadMs, slopeMsPerLap = pace.slopeMsPerLap, slopeSpread = pace.slopeSpread,
-            stopCosts = pace.costs(), mandatoryStopsLeft = (rules.mandatoryStops - input.stopsDone).coerceAtLeast(0),
+            stopCosts = pace.costs(), refuelMsPerUnit = measuredRefuelMsPerUnit(),
+            mandatoryStopsLeft = (rules.mandatoryStops - input.stopsDone).coerceAtLeast(0),
             tyreChangesRequired = input.tyresMissing.size, plannedStops = planNow?.stops ?: emptyList(),
             pitEntryStillPossible = entryOpen,
         )
         val report = com.gt7pitwall.core.strategy.StrategyEngine.analyze(engineIn)
-        val state = strategyState(input, pace, total, entryOpen, planNow?.stops ?: emptyList(), now)
+        val state = strategyState(input, pace, total, entryOpen, planNow?.stops ?: emptyList(), now).copy(
+            lapProgress = progress?.let { StratSourced(it, "fraction", "distance parcourue dans le tour (vitesse mesurée intégrée)", StratNature.CALCUL, now) }
+                ?: StratSourced(1f - input.currentLapRemaining, "fraction", "carburant consommé dans le tour (approximatif, secours)", StratNature.ESTIMATION, now),
+        )
         val previous = strategyCommand?.decision
         val decision = strategyAssurance.review(state, report, now) { stops ->
             com.gt7pitwall.core.strategy.StrategyEngine.withDelta(engineIn, com.gt7pitwall.core.strategy.StrategyEngine.evaluate(engineIn, stops), report.reference)
@@ -3205,11 +3218,15 @@ class RaceController(
             gripLoss = StratSourced(engineer.grip.level.label, "", "chronos comparables", StratNature.CALCUL),
             degradationMsPerLap = pace.slopeMsPerLap?.let { StratSourced(it, "ms/tour", "chronos du relais ou relais comparables", StratNature.ESTIMATION) } ?: StratSourced.unknown("ms/tour", "dégradation non démontrée"),
             degradationSpreadMs = pace.slopeSpread,
-            freshTyreGainMs = StratSourced.unknown("ms", "gain des pneus neufs : déduit de la dégradation seulement"),
+            // Gain des pneus neufs DÉMONTRÉ seulement s'il a été observé sur des changements de pneus passés comparables.
+            freshTyreGainMs = tyreModel.freshGainMs?.takeIf { it.confidence != Confidence.INSUFFICIENT }
+                ?.let { StratSourced(it.mean, "ms/tour", "observé sur ${it.samples} changement(s) de pneus comparable(s) (${it.confidence.label})", StratNature.ESTIMATION) }
+                ?: StratSourced.unknown("ms", "gain des pneus neufs jamais observé sur des relais comparables"),
             pitZoneValidated = validatedPitBox() != null,
             pitEntryStillPossible = entryOpen,
             stopCosts = pace.costs(),
-            refuelMsPerUnit = StratSourced.unknown("ms/unité", "débit de remplissage non mesuré"),
+            refuelMsPerUnit = measuredRefuelMsPerUnit()?.let { StratSourced(it, "ms/unité", "débit mesuré pendant un plein de CETTE course", StratNature.MESURE) }
+                ?: StratSourced.unknown("ms/unité", "débit de remplissage non mesuré dans cette course"),
             outLapPenaltyMs = StratSourced.unknown("ms", "tour de sortie : effet non démontré"),
             plannedStops = planned,
             cars = engineer.carsInRace?.let { StratSourced(it, "", "GT7 (0x86)", StratNature.MESURE, lastPacketMs) } ?: StratSourced.unknown("", "peloton inconnu"),
@@ -4893,6 +4910,33 @@ class RaceController(
     }
 
     /** Relais pneus en cours pour le diagnostic d'adhérence : indépendant des ravitaillements. */
+    // ---- V515.1 : débit de remplissage MESURÉ dans cette course (niveau GT7 qui monte, voiture immobile).
+    private var refuelRiseMs = 0L
+    private var refuelRiseUnits = 0.0
+    private var refuelPrev: Pair<Long, Float>? = null
+    private val refuelRates = mutableListOf<Double>()
+
+    private fun trackRefuelRate(p: TelemetryPacket, atMs: Long, active: Boolean) {
+        val prev = refuelPrev
+        refuelPrev = atMs to p.fuelLevel
+        if (!active || p.speedKmh >= 1f || prev == null) {
+            closeRefuelRise(); return
+        }
+        val rise = p.fuelLevel - prev.second
+        val dt = atMs - prev.first
+        if (rise > 0.001f && dt in 1..500) { refuelRiseMs += dt; refuelRiseUnits += rise }
+        else if (refuelRiseUnits > 0 && rise <= 0.001f) closeRefuelRise()
+    }
+
+    private fun closeRefuelRise() {
+        // Un plein d'au moins 5 unités pendant au moins 1 s : assez pour un débit (MESURE de ce plein seulement).
+        if (refuelRiseUnits >= 5.0 && refuelRiseMs >= 1_000) refuelRates += refuelRiseMs / refuelRiseUnits
+        refuelRiseMs = 0; refuelRiseUnits = 0.0
+    }
+
+    /** Débit de remplissage (ms par unité) mesuré dans cette course, sinon null (jamais une valeur d'un autre circuit). */
+    private fun measuredRefuelMsPerUnit(): Double? = refuelRates.takeIf { it.isNotEmpty() }?.sorted()?.let { it[it.size / 2] }
+
     /** V514-A : diagnostic courant des quatre pneus (carte PNEUS, réponses de Véga). */
     fun tyreDiagnostics(): com.gt7pitwall.core.tyres.TyreDiagnostics.Report = runCatching {
         tyreDiag.report(engineer.grip, driverCoach.traction.last.level)

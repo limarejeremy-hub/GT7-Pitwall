@@ -30,6 +30,10 @@ data class StrategyBoard(
     val undercut: String?,
     val overcut: String?,
     val unknowns: List<String>,
+    /** V515.1 : faisabilité ≠ rentabilité ; hypothèses déterminantes ; ce qui pèse dans l'écart. */
+    val profitability: String = "",
+    val dependencies: List<String> = emptyList(),
+    val drivers: List<String> = emptyList(),
 ) {
     enum class Status(val label: String) { BETTER("plus rapide"), EQUAL("équivalent"), WORSE("plus lent"), UNKNOWN("inconnu"), IMPOSSIBLE("impossible"), REFERENCE("plan actuel") }
 
@@ -78,6 +82,9 @@ data class StrategyBoard(
                 undercut = report.undercut?.verdict,
                 overcut = report.overcut?.verdict,
                 unknowns = report.scenarios.flatMap { it.unknowns }.distinct().take(5),
+                profitability = d.profitability.label,
+                dependencies = d.dependencies,
+                drivers = d.drivers.take(3).map { (k, v) -> "$k ${if (v <= 0) "−" else "+"}${StrategyOptions.seconds(kotlin.math.abs(v).roundToLong())}" },
             )
         }
     }
