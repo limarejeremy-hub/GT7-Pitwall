@@ -37,6 +37,24 @@ object StrategyDialogue {
         /** V514-B : « combien de temps vais-je perdre aux stands ? » : coût d'arrêt connu et sa nature. */
         data object PitLoss : Ask
 
+        /** V515 : « on tente l'undercut ? » (potentiel conditionnel : aucune référence adverse dans GT7). */
+        data object Undercut : Ask
+
+        /** V515 : « on peut faire l'overcut ? ». */
+        data object Overcut : Ask
+
+        /** V515 : « si je change les pneus maintenant, combien de carburant faut-il ? ». */
+        data object FuelIfTyresNow : Ask
+
+        /** V515 : « peut-on éviter le prochain arrêt ? ». */
+        data object AvoidStop : Ask
+
+        /** V515 : « est-ce que perdre 25 secondes aux stands vaut le coup ? ». */
+        data class WorthPitLoss(val seconds: Int) : Ask
+
+        /** V515 : « quelle est la stratégie la moins risquée ? ». */
+        data object LeastRisk : Ask
+
         /** « Est-ce qu'on gagnerait du temps en rentrant maintenant ? » */
         data object GainPitNow : Ask
 
@@ -142,6 +160,25 @@ object StrategyDialogue {
         if (tyreWord && has(t, " (doit|faut|faudrait|devrait|devrais|dois)( il| on| je)? (changer|change)", " on change (les )?pneus", " changer (les )?pneus ")) {
             if (asking || has(t, " est ce qu", " faut il ", " faut ")) return Ask.TyreChange
         }
+        // V515 : questions de stratégie complète (avant les motifs plus larges : « vaut le coup », « tenir »…).
+        if (has(t, "[ '](under|ander|onder) ?cut")) return Ask.Undercut
+        if (has(t, "[ ']over ?cut")) return Ask.Overcut
+        Regex(" perdre (\\d+|vingt|trente|quinze|dix|vingt cinq) secondes? .*(stand|arret|box|pit)").find(t)?.let { m ->
+            if (has(t, " vaut (le coup|la peine)", " rentable", " interet", " ca vaut")) {
+                val words = mapOf("dix" to 10, "quinze" to 15, "vingt" to 20, "vingt cinq" to 25, "trente" to 30)
+                return Ask.WorthPitLoss(m.groupValues[1].toIntOrNull() ?: words[m.groupValues[1]] ?: 25)
+            }
+        }
+        // Carburant nécessaire si les pneus sont changés maintenant (pas « combien je gagne / combien de tours »).
+        if (tyreWord && has(t, " chang") && has(t, " maintenant", " tout de suite", " ce tour") && has(t, " carburant", " essence") &&
+            !has(t, " gagn", " perds", " perd ", " combien de tours")) return Ask.FuelIfTyresNow
+        // Éviter l'arrêt : une QUESTION, ni une négation (« on ne peut pas éviter l'arrêt »), ni un constat sur le trafic.
+        if ((asking || has(t, " peut on ", " on peut ")) && !negated && !has(t, " ne (peut|peux|pourra) pas", " trop de monde", " ce tour ci", " on garde") &&
+            has(t, " eviter (le |l'|un |ce |cet )?(prochain |dernier |deuxieme |second )?(arret|stand|pit|passage)", " (sauter|zapper|faire sans) (l'|le |cet |ce )?arret",
+                " sans (refaire|faire|nouvel) (d'|un )?arret")) return Ask.AvoidStop
+        // Stratégie la moins risquée : il faut parler de stratégie, de plan ou d'option (pas « plus sûr de moi »).
+        if (has(t, " strateg", " plan ", " option", " solution") && has(t, " moins risque", " plus (sure|sur|prudente|securisee)( |$)", " la plus safe")) return Ask.LeastRisk
+
         // V514-A : le pneu le plus sollicité, et la chauffe d'un essieu.
         if (tyreWord && !has(t, " prendre ", " mettre ", " monter ", " choisir ") && has(t, " (quel|quels|quelle|quelles|lequel|lesquels) (pneus? |gommes? )?(souffr|morfl|travaill|est le plus|sont le plus|chauff)",
                 " pneus? (qui )?(souffr|morfl)\\w* le plus", " (le )?pneu le plus (sollicite|chaud|abime)")) return Ask.TyreWorst
@@ -200,7 +237,8 @@ object StrategyDialogue {
         }
 
         // Mémoire de la course : le plan décidé ensemble, ce qu'on s'est dit.
-        if (has(t, "(\\s|qu')on (garde|reste sur|continue (avec|sur)|maintient|conserve) (la meme|notre|le meme|le|la|ce) (strategie|plan)",
+        // « Qu'est-ce qui a changé dans notre stratégie ? » n'est pas « on garde notre stratégie » (V515).
+        if (!has(t, " qu'est ce qui (a|as) change", " (quoi|qu'est ce qui) de neuf ") && has(t, "(\\s|qu')on (garde|reste sur|continue (avec|sur)|maintient|conserve) (la meme|notre|le meme|le|la|ce) (strategie|plan)",
                 " (toujours|encore) (le meme|notre|ce) plan", " le plan (tient|est) toujours", " (meme|notre) strategie ", " on change rien ",
             )
         ) {

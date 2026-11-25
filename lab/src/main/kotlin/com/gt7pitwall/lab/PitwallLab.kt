@@ -65,6 +65,7 @@ object PitwallLab {
         "fuel-performance" -> FuelPerformance.run(args.drop(1).map(::File).also { require(it.isNotEmpty()) { "fuel-performance <trace...>" } })
         "pit-research" -> PitResearch.run(args.drop(1).map(::File).also { require(it.isNotEmpty()) { "pit-research <trace...>" } })
         "fuel-forecast" -> FuelForecast.run(args.drop(1).map(::File).also { require(it.isNotEmpty()) { "fuel-forecast <trace...>" } })
+        "strategy-sim" -> StrategySim.run(args.drop(1).map(::File))
         "tyre-diag" -> TyreDiag.run(args.drop(1).map(::File).also { require(it.isNotEmpty()) { "tyre-diag <trace...>" } })
         "tyre-research" -> TyreResearch.run(args.drop(1).map(::File).also { require(it.isNotEmpty()) { "tyre-research <trace...>" } })
         "endurance" -> Endurance.run(

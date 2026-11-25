@@ -67,6 +67,8 @@ import com.gt7pitwall.core.strategy.TyreService
 import com.gt7pitwall.core.strategy.TyreInputs
 import com.gt7pitwall.core.strategy.StopCosts
 import com.gt7pitwall.core.strategy.StopKind
+import com.gt7pitwall.core.strategy.Sourced as StratSourced
+import com.gt7pitwall.core.strategy.Nature as StratNature
 import com.gt7pitwall.core.strategy.Cost
 import com.gt7pitwall.core.tyres.TyreModel
 import com.gt7pitwall.core.tyres.CompoundBook
@@ -1909,6 +1911,10 @@ class RaceController(
 
     private fun startSession() {
         keepHandoff()
+        // V515 : aucune commande ni décision d'une autre course (l'hystérésis repart de zéro).
+        clearStrategyCommand()
+        strategyAssurance.reset()
+        lastStrategyPace = null
         lastRaceState = null
         sessionGameLaps = null
         staleSportSheet = false
@@ -2828,6 +2834,9 @@ class RaceController(
         refuelCheck = null
         if (reason == null && previous != null && next != null) reason = planChangeReason(previous, next, p.currentLap, p.fuelLevel, currentLapRemaining)
         plan = next
+        // V515 : comparateur complet + contrôleur, sur le plan FINAL (bascule V514 et FuelIntelligence comprises).
+        if (next == null) clearStrategyCommand() else runCatching { lastStrategyPace?.let { updateStrategyCommand(input, it) } ?: clearStrategyCommand() }
+            .onFailure { diagnostic("stratégie V515", it); clearStrategyCommand() }
         strategy = report
         if (reason != null) {
             engineer.planReason = reason
@@ -3087,7 +3096,128 @@ class RaceController(
         }
         // Motricité : seulement une perte répétée, active et à surfaces connues (P0-A, P0-C).
         val degrading = engineer.grip.degrading || (stint != null && stint.first > 0) || driverCoach.traction.last.strategyEligible
-        return StrategyOptions.compare(input, pace, basis, unverifiedRuleLabels(), TyreInputs(degrading = degrading))
+        val v514 = StrategyOptions.compare(input, pace, basis, unverifiedRuleLabels(), TyreInputs(degrading = degrading))
+        // V515 : entrées gardées ; la commande est calculée APRÈS le plan final (plan des rappels « Box »).
+        lastStrategyPace = pace
+        lastPaceMeasured = measuredAvg != null
+        return v514
+    }
+
+    // ------------------------------------------------------------------------------------------- V515 Strategy Command
+
+    /** Dernier état, comparaison et décision du contrôleur (V515). Les rappels « Box » restent ceux du plan. */
+    class StrategyCommand(
+        val sessionId: String?,
+        val input: com.gt7pitwall.core.strategy.StrategyEngine.Input,
+        val state: com.gt7pitwall.core.strategy.StrategyState,
+        val report: com.gt7pitwall.core.strategy.StrategyEngine.Report,
+        val decision: com.gt7pitwall.core.strategy.StrategyAssurance.Decision,
+    )
+
+    val strategyAssurance = com.gt7pitwall.core.strategy.StrategyAssurance()
+    private var strategyCommandRaw: StrategyCommand? = null
+    private var lastStrategyPace: StrategyOptions.Pace? = null
+    private var lastPaceMeasured = false
+
+    /** Commande V515 valable : même session, plan en vigueur ; sinon null (jamais celle d'une autre course). */
+    val strategyCommand: StrategyCommand?
+        get() = strategyCommandRaw?.takeIf { it.sessionId == sessionId && plan != null }
+
+    private fun clearStrategyCommand() {
+        strategyCommandRaw = null
+    }
+
+    private fun updateStrategyCommand(input: RacePlanner.Input, pace: StrategyOptions.Pace) {
+        if (snapshot.packet == null) return clearStrategyCommand()
+        // Course au temps : le moteur ne raisonne qu'en tours (nombre de tours inconnu : aucune commande).
+        val total = (input.gameTotalLaps.takeIf { it > 0 } ?: rules.totalLaps) ?: return clearStrategyCommand()
+        val now = clock()
+        val lap = input.currentLap.coerceAtLeast(1)
+        val st = ledger.tyreStint(lap, rules.startTyre)
+        val planNow = plan
+        // Entrée des stands encore possible : part du tour restante (carburant) au-delà de la fin de la fenêtre de rappel.
+        val entryOpen = input.currentLapRemaining > 1f - pitCallWindow().second
+        val engineIn = com.gt7pitwall.core.strategy.StrategyEngine.Input(
+            currentLap = lap, lapFractionLeft = input.currentLapRemaining.coerceIn(0f, 1f), totalLaps = total,
+            fuelNow = input.fuelNow, tank = input.tank, perLap = input.perLap, perLapMeasured = input.fuelSource == DataSource.MEASURED,
+            tyreAge = input.tyreAgeLaps, tyreAgeCertain = st.certain, tyreLifeLaps = rules.tyreStintLaps,
+            paceMs = pace.lapMs, paceSpreadMs = pace.lapSpreadMs, slopeMsPerLap = pace.slopeMsPerLap, slopeSpread = pace.slopeSpread,
+            stopCosts = pace.costs(), mandatoryStopsLeft = (rules.mandatoryStops - input.stopsDone).coerceAtLeast(0),
+            tyreChangesRequired = input.tyresMissing.size, plannedStops = planNow?.stops ?: emptyList(),
+            pitEntryStillPossible = entryOpen,
+        )
+        val report = com.gt7pitwall.core.strategy.StrategyEngine.analyze(engineIn)
+        val state = strategyState(input, pace, total, entryOpen, planNow?.stops ?: emptyList(), now)
+        val previous = strategyCommand?.decision
+        val decision = strategyAssurance.review(state, report, now) { stops ->
+            com.gt7pitwall.core.strategy.StrategyEngine.withDelta(engineIn, com.gt7pitwall.core.strategy.StrategyEngine.evaluate(engineIn, stops), report.reference)
+        }
+        strategyCommandRaw = StrategyCommand(sessionId, engineIn, state, report, decision)
+        // Journal d'audit : chaque changement de verdict ou de plan retenu, avec les contrôles.
+        if (previous == null || previous.verdict != decision.verdict || previous.chosen?.key != decision.chosen?.key) {
+            journal.record(
+                JournalType.STRATEGY, JournalSource.ENGINE, "Stratégie V515 : ${decision.verdict.label}",
+                decision = decision.statement, lap = lap,
+                details = mapOf(
+                    "plan_retenu" to (decision.chosen?.describe() ?: "aucun"),
+                    "plan_propose" to (decision.proposed?.describe() ?: "aucun"),
+                    "fenetre" to (report.window?.let { "${it.from}-${it.to}" + (it.preferred?.let { p2 -> " ($p2)" } ?: "") } ?: "aucune"),
+                    "controles" to decision.checks.joinToString(" | ") { "${it.name}=${when (it.ok) { true -> "ok"; false -> "échec"; null -> "réserve" }}" },
+                    "combinaisons" to report.evaluated.toString(),
+                ),
+            )
+        }
+    }
+
+    /** État stratégique unique (V515), chaque valeur avec sa source, sa nature et sa fraîcheur. */
+    private fun strategyState(
+        input: RacePlanner.Input, pace: StrategyOptions.Pace, total: Int, entryOpen: Boolean,
+        planned: List<com.gt7pitwall.core.strategy.PlannedStop>, now: Long,
+    ): com.gt7pitwall.core.strategy.StrategyState {
+        val p = snapshot.packet
+        val lap = input.currentLap.coerceAtLeast(1)
+        val st = ledger.tyreStint(lap, rules.startTyre)
+        val measured = input.fuelSource == DataSource.MEASURED
+        val diag = tyreDiagnostics()
+        val ruleIssues = unverifiedRuleLabels() + listOfNotNull("fiche Sport pas à jour".takeIf { staleSportSheet })
+        return com.gt7pitwall.core.strategy.StrategyState(
+            atMs = now,
+            track = course?.name?.let { StratSourced(it, "", "circuit reconnu", StratNature.CALCUL) } ?: StratSourced.unknown("", "circuit non reconnu"),
+            currentLap = StratSourced(lap, "tour", "GT7 (0x74)", StratNature.MESURE, lastPacketMs),
+            totalLaps = StratSourced(total, "tours", if (input.gameTotalLaps > 0) "GT7 (0x76)" else "règlement", if (input.gameTotalLaps > 0) StratNature.MESURE else StratNature.DECLARATION),
+            lapsRemaining = StratSourced(total - lap + input.currentLapRemaining, "tours", "calcul", StratNature.CALCUL),
+            timeRemainingMs = rules.durationMin?.let { StratSourced.unknown<Long>("ms", "course au temps : durée restante non suivie ici") } ?: StratSourced.unknown("ms", "course aux tours"),
+            position = engineer.currentPosition?.let { StratSourced(it, "", "GT7 (0x84)", StratNature.MESURE, lastPacketMs) } ?: StratSourced.unknown("", "position non mesurée"),
+            rulesValid = StratSourced(ruleIssues.isEmpty(), "", if (ruleIssues.isEmpty()) "règlement complet" else "règlement à vérifier", StratNature.CALCUL),
+            rulesIssues = ruleIssues,
+            mandatoryStopsLeft = StratSourced((rules.mandatoryStops - input.stopsDone).coerceAtLeast(0), "arrêts", "règlement et registre des arrêts", StratNature.CALCUL),
+            fuelNow = StratSourced(input.fuelNow, "unités", "GT7 (0x44)", StratNature.MESURE, lastPacketMs),
+            tank = StratSourced(input.tank, "unités", "GT7 (0x48)", StratNature.MESURE, lastPacketMs),
+            perLap = input.perLap?.let { StratSourced(it, "unités/tour", if (measured) "mesurée dans cette course" else "apprise ou mémorisée", if (measured) StratNature.MESURE else StratNature.ESTIMATION, now) } ?: StratSourced.unknown("unités/tour", "consommation inconnue"),
+            perLapTrend = StratSourced.unknown("unités/tour", "tendance non calculée ici"),
+            lapsOfFuel = input.perLap?.let { StratSourced(input.fuelNow / it, "tours", "calcul", StratNature.CALCUL) } ?: StratSourced.unknown("tours", "consommation inconnue"),
+            safetyLaps = RacePlanner.SAFETY_LAPS,
+            maxSaving = StratSourced(com.gt7pitwall.core.strategy.FuelIntelligence.MAX_SAVING_FRACTION.toFloat(), "fraction", "garde-fou V512", StratNature.CALCUL),
+            compound = st.compound?.let { StratSourced(it, "", "déclarée par le pilote", StratNature.DECLARATION) } ?: StratSourced.unknown("", "gomme non déclarée (GT7 ne la transmet pas)"),
+            tyreAge = StratSourced(input.tyreAgeLaps, "tours", "registre des arrêts", StratNature.CALCUL),
+            tyreAgeCertain = st.certain,
+            tyreAnomalies = diag.issues.map { "${it.kind.label} : ${it.text}" },
+            gripLoss = StratSourced(engineer.grip.level.label, "", "chronos comparables", StratNature.CALCUL),
+            degradationMsPerLap = pace.slopeMsPerLap?.let { StratSourced(it, "ms/tour", "chronos du relais ou relais comparables", StratNature.ESTIMATION) } ?: StratSourced.unknown("ms/tour", "dégradation non démontrée"),
+            degradationSpreadMs = pace.slopeSpread,
+            freshTyreGainMs = StratSourced.unknown("ms", "gain des pneus neufs : déduit de la dégradation seulement"),
+            pitZoneValidated = validatedPitBox() != null,
+            pitEntryStillPossible = entryOpen,
+            stopCosts = pace.costs(),
+            refuelMsPerUnit = StratSourced.unknown("ms/unité", "débit de remplissage non mesuré"),
+            outLapPenaltyMs = StratSourced.unknown("ms", "tour de sortie : effet non démontré"),
+            plannedStops = planned,
+            cars = engineer.carsInRace?.let { StratSourced(it, "", "GT7 (0x86)", StratNature.MESURE, lastPacketMs) } ?: StratSourced.unknown("", "peloton inconnu"),
+            opponentsDeclared = emptyList(),
+            paceMs = pace.lapMs?.let { if (lastPaceMeasured) StratSourced(it, "ms", "rythme mesuré dans cette course", StratNature.MESURE, now) else StratSourced(it, "ms", "rythme appris sur des courses comparables", StratNature.ESTIMATION, now) } ?: StratSourced.unknown("ms", "rythme inconnu"),
+            paceSpreadMs = pace.lapSpreadMs,
+            telemetryAgeMs = lastPacketMs?.let { now - it },
+        )
     }
 
     /**
@@ -3231,7 +3361,7 @@ class RaceController(
             generalAdvice(ask)
         } else {
             when (ask) {
-                StrategyDialogue.Ask.Best -> answerBest()
+                StrategyDialogue.Ask.Best -> answerBest() + (answerBestV515()?.let { " $it" } ?: "")
                 is StrategyDialogue.Ask.WhyStop -> answerWhyStop(ask.lap)
                 is StrategyDialogue.Ask.Extend -> answerExtend(ask.laps)
                 StrategyDialogue.Ask.TyreStatus -> answerTyreStatus()
@@ -3240,6 +3370,12 @@ class RaceController(
                 StrategyDialogue.Ask.TyreWorst -> answerTyreWorst()
                 is StrategyDialogue.Ask.TyreHeat -> answerTyreHeat(ask.front)
                 StrategyDialogue.Ask.PitLoss -> answerPitLoss()
+                StrategyDialogue.Ask.Undercut -> answerCut(early = true)
+                StrategyDialogue.Ask.Overcut -> answerCut(early = false)
+                StrategyDialogue.Ask.FuelIfTyresNow -> answerFuelIfTyresNow()
+                StrategyDialogue.Ask.AvoidStop -> answerAvoidStop()
+                is StrategyDialogue.Ask.WorthPitLoss -> answerWorthPitLoss(ask.seconds)
+                StrategyDialogue.Ask.LeastRisk -> answerLeastRisk()
                 StrategyDialogue.Ask.GainPitNow -> answerGainPitNow()
                 StrategyDialogue.Ask.WhyPitWithFuel -> answerWhyPitWithFuel()
                 is StrategyDialogue.Ask.GripQuestion -> answerGripQuestion(ask.kind, question)
@@ -3506,6 +3642,104 @@ class RaceController(
             if (cold) append(" Non, ils sont plus froids qu'en début de relais.") else if (!hot) append(" Pas de chauffe anormale mesurée.")
             append(" GT7 ne donne pas la plage idéale de la gomme.")
         }
+    }
+
+    // ---- V515 : réponses de l'ingénieur stratégie, à partir de la SEULE décision du contrôleur.
+
+    private val noCommand = "Je n'ai pas encore de comparaison de stratégies fiable : il me faut la consommation mesurée et un plan de course."
+
+    /** Réserve du contrôleur, ajoutée à toute réponse qui n'est pas approuvée. */
+    private fun reserve(d: com.gt7pitwall.core.strategy.StrategyAssurance.Decision): String = when (d.verdict) {
+        com.gt7pitwall.core.strategy.StrategyAssurance.Verdict.APPROVED -> ""
+        else -> " Réserve : ${d.verdict.label}${d.reasons.firstOrNull()?.let { ", $it" } ?: ""}."
+    }
+
+    /**
+     * « Quelle est notre meilleure stratégie ? » : complément V515 à la réponse du plan (qui reste la référence des
+     * rappels « Box ») : fenêtre d'arrêt, alternative du comparateur complet si elle diffère, réserve du contrôleur.
+     */
+    private fun answerBestV515(): String? {
+        val c = strategyCommand ?: return null
+        val d = c.decision
+        if (d.verdict == com.gt7pitwall.core.strategy.StrategyAssurance.Verdict.INSUFFICIENT) return null
+        val w = c.report.window?.let { w -> if (w.preferred != null && w.from != w.to) "Fenêtre : tours ${w.from} à ${w.to}, tour ${w.preferred} préféré." else null }
+        val alt = d.chosen?.takeIf { ch -> ch.stopLaps != c.report.reference?.stopLaps || ch.stops.map { it.tyres } != c.report.reference?.stops?.map { it.tyres } }
+            ?.let { "Le comparateur complet propose : ${it.describe()} (${d.verdict.label}) ; le plan des rappels reste inchangé tant que tu ne décides pas." }
+        return listOfNotNull(w, alt, reserve(d).trim().takeIf { it.isNotEmpty() && alt == null }).joinToString(" ").takeIf { it.isNotBlank() }
+    }
+
+    /** Rappel du plan des « Box » quand la réponse parle d'un autre arrêt. */
+    private fun planNote(proposedFirstStop: Int?): String {
+        val box = plan?.nextStop((snapshot.packet?.currentLap ?: 1).coerceAtLeast(1))?.endOfLap ?: return ""
+        return if (proposedFirstStop != null && proposedFirstStop != box) " Les rappels « Box » restent sur le tour $box du plan." else ""
+    }
+
+    private fun answerCut(early: Boolean): String {
+        val c = strategyCommand ?: return noCommand
+        val cut = (if (early) c.report.undercut else c.report.overcut)
+            ?: return "Aucun arrêt prévu : il n'y a rien à ${if (early) "avancer" else "retarder"}."
+        val last = if (!early) c.report.latestFeasibleFirstStop?.let { " Dernier arrêt possible fin du tour $it d'après le carburant, les pneus et le règlement." } ?: "" else ""
+        val alt = c.report.scenario(if (early) com.gt7pitwall.core.strategy.StrategyEngine.Kind.EARLY else com.gt7pitwall.core.strategy.StrategyEngine.Kind.LATE)
+        return cut.verdict + last + (if (cut.beatsUncertainty) planNote(alt?.stopLaps?.firstOrNull()) else "") + reserve(c.decision)
+    }
+
+    private fun answerFuelIfTyresNow(): String {
+        val c = strategyCommand ?: return noCommand
+        val i = c.input
+        val lap = i.firstStopLap
+        if (lap >= i.totalLaps) return "Plus d'arrêt possible avant l'arrivée."
+        val later = i.plannedStops.filter { it.endOfLap > lap }.map { it.endOfLap to it.changeTyres }
+        val s = com.gt7pitwall.core.strategy.StrategyEngine.evaluate(i, listOf(lap to true) + later)
+        val fuel = s.stops.firstOrNull()?.fuelAdded
+        return when {
+            i.perLap == null -> "Je ne peux pas le chiffrer : consommation inconnue."
+            s.feasible -> "Pneus fin du tour $lap : il faut environ ${FuelUnits.amount(fuel ?: 0f, i.tank)}" +
+                (if (later.isNotEmpty()) " pour aller jusqu'à l'arrêt suivant" else " pour finir") +
+                (s.stints.drop(1).maxOfOrNull { it.saving }?.takeIf { it > 0f }?.let { ", avec ${(it * 100).roundToInt()} % d'économie" } ?: "") + "." +
+                (c.report.scenarios.firstOrNull { it.kind == com.gt7pitwall.core.strategy.StrategyEngine.Kind.EARLY }?.deltaMs?.let { d -> if (d < 0) "" else " Ce n'est pas plus rapide d'après nos données." } ?: " Gain des pneus neufs non chiffré.")
+            else -> "Pneus fin du tour $lap : pas possible tel quel, ${s.issues.first()}." +
+                (com.gt7pitwall.core.strategy.StrategyEngine.evaluate(i, listOf(lap to true) + later + listOf(((lap + i.totalLaps) / 2) to false)).takeIf { it.feasible }?.let { " Il faudrait un arrêt de plus." } ?: "")
+        }
+    }
+
+    private fun answerAvoidStop(): String {
+        val c = strategyCommand ?: return noCommand
+        val none = c.report.scenario(com.gt7pitwall.core.strategy.StrategyEngine.Kind.NO_STOP) ?: return noCommand
+        if (c.report.reference?.stops?.isEmpty() == true) return "Il n'y a plus d'arrêt prévu : on va au bout."
+        if (c.input.perLap == null) return "Je ne peux pas le dire : consommation inconnue."
+        return when {
+            !none.feasible -> "Non : ${none.issues.first()}."
+            none.saving > 0f -> "Possible en économisant ${(none.saving * 100).roundToInt()} % de carburant jusqu'à l'arrivée" +
+                (none.deltaMs?.let { d -> if (none.uncertaintyMs != null && -d > none.uncertaintyMs) ", et ce serait plus rapide d'environ ${StrategyOptions.seconds((-d).toLong())}." else ", mais le gain n'est pas démontré : le coût de l'économie est une estimation." } ?: ", gain non chiffrable.") +
+                " ${reserve(c.decision).trim()}".trimEnd()
+            else -> "Oui, le carburant suffit sans arrêt." + (none.deltaMs?.let { if (it < 0) " C'est plus rapide." else "" } ?: "")
+        }.trim() + planNote(null).let { if (none.feasible) " Les rappels « Box » restent ceux du plan tant que tu ne décides pas." else "" }
+    }
+
+    private fun answerWorthPitLoss(seconds: Int): String {
+        val c = strategyCommand ?: return noCommand
+        val i = c.input
+        val slope = i.slopeMsPerLap
+            ?: return "Je ne peux pas le dire : la dégradation de tes pneus n'est pas démontrée, donc le gain de pneus neufs est inconnu."
+        // Gain des pneus neufs d'ici l'arrivée si on les change maintenant : dégradation évitée (CALCUL sur la pente mesurée).
+        val lapsLeft = (i.totalLaps - i.firstStopLap).coerceAtLeast(0)
+        val gainMs = slope * i.tyreAge * lapsLeft
+        val u = i.slopeSpread * i.tyreAge * lapsLeft
+        return when {
+            gainMs - u > seconds * 1000 -> "Oui : des pneus neufs rapporteraient environ ${StrategyOptions.seconds(gainMs.toLong())} d'ici l'arrivée, plus que $seconds secondes."
+            gainMs + u < seconds * 1000 -> "Non : des pneus neufs rapporteraient environ ${StrategyOptions.seconds(gainMs.toLong())} d'ici l'arrivée, moins que $seconds secondes."
+            else -> "Indécis : le gain des pneus neufs, environ ${StrategyOptions.seconds(gainMs.toLong())} à plus ou moins ${StrategyOptions.seconds(u.toLong())}, est trop proche de $seconds secondes."
+        } + " Hors trafic et adversaires, que GT7 ne transmet pas."
+    }
+
+    private fun answerLeastRisk(): String {
+        val c = strategyCommand ?: return noCommand
+        val safe = c.report.scenarios.filter { it.feasible && it.kind != com.gt7pitwall.core.strategy.StrategyEngine.Kind.BEST }
+            .maxWithOrNull(compareBy<com.gt7pitwall.core.strategy.StrategyEngine.Scenario> { if (it.saving > 0f) 0 else 1 }.thenBy { it.minMarginLaps ?: 0f })
+            ?: return "Aucune stratégie faisable ne se détache : ${c.decision.reasons.firstOrNull() ?: "données insuffisantes"}."
+        return "La moins risquée : ${safe.describe()}${if (safe.saving > 0f) "" else ", sans économie imposée"}, marge carburant ${safe.minMarginLaps?.let { "%.1f".format(java.util.Locale.FRANCE, it) } ?: "inconnue"} tour." +
+            (safe.deltaMs?.let { d -> if (d > 0) " Elle coûte environ ${StrategyOptions.seconds(d.toLong())} par rapport au plan." else "" } ?: "") +
+            planNote(safe.stopLaps.firstOrNull())
     }
 
     /** V514-B : coût du prochain arrêt, avec sa source et son incertitude ; jamais inventé. */

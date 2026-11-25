@@ -41,6 +41,11 @@ run_version() {
     rm -f "$dir/lab/src/main/kotlin/com/gt7pitwall/lab/FuelReplay.kt" "$dir/lab/src/test/kotlin/com/gt7pitwall/lab/FuelReplayTest.kt"
     sed -i '/"carburant" -> FuelReplay.run/d' "$dir/lab/src/main/kotlin/com/gt7pitwall/lab/PitwallLab.kt"
   fi
+  # `strategy-sim` a besoin du Strategy Engine (V515).
+  if [ ! -f "$dir/core/src/main/kotlin/com/gt7pitwall/core/strategy/StrategyEngine.kt" ]; then
+    rm -f "$dir/lab/src/main/kotlin/com/gt7pitwall/lab/StrategySim.kt"
+    sed -i '/"strategy-sim" -> StrategySim.run/d' "$dir/lab/src/main/kotlin/com/gt7pitwall/lab/PitwallLab.kt"
+  fi
   # `tyre-diag` a besoin de TyreDiagnostics (V514-A).
   if [ ! -f "$dir/core/src/main/kotlin/com/gt7pitwall/core/tyres/TyreDiagnostics.kt" ]; then
     rm -f "$dir/lab/src/main/kotlin/com/gt7pitwall/lab/TyreDiag.kt"
