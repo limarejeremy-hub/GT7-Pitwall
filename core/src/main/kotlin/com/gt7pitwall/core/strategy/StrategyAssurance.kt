@@ -22,6 +22,17 @@ class StrategyAssurance {
 
     data class Check(val name: String, val ok: Boolean?, val detail: String)
 
+    /** Faisabilité ≠ rentabilité : un arrêt peut être faisable sans être démontré plus rapide. */
+    enum class Profitability(val label: String) {
+        PROVEN("gain démontré par les données"),
+        NOT_PROVEN("faisable, rentabilité non démontrée"),
+        NOT_APPLICABLE("plan actuel gardé : aucun gain revendiqué"),
+        /** Le plan actuel est infaisable : changer est imposé, aucun gain n'est revendiqué. */
+        FORCED("plan actuel infaisable : changement imposé, aucun gain revendiqué"),
+        /** Aucune stratégie retenue : rien à qualifier. */
+        NONE(""),
+    }
+
     data class Decision(
         val verdict: Verdict,
         /** Scénario retenu (le plan actuel si rien n'est démontré meilleur ou si le choix est bloqué). */
@@ -34,6 +45,11 @@ class StrategyAssurance {
         val statement: String,
         val lap: Int,
         val atMs: Long,
+        val profitability: Profitability = Profitability.NOT_APPLICABLE,
+        /** Hypothèses inconnues ou supposées dont dépend le gain annoncé. */
+        val dependencies: List<String> = emptyList(),
+        /** Ce qui pèse dans l'écart avec le plan actuel (cause, ms), du plus lourd au plus léger. */
+        val drivers: List<Pair<String, Double>> = emptyList(),
     ) {
         val changed: Boolean get() = proposed != null && chosen != null && proposed.key != chosen.key
     }
@@ -123,10 +139,8 @@ class StrategyAssurance {
             if (proposed.stopLaps.firstOrNull() == lap && !state.pitEntryStillPossible) {
                 checks += Check("entrée des stands", false, "déjà passée à ce tour"); block("entrée des stands déjà passée")
             }
-            // Un changement de plan qui repose sur une estimation non validée reste provisoire (garder A ne l'est pas).
-            if (!isRef(proposed) && proposed.unknowns.any { "estimation expérimentale" in it || "non démontré" in it }) {
-                worse(Verdict.PROVISIONAL); reasons += "repose sur une estimation non validée"
-            }
+            // V515.1 : les estimations non validées qui DIFFÈRENT entre le plan proposé et le plan actuel sont jugées à
+            // l'étape 8 bis (dépendances) ; une inconnue commune aux deux ne rend plus un changement provisoire à tort.
         }
         // 8. Stabilité (hystérésis) : l'ancien choix, RÉÉVALUÉ avec les données actuelles, est gardé si le nouveau ne le
         // bat pas de plus de HYSTERESIS × incertitude. Jamais un objet périmé, jamais un arrêt dont l'entrée est passée.
@@ -143,20 +157,124 @@ class StrategyAssurance {
             }
         }
         if (verdict == Verdict.BLOCKED) chosen = ref?.takeIf { it.feasible }
+        // 8 bis. Rentabilité : un changement de plan ne vaut « gain démontré » que si aucune hypothèse déterminante n'est
+        // inconnue ou supposée (V515.1). Sinon il reste faisable mais provisoire, et la phrase le dit.
+        val change = chosen != null && ref != null && chosen.key != ref.key
+        val forced = change && !ref!!.feasible
+        val deps = if (change && !forced) dependencies(state, chosen!!, ref!!, lap).toMutableList() else mutableListOf()
+        // Un plan gardé pour la stabilité peut être PLUS LENT que le plan actuel : jamais un gain démontré.
+        if (change && !forced) {
+            val beats = chosen!!.deltaMs?.let { -it > (chosen.uncertaintyMs ?: StrategyEngine.MIN_UNCERTAINTY_MS) } == true
+            if (!beats) deps += "gain inférieur à l'incertitude (gardé pour la stabilité)"
+        }
+        val profit = when {
+            chosen == null -> Profitability.NONE
+            !change -> Profitability.NOT_APPLICABLE
+            forced -> Profitability.FORCED
+            // Gain démontré : aucune hypothèse déterminante ET aucune autre réserve (verdict encore approuvé).
+            deps.isEmpty() && verdict == Verdict.APPROVED -> Profitability.PROVEN
+            else -> Profitability.NOT_PROVEN
+        }
+        if (profit == Profitability.NOT_PROVEN) {
+            worse(Verdict.PROVISIONAL)
+            // En tête des réserves : c'est elle que Véga prononce en premier.
+            reasons.add(0, "rentabilité non démontrée" + if (deps.isEmpty()) " (${reasons.firstOrNull() ?: "réserve du contrôleur"})" else " : ${deps.joinToString(", ")}")
+        }
+        if (change && !forced) checks += Check("rentabilité", profit == Profitability.PROVEN, if (profit == Profitability.PROVEN) "gain démontré" else deps.joinToString(" ; ").ifEmpty { "verdict provisoire" })
+        // Ce qui pèse : seulement les causes d'au moins 0,1 s (en dessous, « −0,0 s » n'apprend rien au pilote).
+        var drivers = chosen?.deltaParts.orEmpty().entries.filter { kotlin.math.abs(it.value) >= 100.0 }
+            .sortedByDescending { kotlin.math.abs(it.value) }.map { it.key to it.value }
+        var profitOut = profit
+        var depsOut: List<String> = deps.distinct()
         // 9. Aucun pourcentage d'usure ni écart adverse dans la phrase finale.
-        var statement = statement(verdict, chosen, ref, report, blocks + reasons)
+        var statement = statement(verdict, chosen, ref, report, blocks + reasons, profit, drivers)
         if (WEAR.containsMatchIn(statement) || GAP.containsMatchIn(statement)) {
             checks += Check("formulation", false, "chiffre non transmis par GT7"); block("formulation non vérifiable")
             chosen = ref?.takeIf { it.feasible }
-            statement = statement(verdict, chosen, ref, report, blocks + reasons)
+            // Le plan abandonné n'est plus qualifié : rentabilité, dépendances et causes remises à zéro.
+            profitOut = if (chosen == null) Profitability.NONE else Profitability.NOT_APPLICABLE
+            depsOut = emptyList(); drivers = emptyList()
+            statement = statement(verdict, chosen, ref, report, blocks + reasons, profitOut, drivers)
         }
-        val d = Decision(verdict, chosen, proposed, checks, (blocks + reasons).distinct(), statement, lap, nowMs)
+        val d = Decision(verdict, chosen, proposed, checks, (blocks + reasons).distinct(), statement, lap, nowMs, profitOut, depsOut, drivers)
         if (verdict != Verdict.INSUFFICIENT) last = d
         return d
     }
 
+    /**
+     * Hypothèses déterminantes du gain d'un changement de plan : seulement celles qui DIFFÈRENT entre le plan choisi et
+     * le plan actuel (une inconnue commune aux deux ne change pas leur écart).
+     */
+    internal fun dependencies(state: StrategyState, chosen: StrategyEngine.Scenario, ref: StrategyEngine.Scenario, lap: Int): List<String> {
+        val deps = mutableListOf<String>()
+        val parts = chosen.deltaParts.orEmpty()
+        val costs = state.stopCosts
+        val stopsDiffer = chosen.stops.size != ref.stops.size
+        fun kind(sp: StrategyEngine.StopPlan) = StopKind.of(fuel = (sp.fuelAdded ?: 1f) > 0.05f, tyres = sp.tyres)
+        // Pneus : service et tour de sortie ne pèsent que si le nombre de changements diffère ET que le coût des arrêts
+        // avec pneus n'est pas observé (une perte observée couvre le tour d'arrêt ET le tour de sortie).
+        if (chosen.tyreStops != ref.tyreStops) {
+            val tyreKinds = (chosen.stops + ref.stops).filter { it.tyres }.map(::kind).distinct()
+            val tyreObserved = costs != null && tyreKinds.isNotEmpty() && tyreKinds.all { costs.observed[it] != null }
+            if (!tyreObserved) {
+                if (costs?.tyreService?.assumed != false) deps += "temps de changement des pneus supposé"
+                if (!state.outLapPenaltyMs.known) deps += "tour de sortie non calibré"
+            }
+        }
+        // Dégradation : la pente chiffre le gain des pneus ; il n'est démontré que par un gain des pneus neufs OBSERVÉ,
+        // positif, et assez grand pour couvrir la part attribuée aux pneus.
+        val tyrePart = parts[StrategyEngine.PART_TYRES] ?: 0.0
+        if (tyrePart < 0) {
+            val fresh = state.freshTyreGainMs.value?.takeIf { state.freshTyreGainMs.known && it > 0 }
+            val laps = state.lapsRemaining.value?.toDouble() ?: 0.0
+            if (fresh == null || -tyrePart > fresh * laps) deps += "dégradation estimée, gain des pneus neufs non démontré"
+        }
+        if (kotlin.math.abs(tyrePart) >= 1_000.0 && !state.tyreAgeCertain) deps += "âge des pneus incertain"
+        // Remplissage : inconnu, il compte 0 et avantage le plan qui ajoute PLUS de carburant ; compris dans un coût
+        // d'arrêt observé, il est recompté à chaque arrêt supplémentaire (volume de l'arrêt observé, pas celui du plan).
+        fun refuelIncluded(sp: StrategyEngine.StopPlan): Boolean {
+            val k = kind(sp)
+            return costs != null && k.fuel && (costs.observed[k] != null || costs.baseIncludesRefuel)
+        }
+        val fuelA = chosen.stops.sumOf { (it.fuelAdded ?: 0f).toDouble() }
+        val fuelB = ref.stops.sumOf { (it.fuelAdded ?: 0f).toDouble() }
+        if (fuelA - fuelB >= 1.0 && !state.refuelMsPerUnit.known && chosen.stops.none(::refuelIncluded)) deps += "temps de remplissage inconnu"
+        if (stopsDiffer && (chosen.stops + ref.stops).any(::refuelIncluded)) deps += "plein compris dans le coût d'arrêt observé (recompté à chaque arrêt)"
+        // Coût d'un arrêt : il ne pèse que si le nombre d'arrêts diffère ; appris sur moins de 3 arrêts ou supposé, il
+        // n'est pas démontré (une seule perte observée ne dit rien de sa répétabilité).
+        if (stopsDiffer && costs != null) {
+            val used = (chosen.stops + ref.stops).mapNotNull { costs.cost(kind(it)) }
+            val few = used.mapNotNull { it.samples }.minOrNull()
+            if (used.any { it.assumed } || costs.base?.assumed == true) deps += "coût d'arrêt supposé"
+            else if (few != null && few < MIN_STOP_SAMPLES) deps += "coût d'arrêt appris sur $few arrêt${if (few > 1) "s" else ""}"
+        }
+        // Poids du carburant : jamais calibré en course (compté 0). Il pèse quand les deux plans embarquent des
+        // quantités différentes pendant des tours différents (ordre de grandeur prudent : 15 ms par unité et par tour).
+        if (parts[StrategyEngine.PART_FUEL_LOAD] == null) {
+            val a = chosen.fuelLapUnits; val b = ref.fuelLapUnits
+            if (a != null && b != null) {
+                val weight = FUEL_WEIGHT_GUARD_MS * kotlin.math.abs(a - b)
+                if (weight >= maxOf(500.0, 0.5 * kotlin.math.abs(chosen.deltaMs ?: 0.0))) deps += "effet du poids du carburant non calibré"
+            }
+        }
+        if ((parts[StrategyEngine.PART_SAVING] ?: 0.0) != 0.0) deps += "coût de l'économie de carburant estimé"
+        // Consommation estimée (pas mesurée dans cette course) : elle décide du nombre d'arrêts et de l'économie.
+        if ((stopsDiffer || chosen.saving != ref.saving) && state.perLap.nature != Nature.MESURE && state.perLap.nature != Nature.SIMULATION) deps += "consommation estimée"
+        // Position fiable : distance parcourue (CALCUL sur la vitesse mesurée) ; le carburant consommé est trop approximatif.
+        if (chosen.stopLaps.firstOrNull() == lap && state.lapProgress.nature !in setOf(Nature.CALCUL, Nature.MESURE, Nature.SIMULATION)) deps += "position dans le tour incertaine"
+        // Le règlement non confirmé est commun aux deux plans : il rend la stratégie provisoire (contrôle 3), pas une dépendance.
+        return deps.distinct()
+    }
+
+    private fun driversText(drivers: List<Pair<String, Double>>): String? = drivers.take(2).takeIf { it.isNotEmpty() }?.joinToString(", ") { (k, v) ->
+        "$k ${if (v <= 0) "−" else "+"}${StrategyOptions.seconds(kotlin.math.abs(v).roundToLong())}"
+    }
+
     /** Recommandation, raison, conséquence, réserve : une phrase courte, compréhensible en conduisant. */
-    private fun statement(v: Verdict, chosen: StrategyEngine.Scenario?, ref: StrategyEngine.Scenario?, r: StrategyEngine.Report, reasons: List<String>): String {
+    private fun statement(
+        v: Verdict, chosen: StrategyEngine.Scenario?, ref: StrategyEngine.Scenario?, r: StrategyEngine.Report, reasons: List<String>,
+        profit: Profitability = Profitability.NOT_APPLICABLE, drivers: List<Pair<String, Double>> = emptyList(),
+    ): String {
         if (chosen == null) return "Je n'ai aucune stratégie fiable à proposer : ${reasons.firstOrNull() ?: "données insuffisantes"}. Les rappels suivent le plan actuel."
         val keep = ref != null && chosen.key == ref.key
         val what = when {
@@ -174,15 +292,22 @@ class StrategyAssurance {
             else -> "écart non chiffrable"
         }
         val consequence = chosen.minMarginLaps?.let { "marge carburant ${"%.1f".format(java.util.Locale.FRANCE, it)} tour" }
+        val weighs = if (!keep) driversText(drivers)?.let { "ce qui pèse : $it" } else null
         val reserve = when (v) {
             Verdict.APPROVED -> null
-            Verdict.PROVISIONAL -> "provisoire : ${reasons.firstOrNull() ?: "à surveiller"}"
+            Verdict.PROVISIONAL -> if (profit == Profitability.NOT_PROVEN) "faisable, mais ${reasons.firstOrNull { it.startsWith("rentabilité") } ?: reasons.firstOrNull() ?: "gain non démontré"}" else "provisoire : ${reasons.firstOrNull() ?: "à surveiller"}"
             Verdict.BLOCKED -> "proposition bloquée, je garde le plan : ${reasons.firstOrNull() ?: "contrôle échoué"}"
             Verdict.INSUFFICIENT -> "données insuffisantes : ${reasons.firstOrNull() ?: ""}"
         }
+        val opener = when {
+            keep -> "On garde : "
+            profit == Profitability.NOT_PROVEN -> "Possible : "
+            else -> "Je recommande : "
+        }
         return listOfNotNull(
-            (if (keep) "On garde : " else "Je recommande : ") + what + ".",
+            opener + what + ".",
             why.replaceFirstChar { it.uppercase() } + ".",
+            weighs?.replaceFirstChar { it.uppercase() }?.let { "$it." },
             consequence?.replaceFirstChar { it.uppercase() }?.let { "$it." },
             reserve?.replaceFirstChar { it.uppercase() }?.let { "$it." },
         ).joinToString(" ")
@@ -192,6 +317,14 @@ class StrategyAssurance {
         const val TELEMETRY_STALE_MS = 3_000L
         /** Un nouveau plan doit battre l'ancien de plus de 1,5 × l'incertitude pour le remplacer. */
         const val HYSTERESIS = 1.5
+        /** Un coût d'arrêt appris sur moins d'arrêts que ceci n'est pas démontré (répétabilité inconnue). */
+        const val MIN_STOP_SAMPLES = 3
+        /**
+         * Garde (pas un modèle) : effet du poids du carburant supposé au plus 15 ms par unité et par tour, ordre de grandeur
+         * du sport automobile réel (ESTIMATION externe, non mesurée dans GT7). Sert seulement à dire quand cet effet,
+         * compté 0, pourrait renverser l'écart ; jamais ajouté au temps.
+         */
+        const val FUEL_WEIGHT_GUARD_MS = 15.0
         private val WEAR = Regex("\\d+ ?% d'usure|usure (de |à )?\\d+ ?%", RegexOption.IGNORE_CASE)
         private val GAP = Regex("(à|de) \\d+[,.]?\\d* ?s (devant|derrière)|écart (de|avec) .* \\d+[,.]?\\d* ?s", RegexOption.IGNORE_CASE)
 

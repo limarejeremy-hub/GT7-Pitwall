@@ -31,7 +31,10 @@ run_version() {
   safe="$(echo "$ref" | tr '/:' '__')"
   sha="$(git -C "$ROOT" rev-parse "$(resolve "$ref")")"
   dir="$WORK/$safe"
-  if [ -d "$dir" ]; then git -C "$dir" checkout -q --detach "$sha"; else git -C "$ROOT" worktree add -q --detach "$dir" "$sha"; fi
+  # Copie de travail réutilisée : son lab/ a été remplacé par celui de ROOT au passage précédent, un checkout simple
+  # serait refusé et le rejeu tournerait EN SILENCE sur l'ancienne version. Checkout forcé, puis vérification du commit.
+  if [ -d "$dir" ]; then git -C "$dir" checkout -q -f --detach "$sha"; else git -C "$ROOT" worktree add -q --detach "$dir" "$sha"; fi
+  [ "$(git -C "$dir" rev-parse HEAD)" = "$sha" ] || { echo "copie de travail de $ref pas au commit $sha" >&2; exit 4; }
   rm -rf "$dir/lab"
   mkdir -p "$dir/lab"
   (cd "$ROOT/lab" && tar --exclude=./build -cf - .) | (cd "$dir/lab" && tar -xf -)

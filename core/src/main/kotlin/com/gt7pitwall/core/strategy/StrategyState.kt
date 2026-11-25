@@ -74,6 +74,8 @@ data class StrategyState(
     // --- Stands
     val pitZoneValidated: Boolean,
     val pitEntryStillPossible: Boolean,
+    /** Progression dans le tour (0..1) et sa méthode : distance parcourue (fiable, V515.1) ou carburant (approximative). */
+    val lapProgress: Sourced<Float> = Sourced.unknown("fraction", "non transmise"),
     val stopCosts: StopCosts?,
     val refuelMsPerUnit: Sourced<Double>,
     val outLapPenaltyMs: Sourced<Double>,

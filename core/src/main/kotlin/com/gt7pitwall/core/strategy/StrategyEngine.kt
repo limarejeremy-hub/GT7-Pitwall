@@ -29,6 +29,12 @@ object StrategyEngine {
     /** Marge de carburant gardée à chaque relais et à l'arrivée (tours) : celle du plan (RacePlanner). */
     const val SAFETY_LAPS = RacePlanner.SAFETY_LAPS
     const val MAX_EVALUATIONS = 40_000
+    const val PART_TYRES = "dégradation des pneus"
+    const val PART_OUTLAP = "tour de sortie"
+    const val PART_FUEL_LOAD = "poids du carburant"
+    const val PART_STOPS = "coût des arrêts"
+    const val PART_REFUEL = "temps de remplissage"
+    const val PART_SAVING = "économie de carburant"
     const val MIN_UNCERTAINTY_MS = 500.0
     /** Gain exigé d'un arrêt de plus, en plus de deux fois l'incertitude (comme le comparateur V512). */
     const val MIN_EXTRA_STOP_GAIN_MS = StrategyOptions.MIN_EXTRA_STOP_GAIN_MS.toDouble()
@@ -119,6 +125,12 @@ object StrategyEngine {
         val unknowns: List<String>,
         /** Conditions qui rendraient ce scénario invalide. */
         val invalidIf: List<String>,
+        /** Décomposition du temps (ms) par cause : pneus (dégradation), tour de sortie, carburant embarqué, arrêts, remplissage, économie. */
+        val parts: Map<String, Double> = emptyMap(),
+        /** Écart avec la référence, cause par cause (ms) : ce qui pèse dans la décision. */
+        val deltaParts: Map<String, Double>? = null,
+        /** Carburant embarqué intégré sur la course (unités × tours) : sert à juger l'effet du poids, même non calibré. */
+        val fuelLapUnits: Double? = null,
     ) {
         val stopLaps: List<Int> get() = stops.map { it.lap }
         val tyreStops: Int get() = stops.count { it.tyres }
@@ -238,17 +250,32 @@ object StrategyEngine {
         var total: Double? = null
         val costs = i.stopCosts
         val pace = i.paceMs
+        val parts = mutableMapOf<String, Double>()
+        var fuelLapUnits: Double? = null
+        fun add(k: String, v: Double) { parts[k] = (parts[k] ?: 0.0) + v }
         if (pace != null) {
             var t = 0.0
             for ((idx, st) in stints.withIndex()) {
                 for (k in 0 until (st.toLap - st.fromLap + 1)) {
                     val frac = if (idx == 0 && k == 0) i.lapFractionLeft.toDouble() else 1.0
                     var lap: Double = pace
-                    i.slope?.let { lap += it * (st.tyreAgeStart + k) }
+                    i.slope?.let { lap += it * (st.tyreAgeStart + k); add(PART_TYRES, it * (st.tyreAgeStart + k) * frac) }
                     t += lap * frac
                 }
                 // Tour de sortie après un changement de pneus.
-                if (idx > 0 && stopPlans[idx - 1].tyres) i.outLapPenaltyMs?.let { t += it }
+                if (idx > 0 && stopPlans[idx - 1].tyres) i.outLapPenaltyMs?.let { t += it; add(PART_OUTLAP, it) }
+            }
+            // Carburant embarqué intégré relais par relais (moyenne du relais × tours), calculé même sans effet calibré.
+            if (stints.all { it.fuelUsed != null }) {
+                var f = i.fuelNow
+                var acc = 0.0
+                for ((idx, st) in stints.withIndex()) {
+                    if (idx > 0) f += stopPlans[idx - 1].fuelAdded ?: 0f
+                    val u = st.fuelUsed ?: 0f
+                    acc += (f - u / 2).toDouble() * st.laps
+                    f -= u
+                }
+                fuelLapUnits = acc
             }
             i.fuelEffectMsPerUnit?.let { eff ->
                 // Carburant embarqué : intégré relais par relais (moyenne du relais × tours).
@@ -257,6 +284,7 @@ object StrategyEngine {
                     if (idx > 0) f += stopPlans[idx - 1].fuelAdded ?: 0f
                     val u = st.fuelUsed ?: 0f
                     t += eff * (f - u / 2) * st.laps
+                    add(PART_FUEL_LOAD, eff * (f - u / 2) * st.laps)
                     f -= u
                 }
             }
@@ -264,10 +292,13 @@ object StrategyEngine {
             for (sp in stopPlans) {
                 val k = StopKind.of(fuel = (sp.fuelAdded ?: 1f) > 0.05f, tyres = sp.tyres)
                 val c = costs?.cost(k)
-                if (c == null) stopUnknown = true else t += c.ms
-                i.refuelMsPerUnit?.let { r -> t += r * (sp.fuelAdded ?: 0f) }
+                if (c == null) stopUnknown = true else { t += c.ms; add(PART_STOPS, c.ms) }
+                // Remplissage : seulement si le coût d'arrêt utilisé ne le comprend pas déjà (pas de double comptage).
+                val refuelIncluded = costs != null && (costs.observed[k] != null || (costs.baseIncludesRefuel && k.fuel))
+                if (!refuelIncluded) i.refuelMsPerUnit?.let { r -> t += r * (sp.fuelAdded ?: 0f); add(PART_REFUEL, r * (sp.fuelAdded ?: 0f)) }
             }
             t += savedUnits * i.saveCostMsPerUnit
+            if (savedUnits > 0) add(PART_SAVING, savedUnits * i.saveCostMsPerUnit)
             total = if (stopUnknown) null else t
             if (stopUnknown) unknowns += "coût d'un arrêt inconnu"
         } else unknowns += "rythme inconnu : temps non chiffré"
@@ -284,7 +315,7 @@ object StrategyEngine {
             kind, stopPlans, stints, feasible, issues.distinct(), total, null, null,
             if (perLap != null && minMargin != Float.MAX_VALUE) minMargin else null,
             if (perLap != null && breakFrac != Float.MAX_VALUE) breakFrac.coerceAtLeast(0f) else null,
-            maxSave, savedUnits * i.saveCostMsPerUnit, unknowns.distinct(), invalidIf,
+            maxSave, savedUnits * i.saveCostMsPerUnit, unknowns.distinct(), invalidIf, parts, fuelLapUnits = fuelLapUnits,
         )
     }
 
@@ -308,7 +339,9 @@ object StrategyEngine {
         v += saveU * saveU
         val outU = i.outLapSpread * abs(s.tyreStops - ref.tyreStops)
         v += outU * outU
-        return s.copy(deltaMs = s.totalMs - ref.totalMs, uncertaintyMs = max(sqrt(v), MIN_UNCERTAINTY_MS))
+        val keys = s.parts.keys + ref.parts.keys
+        val dp = keys.associateWith { (s.parts[it] ?: 0.0) - (ref.parts[it] ?: 0.0) }.filterValues { abs(it) >= 1.0 }
+        return s.copy(deltaMs = s.totalMs - ref.totalMs, uncertaintyMs = max(sqrt(v), MIN_UNCERTAINTY_MS), deltaParts = dp)
     }
 
     /** Toutes les suites d'arrêts faisables, bornées ; renvoie (scénarios, nombre évalué, exploration partielle). */

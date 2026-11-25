@@ -99,6 +99,9 @@ fun StrategyBoardCard(b: StrategyBoard) {
         if (b.changed) Text("Plan actuel du moteur : ${b.current} (les rappels « Box » suivent toujours ce plan)", color = SColors.Warn, fontSize = 12.sp)
         b.window?.let { Text(it, color = SColors.Soft, fontSize = 12.sp) }
         Text(b.statement, color = SColors.Text, fontSize = 12.sp)
+        if (b.profitability.isNotEmpty()) Text("Rentabilité : ${b.profitability}", color = if (b.dependencies.isEmpty()) SColors.Soft else SColors.Warn, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        if (b.dependencies.isNotEmpty()) Text("Dépend de : ${b.dependencies.joinToString(" ; ")}", color = SColors.Warn, fontSize = 12.sp)
+        if (b.drivers.isNotEmpty()) Text("Ce qui pèse : ${b.drivers.joinToString(" · ")}", color = SColors.Soft, fontSize = 12.sp)
         Text("OPTIONS", color = SColors.Soft, fontSize = 11.sp, fontWeight = FontWeight.Bold)
         b.alternatives.forEach { r ->
             Row(

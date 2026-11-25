@@ -166,8 +166,10 @@ class SessionTracker(
     fun liveLapProgress(): Float? {
         val p = snapshot.packet ?: return null
         if (p.currentLap < 2 || !trace.isComplete || pitVisitOpen) return null
+        // Référence : dernier tour complet hors stands, jamais le tour 1 (départ de la grille, pas de la ligne : 4 207 m
+        // contre 4 552 m mesurés sur une trace réelle, rappel « Box » du tour 2 décalé d'environ 300 m). V515.1.
         val baseline = snapshot.laps.asReversed().firstNotNullOfOrNull {
-            it.distanceM?.takeIf { d -> d >= 1_000f && !it.pitLane }
+            it.distanceM?.takeIf { d -> d >= 1_000f && !it.pitLane && it.lapNumber > 1 }
         } ?: return null
         val d = trace.lapDistance
         if (!d.isFinite() || d < 0f || d > baseline * 1.06f) return null

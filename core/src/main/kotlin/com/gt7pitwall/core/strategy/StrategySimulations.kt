@@ -99,6 +99,7 @@ object StrategySimulations {
             degradationMsPerLap = i.slopeMsPerLap?.let { Sourced(it, "ms/tour", "SIMULATION", Nature.ESTIMATION) } ?: Sourced.unknown("ms/tour", "inconnue"),
             degradationSpreadMs = i.slopeSpread, freshTyreGainMs = Sourced.unknown("ms", "SIMULATION"),
             pitZoneValidated = false, pitEntryStillPossible = i.pitEntryStillPossible, stopCosts = i.stopCosts,
+            lapProgress = Sourced(1f - i.lapFractionLeft, "fraction", "SIMULATION", Nature.SIMULATION, atMs),
             refuelMsPerUnit = Sourced.unknown("ms/unité", "inconnu"), outLapPenaltyMs = i.outLapPenaltyMs?.let { Sourced(it, "ms", "SIMULATION", Nature.ESTIMATION) } ?: Sourced.unknown("ms", "non démontrée"),
             plannedStops = i.plannedStops, cars = Sourced.unknown("", "SIMULATION"), opponentsDeclared = emptyList(),
             paceMs = Sourced(i.paceMs, "ms", "SIMULATION", Nature.SIMULATION, atMs), paceSpreadMs = i.paceSpreadMs,
