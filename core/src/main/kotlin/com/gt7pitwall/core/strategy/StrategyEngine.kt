@@ -28,7 +28,7 @@ import kotlin.math.sqrt
 object StrategyEngine {
     /** Marge de carburant gardée à chaque relais et à l'arrivée (tours) : celle du plan (RacePlanner). */
     const val SAFETY_LAPS = RacePlanner.SAFETY_LAPS
-    const val MAX_EVALUATIONS = 120_000
+    const val MAX_EVALUATIONS = 40_000
     const val MIN_UNCERTAINTY_MS = 500.0
     /** Gain exigé d'un arrêt de plus, en plus de deux fois l'incertitude (comme le comparateur V512). */
     const val MIN_EXTRA_STOP_GAIN_MS = StrategyOptions.MIN_EXTRA_STOP_GAIN_MS.toDouble()
@@ -62,8 +62,8 @@ object StrategyEngine {
         /** Temps de remplissage (ms par unité) ; null : inconnu (non compté, dit). */
         val refuelMsPerUnit: Double? = null,
         val mandatoryStopsLeft: Int = 0,
-        /** Une gomme imposée reste à monter : au moins un changement de pneus. */
-        val mustChangeTyres: Boolean = false,
+        /** Gommes imposées restant à monter : autant de changements de pneus au minimum. */
+        val tyreChangesRequired: Int = 0,
         val maxSaving: Float = FuelIntelligence.MAX_SAVING_FRACTION.toFloat(),
         val saveCostMsPerUnit: Double = FuelIntelligence.LIFT_COST_MS_PER_UNIT,
         val saveCostSpread: Double = FuelIntelligence.LIFT_COST_MS_PER_UNIT,
@@ -74,6 +74,10 @@ object StrategyEngine {
         val maxStops: Int = 3,
     ) {
         val firstStopLap: Int get() = if (pitEntryStillPossible) currentLap else currentLap + 1
+        /** Dégradation utilisable : seulement positive (une pente négative vient du carburant ou du rythme, pas des pneus). */
+        val slope: Double? get() = slopeMsPerLap?.takeIf { it > 0.0 }
+        /** Incertitude de pente jamais nulle : au moins 30 % de la pente et 30 ms (une pente mesurée sur peu de tours). */
+        val slopeU: Double get() = slope?.let { max(slopeSpread, max(it * 0.3, 30.0)) } ?: 0.0
     }
 
     enum class Kind(val code: Char, val label: String) {
@@ -118,9 +122,12 @@ object StrategyEngine {
     ) {
         val stopLaps: List<Int> get() = stops.map { it.lap }
         val tyreStops: Int get() = stops.count { it.tyres }
-        fun describe(): String = if (stops.isEmpty()) "aucun arrêt" + if (saving > 0f) " (économie ${pct(saving)})" else "" else stops.joinToString(", ") { s ->
+        fun describe(): String = if (stops.isEmpty()) "aucun arrêt" + if (saving > 0f) " (économie ${pctFine(saving)})" else "" else stops.joinToString(", ") { s ->
             "fin du tour ${s.lap}" + (if (s.tyres) " pneus" else "") + (s.fuelAdded?.let { if (it > 0.05f) " +${it.roundToInt()} carburant" else " sans carburant" } ?: "")
-        } + if (saving > 0f) ", économie ${pct(saving)}" else ""
+        } + if (saving > 0f) ", économie ${pctFine(saving)}" else ""
+
+        /** Contenu complet des arrêts (tour, pneus, carburant ou non) : deux plans « égaux » ont la même clé. */
+        val key: List<Triple<Int, Boolean, Boolean>> get() = stops.map { Triple(it.lap, it.tyres, (it.fuelAdded ?: 1f) > 0.05f) }
     }
 
     /** Fenêtre stratégique du prochain arrêt : tours possibles, tour préféré, et pourquoi. */
@@ -154,6 +161,8 @@ object StrategyEngine {
         val evaluated: Int,
         val partial: Boolean,
         val notes: List<String>,
+        /** Dernier tour possible pour le prochain arrêt d'après le carburant, les pneus et le règlement seulement. */
+        val latestFeasibleFirstStop: Int? = null,
     ) {
         fun scenario(k: Kind): Scenario? = scenarios.firstOrNull { it.kind == k }
     }
@@ -172,7 +181,7 @@ object StrategyEngine {
         if (stops.any { it.first >= i.totalLaps }) issues += "pas d'arrêt à la fin du dernier tour"
         if (stops.map { it.first }.distinct().size != stops.size) issues += "deux arrêts au même tour"
         if (stops.size < i.mandatoryStopsLeft) issues += "arrêts obligatoires non respectés (${stops.size} sur ${i.mandatoryStopsLeft})"
-        if (i.mustChangeTyres && stops.none { it.second }) issues += "gomme imposée jamais montée"
+        if (stops.count { it.second } < i.tyreChangesRequired) issues += "gommes imposées non montées (${stops.count { it.second }} changement(s) sur ${i.tyreChangesRequired})"
         // Relais.
         val bounds = listOf(i.currentLap - 1) + stops.map { it.first } + i.totalLaps
         val stints = mutableListOf<Stint>()
@@ -193,7 +202,7 @@ object StrategyEngine {
             var saving = 0f
             var used: Float? = null
             if (perLap != null) {
-                val need = laps * perLap
+                val need = max(laps * perLap, 1e-6f)
                 val reserve = SAFETY_LAPS * perLap
                 // Carburant disponible pour ce relais : à bord (premier relais) ou après le plein de l'arrêt précédent.
                 val available = if (s == 0) fuel else {
@@ -214,7 +223,8 @@ object StrategyEngine {
                 maxSave = max(maxSave, saving)
                 val margin = (available - used) / perLap
                 minMargin = min(minMargin, margin)
-                if (saving == 0f) breakFrac = min(breakFrac, ((available - reserve) / need) - 1f)
+                // Marge de consommation : au premier relais le carburant à bord ; ensuite le plein peut monter jusqu'au réservoir.
+                if (saving == 0f && laps > 0f) breakFrac = min(breakFrac, (((if (s == 0) available else i.tank) - reserve) / need) - 1f)
                 fuel = available - used
             }
             stints += Stint(from, to, laps, ageStart, ageEnd, used, saving)
@@ -234,7 +244,7 @@ object StrategyEngine {
                 for (k in 0 until (st.toLap - st.fromLap + 1)) {
                     val frac = if (idx == 0 && k == 0) i.lapFractionLeft.toDouble() else 1.0
                     var lap: Double = pace
-                    i.slopeMsPerLap?.let { lap += it * (st.tyreAgeStart + k) }
+                    i.slope?.let { lap += it * (st.tyreAgeStart + k) }
                     t += lap * frac
                 }
                 // Tour de sortie après un changement de pneus.
@@ -261,7 +271,7 @@ object StrategyEngine {
             total = if (stopUnknown) null else t
             if (stopUnknown) unknowns += "coût d'un arrêt inconnu"
         } else unknowns += "rythme inconnu : temps non chiffré"
-        if (i.slopeMsPerLap == null) unknowns += "dégradation des pneus inconnue : gain des pneus neufs non chiffré"
+        if (i.slope == null) unknowns += if (i.slopeMsPerLap != null) "chronos qui ne se dégradent pas : aucun gain de pneus neufs compté" else "dégradation des pneus inconnue : gain des pneus neufs non chiffré"
         if (i.outLapPenaltyMs == null && stopPlans.any { it.tyres }) unknowns += "tour de sortie en pneus neufs : effet non démontré (compté 0)"
         if (i.fuelEffectMsPerUnit == null) unknowns += "effet du poids du carburant non calibré (compté 0)"
         if (i.refuelMsPerUnit == null && stopPlans.any { (it.fuelAdded ?: 0f) > 0.05f }) unknowns += "temps de remplissage non compté"
@@ -278,19 +288,22 @@ object StrategyEngine {
         )
     }
 
-    /** Écart avec la référence et son incertitude : seuls les éléments qui diffèrent entre les deux comptent. */
-    private fun withDelta(i: Input, s: Scenario, ref: Scenario?): Scenario {
-        if (ref == null || s.totalMs == null || ref.totalMs == null) return s.copy(deltaMs = null, uncertaintyMs = null)
+    /**
+     * Écart avec la référence et son incertitude : seuls les éléments qui DIFFÈRENT comptent. Coûts d'arrêt décomposés en
+     * passages et changements de pneus, comptés linéairement (une erreur de coût appris est systématique, pas aléatoire).
+     * Aucun écart contre une référence infaisable ni pour un plan infaisable.
+     */
+    fun withDelta(i: Input, s: Scenario, ref: Scenario?): Scenario {
+        if (ref == null || !ref.feasible || !s.feasible || s.totalMs == null || ref.totalMs == null) return s.copy(deltaMs = null, uncertaintyMs = null)
         fun ageSum(x: Scenario) = x.stints.sumOf { st -> (st.tyreAgeStart..st.tyreAgeEnd).sum().toDouble() }
         var v = 0.0
-        val slopeU = i.slopeSpread * abs(ageSum(s) - ageSum(ref))
+        val slopeU = i.slopeU * abs(ageSum(s) - ageSum(ref))
         v += slopeU * slopeU
-        val kinds = { x: Scenario -> x.stops.map { StopKind.of((it.fuelAdded ?: 1f) > 0.05f, it.tyres) } }
-        val a = kinds(s).toMutableList()
-        val b = kinds(ref).toMutableList()
-        val common = a.filter { b.remove(it) }
-        val differing = kinds(s).toMutableList().also { l -> common.forEach { l.remove(it) } } + b
-        differing.forEach { k -> i.stopCosts?.cost(k)?.spread?.let { v += it * it } }
+        val c = i.stopCosts
+        val passU = (c?.base?.spread ?: c?.observed?.values?.map { it.spread }?.average() ?: 0.0) * abs(s.stops.size - ref.stops.size)
+        val tyreU = (c?.tyreService?.spread ?: 0.0) * abs(s.tyreStops - ref.tyreStops)
+        val stopU = passU + tyreU
+        v += stopU * stopU
         val saveU = abs(s.savingCostMs - ref.savingCostMs) / i.saveCostMsPerUnit.coerceAtLeast(1.0) * i.saveCostSpread
         v += saveU * saveU
         val outU = i.outLapSpread * abs(s.tyreStops - ref.tyreStops)
@@ -317,7 +330,8 @@ object StrategyEngine {
                     val stops = chosen.mapIndexed { idx, l -> l to ((mask shr idx) and 1 == 1) }
                     val s = evaluate(i, stops)
                     evaluated++
-                    if (s.feasible) out += s
+                    // Un passage sans carburant ni pneus ne sert qu'à un arrêt obligatoire.
+                    if (s.feasible && (i.mandatoryStopsLeft > 0 || s.stops.none { !it.tyres && (it.fuelAdded ?: 1f) <= 0.05f })) out += s
                 }
                 return
             }
@@ -339,7 +353,7 @@ object StrategyEngine {
         val refRaw = evaluate(i, planned, Kind.CURRENT)
         val (all, evaluated, partial) = explore(i)
         if (partial) notes += "exploration partielle : nombre d'arrêts réduit pour rester rapide"
-        val ref = refRaw
+        val ref = withDelta(i, refRaw, refRaw)
         fun d(s: Scenario) = withDelta(i, s, ref)
         val firstRef = planned.firstOrNull()
         val timed = all.map(::d)
@@ -347,7 +361,7 @@ object StrategyEngine {
         fun closeness(x: Scenario): Int = abs((x.stopLaps.firstOrNull() ?: 0) - (firstRef?.first ?: 0)) + abs(x.stops.size - planned.size) * 10
         fun bestOf(xs: List<Scenario>) = xs.filter { it.totalMs != null }
             .minWithOrNull(compareBy<Scenario> { Math.round(it.totalMs!!) }.thenBy { closeness(it) }) ?: xs.firstOrNull()
-        val scenarios = mutableListOf(d(ref))
+        val scenarios = mutableListOf(ref)
         if (firstRef != null) {
             fun shifted(delta: Int, kind: Kind) = planned.mapIndexed { idx, (l, t) -> if (idx == 0) (l + delta) to t else l to t }
                 .let { evaluate(i, it, kind) }.let(::d)
@@ -360,7 +374,10 @@ object StrategyEngine {
         // D : relais prolongé grâce à une économie (moins d'arrêts ou premier arrêt plus tard que A).
         bestOf(timed.filter { it.saving > 0f && (it.stops.size < planned.size || (it.stopLaps.firstOrNull() ?: Int.MAX_VALUE) > (firstRef?.first ?: Int.MAX_VALUE)) })
             ?.let { scenarios += it.copy(kind = Kind.EXTEND_SAVE) }
-            ?: scenarios.add(Scenario(Kind.EXTEND_SAVE, emptyList(), emptyList(), false, listOf("aucune économie réaliste (≤ ${pct(i.maxSaving)}) ne prolonge le relais"), null, null, null, null, null, 0f, 0.0, emptyList(), emptyList()))
+            ?: scenarios.add(
+                if (i.perLap == null) Scenario(Kind.EXTEND_SAVE, emptyList(), emptyList(), false, emptyList(), null, null, null, null, null, 0f, 0.0, listOf("consommation inconnue : économie non évaluable"), emptyList())
+                else Scenario(Kind.EXTEND_SAVE, emptyList(), emptyList(), false, listOf("aucune économie réaliste (≤ ${pct(i.maxSaving)}) ne prolonge le relais"), null, null, null, null, null, 0f, 0.0, emptyList(), emptyList()),
+            )
         // G : un arrêt pour les pneus sans carburant.
         bestOf(timed.filter { s -> s.stops.any { it.tyres && (it.fuelAdded ?: 1f) <= 0.05f } })?.let { scenarios += it.copy(kind = Kind.TYRES_NO_FUEL) }
         // H : un arrêt de plus que A.
@@ -370,24 +387,29 @@ object StrategyEngine {
         // J : meilleure stratégie trouvée (plusieurs arrêts si la course l'exige).
         val best = bestOf(timed.filter { it.feasible })?.copy(kind = Kind.BEST)
         best?.let { scenarios += it }
-        // Recommandation : le meilleur seulement s'il bat A au-delà de l'incertitude (et de 2 s + 2× pour un arrêt de plus).
+        // Recommandation (comme V514) : parmi les plans qui battent A au-delà de LEUR seuil (incertitude ; et max(2 U, 2 s)
+        // pour un arrêt ou un changement de pneus de plus), le plus rapide. Sinon on garde A.
         val refOk = ref.feasible
-        val bestBeats = best != null && best.deltaMs != null && best.uncertaintyMs != null && run {
-            val extra = best.stops.size > ref.stops.size || best.tyreStops > ref.tyreStops
-            val need = if (extra) max(2 * best.uncertaintyMs, MIN_EXTRA_STOP_GAIN_MS) else best.uncertaintyMs
-            -best.deltaMs > need
+        fun passes(x: Scenario): Boolean {
+            val dl = x.deltaMs ?: return false
+            val u = x.uncertaintyMs ?: return false
+            val extra = x.stops.size > ref.stops.size || x.tyreStops > ref.tyreStops
+            return -dl > if (extra) max(2 * u, MIN_EXTRA_STOP_GAIN_MS) else u
         }
+        val winner = if (refOk) timed.filter(::passes).minWithOrNull(compareBy<Scenario> { Math.round(it.totalMs!!) }.thenBy { closeness(it) }) else null
+        val bestBeats = winner != null
         val recommended = when {
-            refOk && !bestBeats -> scenarios.first()
-            bestBeats -> best
+            refOk && !bestBeats -> ref
+            bestBeats -> winner!!.copy(kind = Kind.BEST)
             // Plan actuel infaisable : la meilleure stratégie faisable (même sans chiffrage), sinon rien.
-            else -> best ?: timed.firstOrNull()
+            else -> best
         }
         if (!refOk) notes += "le plan actuel n'est pas faisable : ${ref.issues.joinToString(", ")}"
         return Report(
             scenarios.distinctBy { it.kind }, ref, best, refOk && !bestBeats, recommended,
             window(i, timed, best), cut(i, scenarios, ref, early = true), cut(i, scenarios, ref, early = false),
             evaluated, partial, notes,
+            latestFeasibleFirstStop = all.filter { it.stops.isNotEmpty() }.maxOfOrNull { it.stopLaps.first() },
         )
     }
 
@@ -415,20 +437,26 @@ object StrategyEngine {
     private fun cut(i: Input, scenarios: List<Scenario>, ref: Scenario, early: Boolean): Cut? {
         if (ref.stops.isEmpty()) return null
         val alt = scenarios.firstOrNull { it.kind == (if (early) Kind.EARLY else Kind.LATE) } ?: return null
-        val slope = i.slopeMsPerLap
-        val losing = slope?.let { it > max(2 * i.slopeSpread, 50.0) }
+        val slope = i.slope
+        val losing = i.slopeMsPerLap?.let { it > max(2 * i.slopeU, 50.0) }
         val gain = slope?.let { it * i.tyreAge }?.takeIf { early }
         val nextSave = alt.stints.drop(1).maxOfOrNull { it.saving }?.takeIf { it > 0f }
         val extra = !alt.feasible && alt.issues.any { "plein" in it }
         val beats = alt.feasible && alt.deltaMs != null && alt.uncertaintyMs != null && -alt.deltaMs > alt.uncertaintyMs
+        if (early && alt.feasible && alt.stops.firstOrNull()?.tyres != true) {
+            return Cut(losing, null, i.outLapPenaltyMs, true, nextSave, extra, alt.deltaMs, alt.uncertaintyMs, false, false,
+                "Avancer l'arrêt sans changer les pneus n'est pas un undercut : aucun gain de pneus neufs.")
+        }
         val verdict = when {
             !alt.feasible -> "${if (early) "Undercut" else "Overcut"} impossible : ${alt.issues.firstOrNull() ?: "plan infaisable"}."
             alt.deltaMs == null -> "${if (early) "Undercut" else "Overcut"} : faisable, mais gain non chiffrable (${alt.unknowns.firstOrNull() ?: "données manquantes"})."
-            beats -> "${if (early) "Undercut" else "Overcut"} : gain estimé ${StrategyOptions.seconds((-alt.deltaMs).roundToLong())} pour nous, au-delà de l'incertitude ; face à un adversaire, seulement s'il est dans cet écart (écart inconnu de GT7)."
-            else -> "${if (early) "Undercut" else "Overcut"} : pas de gain démontré (${StrategyOptions.seconds(alt.deltaMs.roundToLong())}, incertitude ${StrategyOptions.seconds(alt.uncertaintyMs!!.roundToLong())})."
+            beats -> "${if (early) "Undercut" else "Overcut"} : gain estimé ${StrategyOptions.seconds((-alt.deltaMs).roundToLong())} à l'arrivée par rapport au plan actuel, au-delà de l'incertitude. Face à un adversaire, seulement s'il est dans cet écart et suit notre plan actuel (écart inconnu de GT7)."
+            alt.deltaMs > alt.uncertaintyMs!! -> "${if (early) "Undercut" else "Overcut"} : plus lent d'environ ${StrategyOptions.seconds(alt.deltaMs.roundToLong())} à l'arrivée (incertitude ${StrategyOptions.seconds(alt.uncertaintyMs.roundToLong())})."
+            else -> "${if (early) "Undercut" else "Overcut"} : pas de différence démontrée (écart dans l'incertitude de ${StrategyOptions.seconds(alt.uncertaintyMs.roundToLong())})."
         }
         return Cut(losing, gain, i.outLapPenaltyMs, alt.feasible, nextSave, extra, alt.deltaMs, alt.uncertaintyMs, beats, opponentReference = false, verdict = verdict)
     }
 
     private fun pct(f: Float) = "${(f * 100).roundToInt()} %"
+    private fun pctFine(f: Float) = if (f < 0.01f) String.format(java.util.Locale.FRANCE, "%.1f %%", f * 100) else "${(f * 100).roundToInt()} %"
 }

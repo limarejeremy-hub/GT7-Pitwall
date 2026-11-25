@@ -82,12 +82,12 @@ object StrategySimulations {
     /** État stratégique minimal correspondant à un cas simulé (pour le contrôleur). */
     fun state(c: Case, atMs: Long = 1_000_000L): StrategyState {
         val i = c.input
-        fun <T> m(v: T?, unit: String) = Sourced(v, unit, "SIMULATION", Nature.MESURE, atMs)
+        fun <T> m(v: T?, unit: String) = Sourced(v, unit, "SIMULATION", Nature.SIMULATION, atMs)
         return StrategyState(
             atMs = atMs,
             track = Sourced.unknown("", "SIMULATION"), currentLap = m(i.currentLap, "tour"), totalLaps = m(i.totalLaps, "tours"),
             lapsRemaining = m(i.totalLaps - i.currentLap + i.lapFractionLeft, "tours"), timeRemainingMs = Sourced.unknown("ms", "course aux tours"),
-            position = Sourced.unknown("", "SIMULATION"), rulesValid = Sourced(c.rulesValid, "", if (c.rulesValid) "règlement de la simulation" else "fiche Sport périmée", Nature.CALCUL),
+            position = Sourced.unknown("", "SIMULATION"), rulesValid = Sourced(c.rulesValid, "", if (c.rulesValid) "règlement de la simulation" else "fiche Sport périmée", Nature.SIMULATION),
             rulesIssues = if (c.rulesValid) emptyList() else listOf("fiche Sport périmée"),
             mandatoryStopsLeft = m(i.mandatoryStopsLeft, "arrêts"),
             fuelNow = m(i.fuelNow, "unités"), tank = m(i.tank, "unités"),
@@ -101,7 +101,7 @@ object StrategySimulations {
             pitZoneValidated = false, pitEntryStillPossible = i.pitEntryStillPossible, stopCosts = i.stopCosts,
             refuelMsPerUnit = Sourced.unknown("ms/unité", "inconnu"), outLapPenaltyMs = i.outLapPenaltyMs?.let { Sourced(it, "ms", "SIMULATION", Nature.ESTIMATION) } ?: Sourced.unknown("ms", "non démontrée"),
             plannedStops = i.plannedStops, cars = Sourced.unknown("", "SIMULATION"), opponentsDeclared = emptyList(),
-            paceMs = Sourced(i.paceMs, "ms", "SIMULATION", Nature.MESURE, atMs), paceSpreadMs = i.paceSpreadMs,
+            paceMs = Sourced(i.paceMs, "ms", "SIMULATION", Nature.SIMULATION, atMs), paceSpreadMs = i.paceSpreadMs,
             telemetryAgeMs = c.telemetryAgeMs,
         )
     }

@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -85,6 +84,7 @@ private fun NextStop(b: StrategyBoard) {
 fun StrategyBoardCompact(b: StrategyBoard) {
     SCard("STRATÉGIE", b.verdict) {
         NextStop(b)
+        if (b.changed) Text("Rappels « Box » : ${b.boxLap?.let { "fin du tour $it (plan actuel)" } ?: "aucun arrêt au plan actuel"}", color = SColors.Warn, fontSize = 12.sp, fontWeight = FontWeight.Bold)
         b.window?.let { Text(it, color = SColors.Soft, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis) }
         Text(b.statement, color = SColors.Text, fontSize = 12.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
     }
@@ -109,19 +109,18 @@ fun StrategyBoardCard(b: StrategyBoard) {
                     Text(r.code.toString(), color = SColors.Text, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                 }
                 Column(Modifier.weight(1f)) {
-                    Text(r.label, color = SColors.Text, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(r.label, color = SColors.Text, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     Text(r.plan, color = SColors.Soft, fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        r.delta, maxLines = 3, overflow = TextOverflow.Ellipsis, fontSize = 11.sp, fontFamily = FontFamily.Monospace,
+                        color = when (r.status) {
+                            StrategyBoard.Status.BETTER -> SColors.Ok
+                            StrategyBoard.Status.IMPOSSIBLE -> SColors.Stop
+                            StrategyBoard.Status.REFERENCE -> SColors.Text
+                            else -> SColors.Soft
+                        },
+                    )
                 }
-                Text(
-                    r.delta, maxLines = 2, overflow = TextOverflow.Ellipsis, fontSize = 11.sp, fontFamily = FontFamily.Monospace,
-                    color = when (r.status) {
-                        StrategyBoard.Status.BETTER -> SColors.Ok
-                        StrategyBoard.Status.IMPOSSIBLE -> SColors.Stop
-                        StrategyBoard.Status.REFERENCE -> SColors.Text
-                        else -> SColors.Soft
-                    },
-                    modifier = Modifier.width(120.dp),
-                )
             }
         }
         b.undercut?.let { Text(it, color = SColors.Soft, fontSize = 12.sp) }

@@ -10,6 +10,8 @@ enum class Nature(val label: String) {
     ESTIMATION("estimation"),
     HYPOTHESE("hypothèse"),
     DECLARATION("déclaré par le pilote"),
+    /** Valeur d'un scénario SIMULÉ (banc d'essai), jamais une mesure de course. */
+    SIMULATION("simulation"),
     INCONNU("inconnu"),
 }
 

@@ -147,11 +147,13 @@ class V515StrategyEngineTest {
     fun theDecisionIsStableWhenTheGainIsWithinTheHysteresis() {
         val c = case("undercut-perdant")
         val a = StrategyAssurance()
-        val first = a.review(StrategySimulations.state(c), StrategyEngine.analyze(c.input))
-        // Le plan bouge d'un tour avec un écart négligeable : la décision précédente est gardée.
+        val r1 = StrategyEngine.analyze(c.input)
+        val first = a.review(StrategySimulations.state(c), r1) { st -> StrategyEngine.withDelta(c.input, StrategyEngine.evaluate(c.input, st), r1.reference) }
+        // Le plan bouge d'un tour avec un écart négligeable : la décision précédente, RÉÉVALUÉE, est gardée.
         val moved = c.input.copy(plannedStops = listOf(c.input.plannedStops.first().copy(endOfLap = 8)))
-        val second = a.review(StrategySimulations.state(c.copy(input = moved)), StrategyEngine.analyze(moved))
-        assertEquals(first.chosen!!.stopLaps, second.chosen!!.stopLaps, second.checks.toString())
+        val r2 = StrategyEngine.analyze(moved)
+        val second = a.review(StrategySimulations.state(c.copy(input = moved)), r2) { st -> StrategyEngine.withDelta(moved, StrategyEngine.evaluate(moved, st), r2.reference) }
+        assertEquals(first.chosen!!.key, second.chosen!!.key, second.checks.toString())
         assertTrue(second.reasons.any { "stabilité" in it })
     }
 

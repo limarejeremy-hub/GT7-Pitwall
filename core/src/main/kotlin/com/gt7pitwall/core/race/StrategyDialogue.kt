@@ -169,10 +169,15 @@ object StrategyDialogue {
                 return Ask.WorthPitLoss(m.groupValues[1].toIntOrNull() ?: words[m.groupValues[1]] ?: 25)
             }
         }
-        if (tyreWord && has(t, " chang") && has(t, " maintenant", " tout de suite", " ce tour") && has(t, " carburant", " essence", " combien")) return Ask.FuelIfTyresNow
-        if (has(t, " eviter (le |l'|un |ce |cet )?(prochain |dernier |deuxieme |second )?(arret|stand|pit|passage)", " (sauter|zapper|faire sans) (l'|le |cet |ce )?arret",
-                " sans (refaire|faire|nouvel) (d'|un )?arret", " pas (besoin )?de (deuxieme |second |nouvel |dernier )?arret")) return Ask.AvoidStop
-        if (has(t, " moins risque", " plus (sure|sur|prudente|securisee)", " la plus safe", " sans risque")) return Ask.LeastRisk
+        // Carburant nécessaire si les pneus sont changés maintenant (pas « combien je gagne / combien de tours »).
+        if (tyreWord && has(t, " chang") && has(t, " maintenant", " tout de suite", " ce tour") && has(t, " carburant", " essence") &&
+            !has(t, " gagn", " perds", " perd ", " combien de tours")) return Ask.FuelIfTyresNow
+        // Éviter l'arrêt : une QUESTION, ni une négation (« on ne peut pas éviter l'arrêt »), ni un constat sur le trafic.
+        if ((asking || has(t, " peut on ", " on peut ")) && !negated && !has(t, " ne (peut|peux|pourra) pas", " trop de monde", " ce tour ci", " on garde") &&
+            has(t, " eviter (le |l'|un |ce |cet )?(prochain |dernier |deuxieme |second )?(arret|stand|pit|passage)", " (sauter|zapper|faire sans) (l'|le |cet |ce )?arret",
+                " sans (refaire|faire|nouvel) (d'|un )?arret")) return Ask.AvoidStop
+        // Stratégie la moins risquée : il faut parler de stratégie, de plan ou d'option (pas « plus sûr de moi »).
+        if (has(t, " strateg", " plan ", " option", " solution") && has(t, " moins risque", " plus (sure|sur|prudente|securisee)( |$)", " la plus safe")) return Ask.LeastRisk
 
         // V514-A : le pneu le plus sollicité, et la chauffe d'un essieu.
         if (tyreWord && !has(t, " prendre ", " mettre ", " monter ", " choisir ") && has(t, " (quel|quels|quelle|quelles|lequel|lesquels) (pneus? |gommes? )?(souffr|morfl|travaill|est le plus|sont le plus|chauff)",

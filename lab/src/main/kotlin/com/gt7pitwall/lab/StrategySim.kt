@@ -128,10 +128,15 @@ object StrategySim {
                 mandatoryStopsLeft = (mandatory - stopsDone).coerceAtLeast(0), plannedStops = v514Plan?.stops ?: emptyList(),
             )
             val report = StrategyEngine.analyze(input)
+            // Trace réelle : valeurs MESURÉES (paquets), règlement reconstitué = HYPOTHÈSE (non validé).
             val state = StrategySimulations.state(StrategySimulations.Case("reel", "réel", input, expectation = "")).copy(
                 perLap = com.gt7pitwall.core.strategy.Sourced(per, "unités/tour", "moyenne des 3 derniers tours hors stands (MESURE)", if (per != null) Nature.MESURE else Nature.INCONNU),
+                paceMs = com.gt7pitwall.core.strategy.Sourced(pace, "ms", "médiane des tours propres (MESURE)", if (pace != null) Nature.MESURE else Nature.INCONNU, 1_000_000L),
+                fuelNow = com.gt7pitwall.core.strategy.Sourced(fuelNow, "unités", "GT7 (MESURE)", Nature.MESURE, 1_000_000L),
+                rulesValid = com.gt7pitwall.core.strategy.Sourced(false, "", "règlement reconstitué d'après la course (HYPOTHÈSE)", Nature.HYPOTHESE),
+                rulesIssues = listOf("règlement reconstitué d'après la course"),
             )
-            val decision = assurance.review(state, report)
+            val decision = assurance.review(state, report) { st -> StrategyEngine.withDelta(input, StrategyEngine.evaluate(input, st), report.reference) }
             val v515Stops = decision.chosen?.stopLaps
             if (lastV514 != null && v514Stops != lastV514) v514Changes++
             if (lastV515 != null && v515Stops != lastV515) v515Changes++

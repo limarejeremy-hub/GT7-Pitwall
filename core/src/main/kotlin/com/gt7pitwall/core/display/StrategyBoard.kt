@@ -17,6 +17,8 @@ data class StrategyBoard(
     val current: String,
     val chosen: String,
     val changed: Boolean,
+    /** Tour d'arrêt du plan des rappels « Box » (plan actuel), toujours affiché quand le choix V515 diffère. */
+    val boxLap: Int?,
     val nextStopLap: Int?,
     val nextStopFuel: Int?,
     val nextStopTyres: Boolean?,
@@ -40,7 +42,9 @@ data class StrategyBoard(
             val rows = report.scenarios.filter { it.kind != StrategyEngine.Kind.BEST || it.stopLaps != ref?.stopLaps }.map { s ->
                 val status = when {
                     s.kind == StrategyEngine.Kind.CURRENT -> Status.REFERENCE
+                    !s.feasible && s.issues.isEmpty() -> Status.UNKNOWN
                     !s.feasible -> Status.IMPOSSIBLE
+                    ref?.feasible == false -> Status.UNKNOWN
                     s.deltaMs == null || s.uncertaintyMs == null -> Status.UNKNOWN
                     -s.deltaMs > s.uncertaintyMs -> Status.BETTER
                     s.deltaMs > s.uncertaintyMs -> Status.WORSE
@@ -49,7 +53,7 @@ data class StrategyBoard(
                 val delta = when (status) {
                     Status.REFERENCE -> if (s.feasible) "référence" else "infaisable : ${s.issues.firstOrNull() ?: ""}"
                     Status.IMPOSSIBLE -> s.issues.firstOrNull() ?: "infaisable"
-                    Status.UNKNOWN -> "inconnu : ${s.unknowns.firstOrNull() ?: "données insuffisantes"}"
+                    Status.UNKNOWN -> if (ref?.feasible == false && s.feasible) "faisable (plan actuel infaisable)" else "inconnu : ${s.unknowns.firstOrNull() ?: "données insuffisantes"}"
                     else -> "${if (s.deltaMs!! <= 0) "−" else "+"}${StrategyOptions.seconds(kotlin.math.abs(s.deltaMs).roundToLong())} ± ${StrategyOptions.seconds(s.uncertaintyMs!!.roundToLong())}"
                 }
                 Row(s.kind.code, s.kind.label, s.describe(), delta, status)
@@ -58,7 +62,8 @@ data class StrategyBoard(
                 verdict = d.verdict,
                 current = ref?.describe() ?: "aucun plan",
                 chosen = d.chosen?.describe() ?: "aucune stratégie fiable",
-                changed = d.chosen != null && ref != null && d.chosen.stopLaps != ref.stopLaps,
+                changed = d.chosen != null && ref != null && d.chosen.key != ref.key,
+                boxLap = ref?.stopLaps?.firstOrNull(),
                 nextStopLap = next?.lap,
                 nextStopFuel = next?.fuelAdded?.roundToInt(),
                 nextStopTyres = next?.tyres,
