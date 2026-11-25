@@ -28,7 +28,7 @@ import org.robolectric.annotation.GraphicsMode
 import java.io.File
 
 /**
- * V514-A : captures de CONTRÔLE de la carte PNEUS (données de démonstration, pas une course réelle) : mise en page,
+ * V514-A : captures de CONTRÔLE de la carte PNEUS (valeurs arrondies de démonstration, pas une course réelle) : mise en page,
  * lisibilité, absence de chevauchement, sur l'écran extérieur et déplié. Le rendu sur le Fold reste à confirmer.
  */
 @RunWith(RobolectricTestRunner::class)
@@ -42,10 +42,10 @@ class TyreDiagnosticScreenshotTest {
 
     private fun report(issues: List<Issue>, recovering: Boolean = false) = TyreDiagnostics.Report(
         listOf(
-            wheel("AVG", 94f, 92.6f, 94.9f, 10.2f, 4.8f, null, false, 0, 45),
-            wheel("AVD", 88f, 87.9f, 90.6f, 9.7f, -4.8f, null, false, 0, 59),
-            wheel("ARG", 66f, 65.9f, 67.9f, 2.4f, 8.4f, 1.5f, true, 24, 0),
-            wheel("ARD", 57f, 57.4f, 59f, 0.6f, -8.4f, 1.5f, true, 22, 0),
+            wheel("AVG", 95f, 93f, 97f, 9f, 14f, null, false, 0, 45),
+            wheel("AVD", 80f, 79f, 83f, 2f, -14f, null, false, 0, 50),
+            wheel("ARG", 75f, 74f, 77f, 3f, 2f, 1.5f, true, 24, 0),
+            wheel("ARD", 73f, 72f, 75f, 1f, -2f, 1.5f, true, 22, 0),
         ),
         stintStartLap = 1, measuredLaps = 6, referenceLap = 2, recovering = recovering, surfacesKnown = false,
         drivenAxle = TyreDiagnostics.DrivenAxle.REAR, issues = issues, gaps = 0, confidence = Confidence.MEDIUM,
@@ -65,12 +65,15 @@ class TyreDiagnosticScreenshotTest {
         Issue(IssueKind.DEGRADATION_SUSPECTED, null, "Signes possibles de baisse de performance, non démontrés", "CALCUL"),
     )
 
-    private fun shoot(name: String, detail: Boolean, b: TyreBoard) {
+    private fun shoot(name: String, detail: Boolean, b: TyreBoard, fontScale: Float = 1f) {
         rule.setContent {
+            val d = androidx.compose.ui.platform.LocalDensity.current
+            androidx.compose.runtime.CompositionLocalProvider(androidx.compose.ui.platform.LocalDensity provides androidx.compose.ui.unit.Density(d.density, fontScale)) {
             PitwallTheme {
                 Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp)) {
                     if (detail) TyreDiagnosticDetail(b) else TyreDiagnosticCompact(b)
                 }
+            }
             }
         }
         rule.waitForIdle()
@@ -89,6 +92,10 @@ class TyreDiagnosticScreenshotTest {
 
     @Test @Config(qualifiers = "w384dp-h780dp-port-xxhdpi")
     fun pitExitRecovery() = shoot("7-pneus-sortie-stands", false, TyreBoard.of(report(emptyList(), recovering = true), train))
+
+    /** Police système agrandie (130 %) sur l'écran extérieur : rien ne doit se chevaucher. */
+    @Test @Config(qualifiers = "w384dp-h900dp-port-xxhdpi")
+    fun compactCoverScreenLargeFont() = shoot("9-pneus-compact-police-130", false, TyreBoard.of(report(issues), train), fontScale = 1.3f)
 
     @Test @Config(qualifiers = "w690dp-h1500dp-port-xxhdpi")
     fun detailUnfolded() = shoot("8-pneus-analyse-deplie", true, TyreBoard.of(report(issues), train))

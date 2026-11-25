@@ -21,7 +21,10 @@ data class TyreBoard(
     val confidence: String,
     val autonomy: String,
 ) {
-    enum class Nature(val label: String) { MESURE("mesure"), CALCUL("calcul"), ESTIMATION("estimation"), HYPOTHESE("hypothèse") }
+    enum class Nature(val label: String) {
+        MESURE("mesure"), CALCUL("calcul"), ESTIMATION("estimation"), HYPOTHESE("hypothèse"),
+        DECLARATION("déclaré"), ABSENT("non transmis"),
+    }
 
     enum class Trend(val symbol: String) { UP("▲"), DOWN("▼"), FLAT("="), UNKNOWN("—") }
 
@@ -71,10 +74,11 @@ data class TyreBoard(
             }
             val headline = buildString {
                 append(t?.compound?.spoken?.replaceFirstChar { it.uppercase() } ?: "Gomme non déclarée")
+                if (t != null && t.compound != null && !t.ageCertain) append(" (non confirmée)")
                 t?.let { append(" · ${it.ageLaps} tour${if (it.ageLaps > 1) "s" else ""}"); if (!it.ageCertain) append(" (âge incertain)") }
             }
             val messages = buildList {
-                if (r.recovering) add(Line("Sortie des stands : pneus en récupération, températures non interprétées", Nature.MESURE))
+                if (r.recovering) add(Line("Après un arrêt : pneus en récupération, températures non interprétées", Nature.CALCUL))
                 r.issues.sortedBy { it.kind.ordinal }.forEach { issue ->
                     val nature = when (issue.kind) {
                         TyreDiagnostics.IssueKind.TEMPERATURE -> Nature.MESURE
@@ -89,10 +93,10 @@ data class TyreBoard(
                 )
             }
             val details = buildList {
-                add(Line(NO_WEAR, Nature.MESURE))
+                add(Line(NO_WEAR, Nature.ABSENT))
                 t?.let { tr ->
                     add(Line("Train : ${tr.ageLaps} tours depuis le dernier changement ${if (tr.ageCertain) "confirmé" else "NON confirmé"}", Nature.CALCUL))
-                    add(Line("Gomme : ${tr.compound?.spoken ?: "non déclarée"}${if (tr.compoundDeclared) " (déclarée, GT7 ne la transmet pas)" else ""}", Nature.MESURE))
+                    add(Line("Gomme : ${tr.compound?.spoken ?: "non déclarée"}${if (tr.compoundDeclared) " (déclarée, GT7 ne la transmet pas)" else ""}${if (!tr.ageCertain) ", non confirmée depuis le dernier arrêt" else ""}", if (tr.compoundDeclared) Nature.DECLARATION else Nature.ABSENT))
                     val pace = tr.paceSlopeMsPerLap?.let { s -> "${if (s >= 0) "+" else "−"}${String.format(java.util.Locale.FRANCE, "%.2f", abs(s) / 1000)} s par tour" }
                     add(when {
                         tr.grip == GripLevel.INSUFFICIENT -> Line("Chronos comparables : pas encore assez de tours propres", Nature.CALCUL)
@@ -101,21 +105,25 @@ data class TyreBoard(
                         else -> Line("Chronos comparables : ${tr.grip.label}${pace?.let { " ($it)" } ?: ""}", Nature.CALCUL)
                     })
                     tr.behaviour?.let { add(Line("Comportement : $it", Nature.CALCUL)) }
-                    add(Line("Autonomie : ${tr.autonomy}", if (tr.autonomy.startsWith("inconnue")) Nature.MESURE else Nature.ESTIMATION))
+                    add(Line("Autonomie : ${tr.autonomy}", when {
+                        tr.autonomy.startsWith("inconnue") -> Nature.ABSENT
+                        "déclarée" in tr.autonomy -> Nature.DECLARATION
+                        else -> Nature.ESTIMATION
+                    }))
                 }
                 add(Line("Roues motrices : ${r.drivenAxle.label}", Nature.CALCUL))
-                r.referenceLap?.let { add(Line("Référence thermique : tour $it (pneus stabilisés)", Nature.MESURE)) }
-                    ?: add(Line("Référence thermique : pas encore (tour de sortie ou de départ écarté)", Nature.MESURE))
+                r.referenceLap?.let { add(Line("Référence thermique : tour $it (pneus stabilisés)", Nature.CALCUL)) }
+                    ?: add(Line("Référence thermique : pas encore (pneus en montée de température, départ ou sortie des stands)", Nature.CALCUL))
                 r.wheels.forEachIndexed { i, w ->
                     add(Line(
                         "${w.label} : tour ${w.lapMeanC.fmt()} moy / ${w.lapMaxC.fmt()} max" +
                             (w.axleDeltaC?.let { ", essieu ${if (it >= 0) "+" else "−"}${abs(it).roundToInt()} °C" } ?: "") +
                             ", patinages ${w.spinEvents} (${w.spinSamples} éch.), blocages ${w.lockEvents} (${w.lockSamples} éch.) sur le relais",
-                        Nature.MESURE, alert = i in flaggedWheels,
+                        Nature.CALCUL, alert = i in flaggedWheels,
                     ))
                 }
                 if (r.history.isNotEmpty()) r.history.forEach { h ->
-                    add(Line("Relais précédent (tours ${h.startLap}–${h.endLap}) : ${h.meanC.joinToString(" / ") { it.fmt() }}, patinages ${h.spinEvents.sum()}, blocages ${h.lockEvents.sum()}", Nature.MESURE))
+                    add(Line("Relais précédent (tours ${h.startLap}–${h.endLap}) : ${h.meanC.joinToString(" / ") { it.fmt() }}, patinages ${h.spinEvents.sum()}, blocages ${h.lockEvents.sum()}", Nature.CALCUL))
                 }
                 add(Line("Confiance ${r.confidence.label}" + if (r.confidenceWhy.isNotEmpty()) " : ${r.confidenceWhy.joinToString(" ; ")}" else "", Nature.CALCUL))
             }

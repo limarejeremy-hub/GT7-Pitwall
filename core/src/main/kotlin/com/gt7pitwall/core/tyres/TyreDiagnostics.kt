@@ -36,7 +36,7 @@ class TyreDiagnostics {
     }
 
     /** Une anomalie : [wheel] 0–3 (AVG, AVD, ARG, ARD) ou null pour le train ; [origin] : données qui la fondent. */
-    data class Issue(val kind: IssueKind, val wheel: Int?, val text: String, val origin: String)
+    data class Issue(val kind: IssueKind, val wheel: Int?, val text: String, val origin: String, val hot: Boolean? = null)
 
     enum class DrivenAxle(val label: String) { FRONT("traction avant"), REAR("propulsion"), BOTH("quatre roues motrices"), UNKNOWN("roues motrices non identifiées") }
 
@@ -121,7 +121,8 @@ class TyreDiagnostics {
     )
 
     // ---- État courant ----
-    private class LapAcc(val lap: Int) {
+    /** [partial] : tour commencé ailleurs qu'à la ligne (connexion en cours de tour) : jamais une référence. */
+    private class LapAcc(val lap: Int, val partial: Boolean = false) {
         val sum = DoubleArray(4)
         val max = FloatArray(4) { Float.NaN }
         var n = 0
@@ -138,9 +139,13 @@ class TyreDiagnostics {
     private class LapStats(
         val lap: Int, val mean: List<Float>, val max: List<Float>, val slipMedian: List<Float?>, val spinS: List<Int>, val lockS: List<Int>,
         val spinE: List<Int>, val lockE: List<Int>, val samples: Int, val stopped: Boolean, val gaps: Int,
-        /** Tour d'arrêt ou tour qui le suit : pneus refroidis, températures non interprétées. */
+        /** Tour d'arrêt ou l'un des deux tours qui suivent : pneus refroidis, températures non interprétées. */
         val recovering: Boolean,
-    )
+        /** Tour incomplet (commencé en cours de route) ou coupé par une coupure UDP : ni référence, ni base. */
+        val partial: Boolean = false,
+    ) {
+        val usable: Boolean get() = !recovering && !partial && !stopped
+    }
 
     private var stintStart = 1
     private var stintCertain = true
@@ -151,7 +156,7 @@ class TyreDiagnostics {
     private var lastPacket: TelemetryPacket? = null
     private var lastAtMs = -1L
     private var stillSinceMs = -1L
-    /** Récupération thermique : de la fin d'un arrêt à la fin du premier tour complet qui suit. */
+    /** Récupération thermique : de l'arrêt (≥ 3 s, au stand ou en piste) à la fin du deuxième tour complet qui suit. */
     private var recoverUntilLapEnd: Int? = null
     private var surfacesSeen = false
     private val axleSlip = Array(2) { ArrayDeque<Float>() }
@@ -159,6 +164,8 @@ class TyreDiagnostics {
     private val lockRun = BooleanArray(4)
     private val spinOffMs = LongArray(4)
     private val lockOffMs = LongArray(4)
+    /** Roues motrices, recalculées à la fin de chaque tour (pas à chaque rafraîchissement de l'écran). */
+    private var axleCache = DrivenAxle.UNKNOWN
 
     /**
      * Relais en cours d'après le registre des arrêts : [startLap] change seulement sur un changement de pneus confirmé.
@@ -181,7 +188,8 @@ class TyreDiagnostics {
         stintStart = startLap
         laps.clear()
         laps += kept
-        reference = kept.firstOrNull { !it.stopped && it.lap > startLap && !it.recovering }
+        reference = null
+        kept.forEach { pickReference(it) }
     }
 
     /** Nouvelle course : tout est remis à zéro, historique compris. */
@@ -190,6 +198,17 @@ class TyreDiagnostics {
         lastPacket = null; lastAtMs = -1L; stillSinceMs = -1L; recoverUntilLapEnd = null; surfacesSeen = false
         axleSlip.forEach { it.clear() }
         spinRun.fill(false); lockRun.fill(false)
+        axleCache = DrivenAxle.UNKNOWN
+    }
+
+    /**
+     * Pause du jeu (ou paquet hors course) : la mesure est suspendue sans compter de coupure UDP ; aucun événement ne
+     * traverse la pause.
+     */
+    fun pause() {
+        lastAtMs = -1L
+        stillSinceMs = -1L
+        spinRun.fill(false); lockRun.fill(false)
     }
 
     /** Un paquet en course (hors menus, pause et chargement : à filtrer par l'appelant). */
@@ -197,8 +216,10 @@ class TyreDiagnostics {
         val lap = p.currentLap
         if (lap < 1) return
         val acc = cur?.takeIf { it.lap == lap } ?: run {
-            cur?.let { closeLap(it) }
-            LapAcc(lap).also { cur = it }
+            val prev = cur
+            prev?.let { closeLap(it) }
+            // Premier tour vu après le tour 1 (connexion en cours de course) : commencé ailleurs qu'à la ligne.
+            LapAcc(lap, partial = prev == null && lap > 1).also { cur = it }
         }
         val dt = if (lastAtMs < 0) 0L else atMs - lastAtMs
         val gap = dt > GAP_MS
@@ -220,7 +241,7 @@ class TyreDiagnostics {
         // Arrêt : immobile ≥ 3 s (stand ou incident). Ouvre la récupération thermique jusqu'à la fin du tour complet suivant.
         if (p.speedKmh < 1f) {
             if (stillSinceMs < 0) stillSinceMs = atMs
-            if (atMs - stillSinceMs >= STOP_MS) { acc.stopped = true; recoverUntilLapEnd = lap + 1 }
+            if (atMs - stillSinceMs >= STOP_MS) { acc.stopped = true; recoverUntilLapEnd = lap + RECOVERY_LAPS }
         } else stillSinceMs = -1L
 
         val surfaces = p.surfaces?.toList()
@@ -258,22 +279,35 @@ class TyreDiagnostics {
             (0 until 4).map { w -> a.slip[w].takeIf { it.size >= MIN_SLIP_SAMPLES }?.sorted()?.let { it[it.size / 2] } },
             a.spinS.toList(), a.lockS.toList(), a.spinE.toList(), a.lockE.toList(), a.n, a.stopped, a.gaps,
             recovering = a.stopped || recoverUntilLapEnd?.let { a.lap <= it } == true,
+            partial = a.partial || a.gaps > 0,
         )
+        axleCache = computeDrivenAxle()
         if (a.lap < stintStart) return
         laps += stats
-        // Référence stabilisée : premier tour complet du relais sans arrêt, après le tour de départ ou de sortie.
-        if (reference == null && !stats.recovering && a.lap > stintStart) reference = stats
+        pickReference(stats)
         if (recoverUntilLapEnd != null && a.lap >= recoverUntilLapEnd!!) recoverUntilLapEnd = null
     }
 
-    private fun drivenAxle(): DrivenAxle {
+    /**
+     * Référence thermique STABILISÉE : premier tour utilisable du relais (ni départ, ni arrêt, ni sortie, ni tour partiel)
+     * dont la moyenne de chaque pneu varie de moins de [STABLE_C] par rapport au tour utilisable qui le précède
+     * immédiatement. Tant que les pneus montent en température, il n'y a pas de référence, donc pas d'anomalie.
+     */
+    private fun pickReference(l: LapStats) {
+        if (reference != null || !l.usable || l.lap <= stintStart) return
+        val prev = laps.firstOrNull { it.lap == l.lap - 1 }?.takeIf { it.usable && it.lap > stintStart } ?: return
+        if ((0 until 4).all { abs(l.mean[it] - prev.mean[it]) < STABLE_C }) reference = l
+    }
+
+    private fun computeDrivenAxle(): DrivenAxle {
         val med = axleSlip.map { q -> if (q.size < MIN_AXLE_SAMPLES) null else q.sorted()[q.size / 2] }
         val f = med[0] ?: return DrivenAxle.UNKNOWN
         val r = med[1] ?: return DrivenAxle.UNKNOWN
         return when {
+            // Quatre roues motrices, même à répartition inégale : les deux essieux glissent nettement.
+            f > 1f + DRIVEN_GAP && r > 1f + DRIVEN_GAP -> DrivenAxle.BOTH
             f - r > DRIVEN_GAP -> DrivenAxle.FRONT
             r - f > DRIVEN_GAP -> DrivenAxle.REAR
-            f > 1f + DRIVEN_GAP && r > 1f + DRIVEN_GAP -> DrivenAxle.BOTH
             else -> DrivenAxle.UNKNOWN
         }
     }
@@ -281,7 +315,7 @@ class TyreDiagnostics {
     /** Diagnostic courant. [grip] et [tractionLevel] : constats des moniteurs existants (chronos, motricité comparée). */
     fun report(grip: GripReport = GripReport.NONE, tractionLevel: TractionMonitor.Level = TractionMonitor.Level.INSUFFICIENT): Report {
         val p = lastPacket ?: return Report.EMPTY
-        val axle = drivenAxle()
+        val axle = axleCache
         val last = laps.lastOrNull()
         val live = cur?.takeIf { it.n >= 1 && it.lap >= stintStart }
         val recovering = recoverUntilLapEnd != null
@@ -311,16 +345,18 @@ class TyreDiagnostics {
             )
         }
         // --- Anomalies de température (jamais en récupération après un arrêt, jamais sans référence stabilisée).
-        val recent = laps.filter { !it.recovering }.takeLast(2)
-        if (!recovering && ref != null && recent.size == 2 && recent.none { it === ref }) {
+        // Deux derniers tours complets, utilisables et réellement consécutifs ; jamais si le changement de pneus après un
+        // arrêt n'est pas confirmé (des pneus peut-être neufs seraient comparés à la référence des anciens).
+        val recent = laps.takeLast(2).takeIf { it.size == 2 && it.all { l -> l.usable } && it[1].lap == it[0].lap + 1 }.orEmpty()
+        if (!recovering && stintCertain && ref != null && recent.size == 2 && recent.none { it === ref }) {
             for (w in 0 until 4) {
                 val rise = recent.map { it.mean[w] - ref.mean[w] }
                 if (rise.all { it >= HOT_RISE_C }) issues += Issue(IssueKind.TEMPERATURE, w,
                     "${NAMES[w].replaceFirstChar { it.uppercase() }} : +${rise.last().roundToInt()} °C sur sa référence du tour ${ref.lap}, deux tours de suite",
-                    "MESURE température de surface, comparée au début du relais (pas une plage idéale de la gomme)")
+                    "MESURE température de surface, comparée au début du relais (pas une plage idéale de la gomme)", hot = true)
                 if (rise.all { it <= -COLD_DROP_C }) issues += Issue(IssueKind.TEMPERATURE, w,
                     "${NAMES[w].replaceFirstChar { it.uppercase() }} : ${rise.last().roundToInt()} °C sous sa référence, deux tours de suite",
-                    "MESURE température de surface, comparée au début du relais")
+                    "MESURE température de surface, comparée au début du relais", hot = false)
             }
             for (a in listOf(0, 2)) {
                 val d = recent.map { it.mean[a] - it.mean[a + 1] }
@@ -329,26 +365,27 @@ class TyreDiagnostics {
                     val hot = if (d.last() > 0) a else a + 1
                     issues += Issue(IssueKind.TEMPERATURE, hot,
                         "Essieu ${if (a == 0) "avant" else "arrière"} : écart gauche / droite de ${abs(d.last()).roundToInt()} °C, ${abs(d.last() - refD).roundToInt()} de plus qu'en début de relais",
-                        "MESURE température de surface des deux pneus du même essieu")
+                        "MESURE température de surface des deux pneus du même essieu", hot = true)
                 }
             }
         }
         // --- Patinage et blocages : par tour, comparés au début du relais (au moins 2 tours de suite).
-        val cleanLaps = laps.filter { !it.stopped && it.lap > stintStart }
-        if (cleanLaps.size >= 3) {
-            val base = cleanLaps.take(cleanLaps.size - 2)
-            val last2 = cleanLaps.takeLast(2)
+        val cleanLaps = laps.filter { it.usable && it.lap > stintStart }
+        val last2 = cleanLaps.takeLast(2)
+        if (cleanLaps.size >= 3 && last2[1].lap == last2[0].lap + 1) {
+            // Base : les premiers tours utilisables du relais (au plus 3), pas une moyenne qui monterait avec le relais.
+            val base = cleanLaps.dropLast(2).take(BASE_LAPS)
             for (w in 0 until 4) {
                 val spinBase = base.map { it.spinE[w] }.average()
                 if (wheels[w].driven != false && last2.all { it.spinE[w] >= SPIN_EVENTS_MIN && it.spinE[w] >= 2 * spinBase + 1 }) {
                     issues += Issue(IssueKind.WHEELSPIN, w,
-                        "${NAMES[w].replaceFirstChar { it.uppercase() }} : ${last2.last().spinE[w]} patinages forts au dernier tour, contre ${"%.1f".format(java.util.Locale.FRANCE, spinBase)} en début de relais",
+                        "${NAMES[w].replaceFirstChar { it.uppercase() }} : ${last2.last().spinE[w]} patinages forts au dernier tour, contre ${"%.1f".format(java.util.Locale.FRANCE, spinBase)} en moyenne en début de relais",
                         "CALCUL glissement roue / voiture > ${((SPIN_RATIO - 1) * 100).roundToInt()} % à l'accélération")
                 }
                 val lockBase = base.map { it.lockE[w] }.average()
                 if (last2.all { it.lockE[w] >= LOCK_EVENTS_MIN && it.lockE[w] >= 2 * lockBase + 1 }) {
                     issues += Issue(IssueKind.LOCKING, w,
-                        "${NAMES[w].replaceFirstChar { it.uppercase() }} : ${last2.last().lockE[w]} blocages au dernier tour, contre ${"%.1f".format(java.util.Locale.FRANCE, lockBase)} en début de relais",
+                        "${NAMES[w].replaceFirstChar { it.uppercase() }} : ${last2.last().lockE[w]} blocages au dernier tour, contre ${"%.1f".format(java.util.Locale.FRANCE, lockBase)} en moyenne en début de relais",
                         "CALCUL glissement roue / voiture < ${((1 - LOCK_RATIO) * 100).roundToInt()} % au freinage")
                 }
             }
@@ -402,6 +439,11 @@ class TyreDiagnostics {
         const val COLD_DROP_C = 10f
         const val AXLE_SHIFT_C = 8f
         const val SPIN_EVENTS_MIN = 3
+        /** Tours de récupération après un arrêt (tour de l'arrêt compris jusqu'à la fin du 2e tour qui suit). */
+        const val RECOVERY_LAPS = 2
+        /** Stabilisation de la référence : variation de la moyenne d'un tour à l'autre, par pneu. */
+        const val STABLE_C = 2f
+        const val BASE_LAPS = 3
         const val LOCK_EVENTS_MIN = 3
     }
 }

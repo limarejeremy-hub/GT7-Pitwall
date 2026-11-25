@@ -82,10 +82,10 @@ private fun WheelCell(c: TyreBoard.Cell, modifier: Modifier) {
                 color = if (c.flagged) DColors.Flag else DColors.Soft, fontSize = 11.sp, fontFamily = Mono, maxLines = 1)
         }
         Text(c.nowC?.let { "$it°" } ?: "—", color = DColors.Text, fontSize = 22.sp, fontWeight = FontWeight.Bold, fontFamily = Mono, maxLines = 1)
-        Text("moy ${c.lapMeanC ?: "—"} · max ${c.lapMaxC ?: "—"}", color = DColors.Soft, fontSize = 10.sp, fontFamily = Mono, maxLines = 1)
+        Text("moy ${c.lapMeanC ?: "—"} · max ${c.lapMaxC ?: "—"}", color = DColors.Soft, fontSize = 11.sp, fontFamily = Mono, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Text(
-            "patin. ${c.slip ?: "—"} · ${c.spinsLastLap ?: "—"}/${c.locksLastLap ?: "—"}",
-            color = DColors.Soft, fontSize = 10.sp, fontFamily = Mono, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            "glis. ${c.slip ?: "—"} · ${c.spinsLastLap ?: "—"}/${c.locksLastLap ?: "—"}",
+            color = DColors.Soft, fontSize = 11.sp, fontFamily = Mono, maxLines = 1, overflow = TextOverflow.Ellipsis,
         )
     }
 }
@@ -107,10 +107,10 @@ fun TyreDiagnosticCompact(b: TyreBoard) {
     DCard("PNEUS · DIAGNOSTIC") {
         Text(b.headline, color = DColors.Text, fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         WheelGrid(b)
-        Text("▲▼ : écart à la référence du relais (°C) · patin. : patinage médian, patinages / blocages du dernier tour",
-            color = PitColors.Muted, fontSize = 9.sp)
-        b.messages.take(TyreBoard.MAX_MESSAGES).forEach { Message(it, maxLines = 2) }
-        Text("${TyreBoard.NO_WEAR} · confiance ${b.confidence}", color = PitColors.Muted, fontSize = 10.sp)
+        Text("▲▼ : écart à la référence du relais (°C) · glis. : glissement des roues motrices (patinage, pas une usure) · patinages / blocages du dernier tour",
+            color = PitColors.Muted, fontSize = 11.sp)
+        b.messages.take(TyreBoard.MAX_MESSAGES).forEach { Message(it, maxLines = 3) }
+        Text("${TyreBoard.NO_WEAR} · confiance ${b.confidence}", color = PitColors.Muted, fontSize = 11.sp)
     }
 }
 

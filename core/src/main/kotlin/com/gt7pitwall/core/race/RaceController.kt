@@ -478,6 +478,7 @@ class RaceController(
         val raceActive = p.currentLap >= 1 && !sessionFinished && (p.totalLaps <= 0 || p.currentLap <= p.totalLaps) &&
             !p.isPaused && !p.isLoading
         tyreHunter.onPacket(p, tracker.pitVisitOpen, raceActive)?.let(::journalThermal)
+        if (!raceActive) tyreDiag.pause()
         if (raceActive) {
             // Relais pneus : ne change que sur un changement confirmé au registre (un plein seul ne remet rien à zéro).
             val st = ledger.tyreStint(p.currentLap, rules.startTyre)
@@ -3458,7 +3459,7 @@ class RaceController(
     /** V514-A : anomalie mesurée la plus importante, en une phrase courte (vide s'il n'y en a pas). */
     private fun tyreDiagSentence(): String {
         val r = tyreDiagnostics()
-        if (r.recovering) return " Sortie des stands : je laisse les pneus revenir en température avant de juger."
+        if (r.recovering) return " Après l'arrêt, je laisse les pneus revenir en température avant de juger."
         val issue = r.issues.filter { it.kind != com.gt7pitwall.core.tyres.TyreDiagnostics.IssueKind.DEGRADATION_SUSPECTED }.minByOrNull { it.kind.ordinal }
             ?: return ""
         return " ${issue.kind.label.replaceFirstChar { it.uppercase() }} : ${issue.text.replaceFirstChar { it.lowercase() }}."
@@ -3477,13 +3478,15 @@ class RaceController(
         }
         val worst = r.worstWheel ?: flagged.first().wheel!!
         val main = flagged.filter { it.wheel == worst }.minByOrNull { it.kind.ordinal }!!
-        return "L'${names[worst]} : ${main.kind.label}, ${main.text.replaceFirstChar { it.lowercase() }}. C'est une mesure, pas une usure."
+        val nature = if (main.kind == com.gt7pitwall.core.tyres.TyreDiagnostics.IssueKind.TEMPERATURE) "une mesure" else "un calcul sur le glissement des roues"
+        return "L'${names[worst]} : ${main.kind.label}, ${main.text.replaceFirstChar { it.lowercase() }}. C'est $nature, pas une usure."
     }
 
     /** V514-A : « mes pneus avant chauffent ? » : écart à la référence stabilisée du relais et à l'autre essieu. */
     private fun answerTyreHeat(front: Boolean?): String {
         val r = tyreDiagnostics()
-        if (r.recovering) return "Tu sors des stands : les pneus remontent en température, je ne juge pas encore."
+        if (r.recovering) return "Après l'arrêt, les pneus remontent en température : je ne juge pas encore."
+        if (r.measuredLaps == 0) return "Pas encore de tour complet mesuré."
         val idx = when (front) { true -> listOf(0, 1); false -> listOf(2, 3); null -> listOf(0, 1, 2, 3) }
         val ws = idx.map { r.wheels[it] }
         val mean = ws.mapNotNull { it.lapMeanC }.takeIf { it.isNotEmpty() }?.average() ?: return "Pas encore de tour complet mesuré."
@@ -3492,14 +3495,15 @@ class RaceController(
         val other = when (front) {
             true -> listOf(2, 3); false -> listOf(0, 1); null -> emptyList()
         }.mapNotNull { r.wheels[it].lapMeanC }.takeIf { it.isNotEmpty() }?.average()
-        val hot = r.issues.any { it.kind == com.gt7pitwall.core.tyres.TyreDiagnostics.IssueKind.TEMPERATURE && it.wheel in idx }
+        val hot = r.issues.any { it.kind == com.gt7pitwall.core.tyres.TyreDiagnostics.IssueKind.TEMPERATURE && it.hot == true && it.wheel in idx }
+        val cold = r.issues.any { it.kind == com.gt7pitwall.core.tyres.TyreDiagnostics.IssueKind.TEMPERATURE && it.hot == false && it.wheel in idx }
         return buildString {
             append(if (hot) "Oui, $where" else where.replaceFirstChar { it.uppercase() })
             append(" : ${mean.roundToInt()} degrés en moyenne au dernier tour")
             since?.let { append(if (it >= 0) ", ${it.roundToInt()} de plus" else ", ${(-it).roundToInt()} de moins"); append(" qu'au tour ${r.referenceLap} du relais") }
             other?.let { append(", l'autre essieu est à ${it.roundToInt()}") }
             append(".")
-            if (!hot) append(" Pas de chauffe anormale mesurée.")
+            if (cold) append(" Non, ils sont plus froids qu'en début de relais.") else if (!hot) append(" Pas de chauffe anormale mesurée.")
             append(" GT7 ne donne pas la plage idéale de la gomme.")
         }
     }
@@ -3509,7 +3513,7 @@ class RaceController(
         val lap = (snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)
         val next = plan?.nextStop(lap)
         val kind = when {
-            next == null -> StopKind.FUEL_ONLY
+            next == null -> StopKind.FUEL_ONLY // aucun arrêt prévu : hypothèse dite dans la réponse
             next.changeTyres && next.forFuel -> StopKind.FUEL_AND_TYRES
             next.changeTyres -> StopKind.TYRES_ONLY
             next.forFuel -> StopKind.FUEL_ONLY
@@ -3519,7 +3523,7 @@ class RaceController(
             ?: return "Je ne peux pas le chiffrer : aucun arrêt mesuré dans des courses comparables et pas de temps de voie des stands pour ce circuit."
         val c = costs.cost(kind) ?: return "Je ne peux pas chiffrer un arrêt ${kind.label} avec nos données."
         val sure = if (c.assumed || "supposé" in c.source) "ESTIMATION provisoire" else "d'après ${c.source}"
-        return "Arrêt ${kind.label}${next?.let { " fin du tour ${it.endOfLap}" } ?: ""} : environ ${(c.ms / 1000).roundToInt()} secondes, à plus ou moins ${(c.spread / 1000).roundToInt()}, $sure." +
+        return (if (next == null) "Aucun arrêt prévu ; pour un ravitaillement seul" else "Arrêt ${kind.label} fin du tour ${next.endOfLap}") + " : environ ${(c.ms / 1000).roundToInt()} secondes, à plus ou moins ${(c.spread / 1000).roundToInt()}, $sure." +
             if (!costs.baseIncludesRefuel && kind != StopKind.NONE && kind != StopKind.TYRES_ONLY && costs.observed[kind] == null) " Le temps de remplissage n'y est pas compté." else ""
     }
 
@@ -4663,6 +4667,15 @@ class RaceController(
     /** V514-A : le train de pneus monté (âge depuis le dernier changement confirmé, gomme déclarée, chronos, autonomie). */
     fun tyreTrain(): com.gt7pitwall.core.tyres.TyreDiagnostics.Train {
         val lap = (snapshot.packet?.currentLap ?: 1).coerceAtLeast(1)
+        // Calculé une fois par tour et par état du registre (BalanceTrend relit tous les passages en virage).
+        val key = listOf(lap, ledger.stopList.size, ledger.changes.size, engineer.grip.level.ordinal, rules.tyreStintLaps ?: -1, snapshot.laps.size)
+        trainCache?.takeIf { it.first == key }?.let { return it.second }
+        return buildTyreTrain(lap).also { trainCache = key to it }
+    }
+
+    private var trainCache: Pair<List<Int>, com.gt7pitwall.core.tyres.TyreDiagnostics.Train>? = null
+
+    private fun buildTyreTrain(lap: Int): com.gt7pitwall.core.tyres.TyreDiagnostics.Train {
         val st = ledger.tyreStint(lap, rules.startTyre)
         val g = engineer.grip
         val ctx = tyreStintContext()
