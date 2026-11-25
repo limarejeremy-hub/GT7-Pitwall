@@ -407,14 +407,14 @@ object StrategyEngine {
         if (!refOk) notes += "le plan actuel n'est pas faisable : ${ref.issues.joinToString(", ")}"
         return Report(
             scenarios.distinctBy { it.kind }, ref, best, refOk && !bestBeats, recommended,
-            window(i, timed, best), cut(i, scenarios, ref, early = true), cut(i, scenarios, ref, early = false),
+            window(i, timed, best, ref.takeIf { it.feasible }?.stopLaps?.firstOrNull()), cut(i, scenarios, ref, early = true), cut(i, scenarios, ref, early = false),
             evaluated, partial, notes,
             latestFeasibleFirstStop = all.filter { it.stops.isNotEmpty() }.maxOfOrNull { it.stopLaps.first() },
         )
     }
 
     /** Fenêtre du prochain arrêt : premiers arrêts dont le meilleur plan reste dans l'incertitude du meilleur global. */
-    private fun window(i: Input, timed: List<Scenario>, best: Scenario?): Window? {
+    private fun window(i: Input, timed: List<Scenario>, best: Scenario?, planned: Int?): Window? {
         val withStop = timed.filter { it.stops.isNotEmpty() }
         if (withStop.isEmpty()) return null
         val byFirst = withStop.groupBy { it.stopLaps.first() }
@@ -426,7 +426,8 @@ object StrategyEngine {
                 val u = withDelta(i, m, b).uncertaintyMs ?: MIN_UNCERTAINTY_MS
                 if (m.totalMs!! - b.totalMs!! <= u) lap else null
             }
-            if (ok.isNotEmpty()) return Window(ok.min(), ok.max(), b.stopLaps.first(), "temps estimé dans l'incertitude du meilleur plan avec arrêt")
+            // Tour préféré : celui du plan actuel s'il est dans la fenêtre (stabilité), sinon celui du meilleur plan.
+            if (ok.isNotEmpty()) return Window(ok.min(), ok.max(), planned?.takeIf { it in ok } ?: b.stopLaps.first(), "temps estimé dans l'incertitude du meilleur plan avec arrêt")
         }
         // Sans temps : seulement les tours où un arrêt reste faisable (carburant, obligations).
         val laps = byFirst.keys
