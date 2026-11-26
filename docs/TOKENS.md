@@ -22,7 +22,7 @@ chaque mission**, sinon la mesure est perdue (notée « indisponible », jamais 
 
 | Date | Mission (branche) | PR | Validée | Appels | Entrée | Sortie | Cache lu | Cache écrit | Ctx min | Médian | P95 | Compactions |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| 26/11 | pitwall-token-optimization (outillage, mesure partielle en cours de session) | à créer | non | 23 | 48 | 15 513 | 2 588 533 | 75 099 | 91 529 | 119 604 | 132 987 | 0 |
+| 26/11 | pitwall-token-optimization (outillage, session complète hors tests imbriqués) | #97 | CI en cours | 54 | 112 | 35 527 | 7 624 155 | 119 170 | 91 529 | 146 500 | 181 030 | 0 |
 
 Constats de la session d'outillage : ≈ 91 k tokens de charge fixe par appel, avant tout travail ; les plus gros
 résultats d'outils sont des sorties Bash et des listes de PR complètes (à filtrer : `fields`, `head`, `grep`).

@@ -37,6 +37,7 @@ pneus, stands, Véga, UDP (aucune modification).
   gain des pneus neufs (`docs/V5151.md` § 10).
 
 ## Prochaine action
-Mission outillage terminée quand la CI de #97 est verte. Reprise du développement dans une nouvelle session.
-Prochaine mission dans une nouvelle session, partant de la dernière branche ; en fin de mission, lancer
-`python3 tools/token-meter.py` et reporter la ligne agrégée dans `docs/TOKENS.md`.
+Mission outillage close dès que la CI de #97 est verte. Prochaine mission : **Black Box** (une course = un ZIP
+partageable ; brief complet du pilote du 26/11 fourni en début de session). Nouvelle session, base
+`claude/pitwall-token-optimization-l58g31` (#97) ; c'est la mission 1 de la comparaison des 400 k. En fin de mission :
+`python3 tools/token-meter.py`, ligne agrégée dans `docs/TOKENS.md`.
