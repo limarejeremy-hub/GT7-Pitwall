@@ -29,9 +29,15 @@ n'existait.** Celle-ci l'enregistre, seulement sur demande.
 - Test de cohérence : une course simulée de 6 tours, calculée en direct puis rejouée, donne les mêmes tours (numéro, chrono, carburant), la même consommation, le même identifiant de session et le même journal, heures comprises.
 - Limite restante : l'heure des messages radio (`EngineerMessage.timestampMs`) reste celle du téléphone. Elle ne sert qu'à la diffusion vocale, jamais à un calcul, et la relecture n'annonce rien.
 
+## Boîte noire (mission Black Box, 26/11)
+La boîte noire automatique réutilise ce recorder sans limite de 80 Mo / 4 h / 5 traces : tous les paquets, vidage gzip
+toutes les 2 s, segments concaténables, rangement par session. Voir `docs/BLACK_BOX.md`. La trace manuelle ci-dessus
+garde son comportement ; en 60 Hz, les paquets écartés sont maintenant comptés.
+
 ## Format du fichier `.gt7trace`
 gzip de : `GT7PWTR1`, puis pour chaque échantillon les millisecondes depuis le début (Int), la longueur (Short) et les
-octets du paquet. Une fin tronquée (téléphone coupé) garde les échantillons complets.
+octets du paquet. Une fin tronquée (téléphone coupé) garde les échantillons complets. Plusieurs membres gzip à la
+suite (segments de la boîte noire, sans second en-tête) forment une seule trace.
 
 ## Statut
 - Tests JVM : `TelemetryTraceTest` (9), dont 3 ajoutés après la revue :

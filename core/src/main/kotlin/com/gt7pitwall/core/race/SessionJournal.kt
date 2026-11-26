@@ -93,6 +93,13 @@ class SessionJournal(
     var sessionId: String? = null
         private set
     private var seq = 0
+
+    /** Début et fin de session (Black Box) : appelé sous le verrou du journal, ne doit jamais bloquer. */
+    fun interface Lifecycle {
+        fun onSession(id: String, began: Boolean, finished: Boolean)
+    }
+
+    @Volatile var lifecycle: Lifecycle? = null
     private val pending = ArrayDeque<JournalEvent>()
     private val live = ArrayDeque<JournalEvent>()
 
@@ -111,6 +118,7 @@ class SessionJournal(
             if (now - e.timeMs > PENDING_MAX_AGE_MS) continue
             write(e.copy(seq = ++seq, sessionId = id, details = e.details + ("avant_session" to "oui")))
         }
+        runCatching { lifecycle?.onSession(id, began = true, finished = false) }
     }
 
     @Synchronized
@@ -120,6 +128,7 @@ class SessionJournal(
         lastClosedId = id
         lastClosedSeq = seq
         sessionId = null
+        runCatching { lifecycle?.onSession(id, began = false, finished = details["issue"] == "finished") }
     }
 
     /** Dernière session close et son dernier numéro d'événement (pour y rattacher un événement tardif). */

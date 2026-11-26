@@ -34,6 +34,7 @@ import kotlin.system.exitProcess
  *   diff    <a.json> <b.json> [la] [lb] [rapport.md]  différences entre deux rapports `replay` (voir lab/compare.sh)
  *   vega    <trace> [scenarios] [md]    banc vega-golden : questions à Véga sur des états reconstitués (moteur déterministe)
  *   vega-diff <a.json> <b.json> [la] [lb] [md]  améliorations et régressions de Véga entre deux versions
+ *   import-course <pack.zip> [md]       pack Black Box : vérifie, rejoue, compare EN_COURSE et SIMULATION, rapport
  *   list    <dossier>                   traces disponibles
  *   gabarit <dossier>                   trace FABRIQUÉE pour les tests (jamais une mesure)
  * Sortie : JSON sur la sortie standard. Les traces sont privées : le Lab ne les copie ni ne les publie.
@@ -89,10 +90,14 @@ object PitwallLab {
             JSONObject(File(args.getOrNull(2) ?: error("diff <rapportA.json> <rapportB.json>")).readText()),
             args.getOrNull(3) ?: "A", args.getOrNull(4) ?: "B",
         ).also { d -> args.getOrNull(5)?.let { File(it).writeText(Compare.markdown(d)) } }
+        "import-course" -> ImportCourse.run(
+            File(args.getOrNull(1) ?: error("import-course <pack.zip> [rapport.md]")),
+            args.getOrNull(2)?.let(::File),
+        )
         "gabarit" -> JSONObject().put("gabarit", Gabarit.write(File(args.getOrNull(1) ?: error("gabarit <dossier>"))).absolutePath)
             .put("gabarit_endurance", Gabarit.writeEndurance(File(args[1])).absolutePath)
             .put("nature", "Trace FABRIQUÉE pour tester le Lab ; jamais une mesure.")
-        else -> error("commande inconnue : inspect | replay | anomalies | endurance | carburant | diff | vega | vega-diff | list | gabarit")
+        else -> error("commande inconnue : inspect | replay | import-course | anomalies | endurance | carburant | diff | vega | vega-diff | list | gabarit")
     }
 
     /** Trace fabriquée (gabarit de test) : signalée en tête de tout rapport. */

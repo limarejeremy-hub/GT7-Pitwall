@@ -6,7 +6,21 @@
 
 ## PR en cours
 - #96 V515.1 (brouillon, non fusionnée). Rapport : `docs/V5151.md`.
-- Mission outillage : branche `claude/pitwall-token-optimization-l58g31` (base #96), PR brouillon #97.
+- Mission outillage : branche `claude/pitwall-token-optimization-l58g31` (base #96), PR brouillon #97 (CI verte).
+- **Mission Black Box (en cours)** : branche `claude/black-box` (base #97). Rapport : `docs/BLACK_BOX.md`.
+
+## Mission Black Box — jalons
+1. [fait] Inventaire de l'existant (`docs/BLACK_BOX.md` § 1). Décision : réutiliser journal + archive + recorder, pas de
+   second moteur de journal ; format `.gt7trace` inchangé.
+2. [fait] Recorder : tous les paquets, vidage gzip 2 s, segments concaténables, pré-enregistrement 10 s.
+3. [fait] `core/blackbox/` : BlackBox (cycle de vie, meta.json, reprise, rétention, budget non silencieux) et
+   BlackBoxPack (ZIP en flux, SHA-256, vérification par réouverture).
+4. [fait, CI à confirmer] App : réglage persistant, « Partager ma course », séance, FileProvider `blackbox/exports/`.
+5. [fait] `lab import-course` + outil MCP `lab_import_course`.
+6. [en cours] Tests PC : core 1054 / 0 échec, lab 30 / 0 échec. CI PR #98, compte rendu, token-meter.
+Session : dépôt Pitwall attaché en cours de session (le dépôt principal du conteneur est un autre projet) : les
+serveurs MCP du dépôt (`pitwall-lab`, Serena, DeepWiki, DuckDB) et les agents `.claude/agents/` ne sont **pas
+chargés** ; le Lab est utilisé en ligne de commande.
 
 ## Mission
 Réduire la consommation de tokens des sessions Claude Code sans perte de qualité. Hors périmètre : moteurs carburant,
@@ -37,7 +51,7 @@ pneus, stands, Véga, UDP (aucune modification).
   gain des pneus neufs (`docs/V5151.md` § 10).
 
 ## Prochaine action
-Mission outillage close dès que la CI de #97 est verte. Prochaine mission : **Black Box** (une course = un ZIP
+Black Box : CI verte de #98, puis validation PS5/Fold (`docs/BLACK_BOX.md` § 9). Mission outillage close (CI de #97 verte). Prochaine mission : **Black Box** (une course = un ZIP
 partageable ; brief complet du pilote du 26/11 fourni en début de session). Nouvelle session, base
 `claude/pitwall-token-optimization-l58g31` (#97) ; c'est la mission 1 de la comparaison des 400 k. En fin de mission :
 `python3 tools/token-meter.py`, ligne agrégée dans `docs/TOKENS.md`.

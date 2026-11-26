@@ -48,10 +48,14 @@ class TelemetryRecorder(
         val p95Ms: Int?,
         val p99Ms: Int?,
         val stopReason: String?,
+        /** Paquets écartés volontairement par la fréquence choisie (0 en Black Box : tous les paquets). */
+        val decimated: Long = 0,
+        /** Fichiers écrits (segments de la Black Box ; 1 sinon). */
+        val segments: Int = 1,
     ) {
         val lines: List<String>
             get() = buildList {
-                add((if (running) "Enregistrement en cours" else "Arrêté") + " : ${durationMs / 1000} s à $hz Hz, $kept échantillons sur $seen paquets.")
+                add((if (running) "Enregistrement en cours" else "Arrêté") + " : ${durationMs / 1000} s " + (if (hz == ALL_PACKETS) "(tous les paquets)" else "à $hz Hz") + ", $kept échantillons sur $seen paquets.")
                 add("Taille compressée : ${"%.1f".format(java.util.Locale.FRANCE, writtenBytes / 1_048_576.0)} Mo" +
                     (if (durationMs >= 60_000) ", soit ${"%.1f".format(java.util.Locale.FRANCE, writtenBytes / 1_048_576.0 * 3_600_000 / durationMs)} Mo/h" else "") + ".")
                 add("Pertes réseau GT7 : $lostUdp paquet(s) ; perdus par Pitwall (file pleine) : $dropped ; silences > ${PAUSE_MS / 1000} s : $pauses.")
@@ -61,6 +65,9 @@ class TelemetryRecorder(
     }
 
     private class Sample(val atMs: Long, val plain: ByteArray)
+
+    /** Paquet reçu avant le démarrage (pré-enregistrement de la Black Box), avec son heure de réception. */
+    class Early(val atMs: Long, val plain: ByteArray)
 
     private val queue = ArrayBlockingQueue<Sample>(QUEUE)
     @Volatile private var out: DataOutputStream? = null
@@ -77,6 +84,10 @@ class TelemetryRecorder(
     @Volatile private var dropped = 0L
     @Volatile private var lostUdp = 0L
     @Volatile private var pauses = 0
+    @Volatile private var segments = 0
+    @Volatile private var bytesBefore = 0L
+    private var rotate: ((Int) -> OutputStream)? = null
+    private var segmentBytes = Long.MAX_VALUE
     private val counting = CountingStream()
     /** Délais réception → écriture, en ms (0 à 1 000). */
     private val delays = LongArray(1_001)
@@ -84,21 +95,42 @@ class TelemetryRecorder(
 
     val running: Boolean get() = out != null
 
-    /** Démarre vers [sink] (fermé à l'arrêt). [hz] : 20, 30 ou 60. */
+    /** Heure (horloge du recorder) du premier échantillon de la trace : origine de ses millisecondes. */
+    val traceStartMs: Long get() = startMs
+
+    /**
+     * Démarre vers [sink] (fermé à l'arrêt). [hz] : 20, 30 ou 60, ou [ALL_PACKETS] (aucune décimation : chaque paquet
+     * reçu est gardé, Black Box).
+     *
+     * Black Box : [rotate] ouvre le segment suivant (2, 3…) quand le segment courant dépasse [segmentBytes] ; la trace
+     * continue sans s'arrêter. Les segments suivants n'ont pas d'en-tête : la concaténation brute des fichiers est une
+     * seule trace valide (gzip à plusieurs membres), heures comptées depuis le même début. [early] : paquets reçus juste
+     * avant le démarrage, écrits en tête (le début de la trace est alors l'heure du premier).
+     */
     @Synchronized
-    fun start(sink: OutputStream, hz: Int = 20) {
+    fun start(
+        sink: OutputStream,
+        hz: Int = 20,
+        rotate: ((Int) -> OutputStream)? = null,
+        segmentBytes: Long = Long.MAX_VALUE,
+        early: List<Early> = emptyList(),
+    ) {
         stop("relancé")
-        this.hz = hz.coerceIn(1, 60)
+        this.hz = if (hz <= ALL_PACKETS) ALL_PACKETS else hz.coerceIn(1, 60)
         seen = 0; kept = 0; dropped = 0; lostUdp = 0; pauses = 0; stopReason = null; endMs = null; stopping = false
+        segments = 1; bytesBefore = 0
+        this.rotate = rotate
+        this.segmentBytes = if (rotate == null) Long.MAX_VALUE else segmentBytes.coerceAtLeast(64 * 1024)
         lastKeptMs = Long.MIN_VALUE / 2; lastFrameMs = Long.MIN_VALUE / 2; lastPacketId = -1
         delays.fill(0)
         queue.clear()
         counting.reset(sink)
-        val o = DataOutputStream(GZIPOutputStream(counting, 8_192))
+        val o = DataOutputStream(GZIPOutputStream(counting, 8_192, true))
         TelemetryTrace.writeHeader(o)
+        startMs = early.firstOrNull()?.atMs?.coerceAtMost(clock()) ?: clock()
         out = o
-        startMs = clock()
         writer = Thread({ drain(o) }, "telemetry-trace").apply { isDaemon = true; start() }
+        for (e in early.takeLast(QUEUE / 2)) onFrame(e.plain, e.atMs)
     }
 
     /** Fil de réception : un paquet déchiffré valide (`null` : illisible, ignoré). Ne bloque jamais. */
@@ -119,24 +151,45 @@ class TelemetryRecorder(
             }
             return
         }
-        // Écart minimal entre deux échantillons, avec 2 ms de marge pour le rythme irrégulier du Wi-Fi.
-        if (nowMs - lastKeptMs < 1_000 / hz - 2) return
+        // Écart minimal entre deux échantillons, avec 2 ms de marge pour le rythme irrégulier du Wi-Fi. Black Box
+        // ([ALL_PACKETS]) : aucun écart, chaque paquet reçu est gardé.
+        if (hz != ALL_PACKETS && nowMs - lastKeptMs < 1_000 / hz - 2) return
         lastKeptMs = nowMs
         if (queue.offer(Sample(nowMs, plain.copyOf()))) kept++ else dropped++
     }
 
-    private fun drain(o: DataOutputStream) {
+    private fun drain(first: DataOutputStream) {
+        var o = first
+        var lastFlush = clock()
         try {
             while (true) {
                 val s = queue.poll(200, TimeUnit.MILLISECONDS)
                 if (s == null) {
-                    if (out !== o) break else continue
+                    if (out !== first) break
+                } else {
+                    TelemetryTrace.writeFrame(o, (s.atMs - startMs).toInt(), s.plain)
+                    delays[(clock() - s.atMs).coerceIn(0, 1_000).toInt()]++
                 }
-                TelemetryTrace.writeFrame(o, (s.atMs - startMs).toInt(), s.plain)
-                delays[(clock() - s.atMs).coerceIn(0, 1_000).toInt()]++
-                if (counting.count > maxBytes && !stopping) {
+                // Vidage régulier (gzip « sync flush ») : une fermeture brutale perd au plus [FLUSH_MS] de trace.
+                val now = clock()
+                if (now - lastFlush >= FLUSH_MS) {
+                    o.flush()
+                    lastFlush = now
+                }
+                val total = bytesBefore + counting.count
+                if (total > maxBytes && !stopping) {
                     stopping = true
                     Thread { stop("taille maximale atteinte (${maxBytes / 1_048_576} Mo)") }.start()
+                } else if (counting.count > segmentBytes && !stopping) {
+                    // Segment suivant, sur ce fil : la réception n'attend jamais. Pas d'en-tête (voir [start]).
+                    val next = rotate?.invoke(segments + 1)
+                    if (next != null) {
+                        o.close()
+                        bytesBefore += counting.count
+                        counting.reset(next)
+                        o = DataOutputStream(GZIPOutputStream(counting, 8_192, true))
+                        segments++
+                    }
                 }
             }
         } catch (_: InterruptedException) {
@@ -158,7 +211,8 @@ class TelemetryRecorder(
         // Le fil d'écriture vide la file puis ferme le flux.
         val w = writer
         if (w != null && w !== Thread.currentThread()) w.join(5_000)
-        runCatching { o.close() }
+        // Le fil d'écriture ferme lui-même le segment courant (le premier ou un suivant) en sortant.
+        if (w == null) runCatching { o.close() }
         writer = null
     }
 
@@ -176,7 +230,8 @@ class TelemetryRecorder(
 
     fun stats(): Stats = Stats(
         running, hz, ((endMs ?: clock()) - startMs).coerceAtLeast(0).takeIf { startMs > 0 } ?: 0,
-        seen, kept, dropped, lostUdp, pauses, counting.count, centile(0.95), centile(0.99), stopReason,
+        seen, kept, dropped, lostUdp, pauses, bytesBefore + counting.count, centile(0.95), centile(0.99), stopReason,
+        decimated = (seen - kept - dropped).coerceAtLeast(0), segments = segments,
     )
 
     /** Compte les octets compressés réellement écrits. */
@@ -207,6 +262,10 @@ class TelemetryRecorder(
     companion object {
         val MAGIC = "GT7PWTR1".toByteArray(Charsets.US_ASCII)
         const val QUEUE = 1_024
+        /** Aucune décimation : chaque paquet reçu est gardé (Black Box). */
+        const val ALL_PACKETS = 0
+        /** Vidage gzip périodique : perte maximale en cas de fermeture brutale. */
+        const val FLUSH_MS = 2_000L
         const val PAUSE_MS = 2_000L
         const val DEFAULT_MAX_BYTES = 80L * 1_048_576
         const val DEFAULT_MAX_DURATION_MS = 4L * 3_600_000
