@@ -10,6 +10,24 @@ class SettingsStore(context: Context) {
         get() = prefs.getString(KEY_ADDRESS, "") ?: ""
         set(value) = prefs.edit().putString(KEY_ADDRESS, value.trim()).apply()
 
+    /**
+     * Boîte noire automatique (mission Black Box) : désactivée tant que le pilote ne l'a pas activée lui-même, puis
+     * gardée entre les lancements. Rien n'est envoyé : les courses restent sur le téléphone jusqu'au partage.
+     */
+    var blackBoxAuto: Boolean
+        get() = prefs.getBoolean("black_box_auto", false)
+        set(value) = prefs.edit().putBoolean("black_box_auto", value).apply()
+
+    /** Nombre de courses gardées par la boîte noire (les plus anciennes partent). */
+    var blackBoxKeep: Int
+        get() = prefs.getInt("black_box_keep", 10).coerceIn(1, 50)
+        set(value) = prefs.edit().putInt("black_box_keep", value.coerceIn(1, 50)).apply()
+
+    /** Place totale de la boîte noire, en Go. */
+    var blackBoxBudgetGb: Int
+        get() = prefs.getInt("black_box_budget_gb", 2).coerceIn(1, 20)
+        set(value) = prefs.edit().putInt("black_box_budget_gb", value.coerceIn(1, 20)).apply()
+
     var voiceEnabled: Boolean
         get() = prefs.getBoolean(KEY_VOICE, true)
         set(value) = prefs.edit().putBoolean(KEY_VOICE, value).apply()

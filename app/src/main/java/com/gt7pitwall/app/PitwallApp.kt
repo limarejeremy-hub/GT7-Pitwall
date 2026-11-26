@@ -65,6 +65,38 @@ class PitwallApp : Application() {
     lateinit var radioOut: RoutedVoiceOutput
         private set
 
+    /**
+     * Informations techniques du pack de course : liste blanche, jamais d'adresse de la PS5, de jeton Discord ni de clé.
+     */
+    private fun blackBoxDevice(): com.gt7pitwall.core.blackbox.BlackBoxPack.Device {
+        val info = runCatching { packageManager.getPackageInfo(packageName, 0) }.getOrNull()
+        @Suppress("DEPRECATION")
+        val build = info?.let { if (android.os.Build.VERSION.SDK_INT >= 28) it.longVersionCode.toString() else it.versionCode.toString() } ?: "inconnu"
+        return com.gt7pitwall.core.blackbox.BlackBoxPack.Device(
+            appVersion = info?.versionName ?: "inconnue",
+            appBuild = build,
+            phone = "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}",
+            android = "${android.os.Build.VERSION.RELEASE} (API ${android.os.Build.VERSION.SDK_INT})",
+            settings = mapOf(
+                "voix" to if (settings.voiceEnabled) "activée" else "coupée",
+                "ecoute_vocale" to if (settings.voiceInputEnabled) "activée" else "coupée",
+                "vocabulaire_limite" to if (settings.limitedVocabulary) "oui" else "non",
+                "rapports_de_tour_detailles" to if (settings.detailedLapReports) "oui" else "non",
+                "connexion_automatique" to if (settings.autoConnectOnOpen) "oui" else "non",
+                "boite_noire_automatique" to if (settings.blackBoxAuto) "oui" else "non",
+                "boite_noire_courses_gardees" to settings.blackBoxKeep.toString(),
+                "boite_noire_budget_go" to settings.blackBoxBudgetGb.toString(),
+            ),
+            experimental = mapOf(
+                "ia" to if (settings.aiEnabled) "activée" else "coupée",
+                "diagnostic_audio" to if (settings.audioDiagnostics) "activé" else "coupé",
+            ),
+            udp = mapOf(
+                "etat_connexion_au_partage" to engine.connection.value.javaClass.simpleName,
+            ),
+        )
+    }
+
     override fun onCreate() {
         super.onCreate()
         settings = SettingsStore(this)
@@ -114,7 +146,14 @@ class PitwallApp : Application() {
                 if (settings.discordMicInput) voiceInput.restart()
             }
         }
-        engine = PitwallEngine(radioOut, voiceInput, DatabaseRepository.load(this), RaceStore(this)).also {
+        engine = PitwallEngine(radioOut, voiceInput, DatabaseRepository.load(this), RaceStore(this), java.io.File(filesDir, "blackbox")).also {
+            // Boîte noire : réglage persistant du pilote, limites de stockage, informations techniques sans secret.
+            it.courseRecorder?.limits = com.gt7pitwall.core.blackbox.BlackBox.Limits(
+                keepSessions = settings.blackBoxKeep,
+                maxTotalBytes = settings.blackBoxBudgetGb * 1024L * 1_048_576,
+            )
+            it.blackBoxAuto = settings.blackBoxAuto
+            it.deviceInfo = { blackBoxDevice() }
             voice.onAudible = { m, t -> it.onAudible(m, t, "haut-parleur") }
             discord.onAudible = { m, t -> it.onAudible(m, t, "Discord") }
             it.liveAudio = discord.liveAudio

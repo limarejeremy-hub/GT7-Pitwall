@@ -164,6 +164,8 @@ class PitwallEngine(
     private val voiceInput: VoiceInput? = null,
     val database: Gt7Database = Gt7Database.EMPTY,
     private val storage: RaceStorage? = null,
+    /** Dossier de la boîte noire (traces par session) ; null : boîte noire indisponible (tests). */
+    blackBoxRoot: java.io.File? = null,
 ) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -501,12 +503,113 @@ class PitwallEngine(
         refreshGap()
     }
 
-    /** Un seul branchement sur les paquets déchiffrés : Gap Hunter et trace télémétrique, chacun s'il est actif. */
+    /**
+     * Un seul branchement sur les paquets déchiffrés : Gap Hunter, trace manuelle et boîte noire, chacun s'il est actif.
+     * La réception UDP elle-même n'est pas modifiée.
+     */
     private fun updateRawTap() {
-        client.rawTap = if (!gapHunter.enabled && !recorder.running) null else TelemetryClient.RawTap { plain, size, nowMs ->
+        val bb = courseRecorder
+        client.rawTap = if (!gapHunter.enabled && !recorder.running && bb?.armed != true) null else TelemetryClient.RawTap { plain, size, nowMs ->
             if (gapHunter.enabled) gapHunter.onFrame(plain, size, nowMs)
             if (recorder.running) recorder.onFrame(plain, nowMs)
+            if (bb != null && bb.armed && plain != null) bb.onFrame(plain, nowMs)
         }
+    }
+
+    // ------------------------------------------------------------------ Boîte noire automatique (mission Black Box)
+
+    /**
+     * Boîte noire : la trace de chaque course, démarrée et finalisée avec la session du journal ; tout reste sur le
+     * téléphone jusqu'au partage volontaire ([shareCourse]). Activée par le pilote (réglage persistant).
+     */
+    val courseRecorder: com.gt7pitwall.core.blackbox.BlackBox? = blackBoxRoot?.let { root ->
+        com.gt7pitwall.core.blackbox.BlackBox(java.io.File(root, "sessions")).also { bb ->
+            bb.listener = com.gt7pitwall.core.blackbox.BlackBox.Listener { id, text, abnormal ->
+                runCatching {
+                    race.journal.recordFor(id, JournalType.SESSION, JournalSource.SYSTEM, text,
+                        details = if (abnormal) mapOf("anomalie" to "oui") else emptyMap())
+                }
+                if (abnormal) _blackBoxAlert.value = text
+            }
+            race.journal.lifecycle = com.gt7pitwall.core.race.SessionJournal.Lifecycle { id, began, finished ->
+                if (began) bb.onSessionBegin(id) else bb.onSessionEnd(id, finished)
+            }
+        }
+    }
+    private val blackBoxExports: java.io.File? = blackBoxRoot?.let { java.io.File(it, "exports") }
+
+    /** Dernier arrêt anormal de la boîte noire (affiché après la course, jamais pendant le pilotage). */
+    private val _blackBoxAlert = MutableStateFlow<String?>(null)
+    val blackBoxAlert: StateFlow<String?> = _blackBoxAlert.asStateFlow()
+
+    /** Informations techniques du pack (liste blanche fournie par l'application : aucun secret). */
+    @Volatile var deviceInfo: () -> com.gt7pitwall.core.blackbox.BlackBoxPack.Device = {
+        com.gt7pitwall.core.blackbox.BlackBoxPack.Device("inconnue", "inconnu", null, null)
+    }
+
+    var blackBoxAuto: Boolean
+        get() = courseRecorder?.auto == true
+        set(value) {
+            courseRecorder?.auto = value
+            updateRawTap()
+            // Activée en pleine course : la session en cours est enregistrée à partir de maintenant.
+            if (value) race.journal.sessionId?.let { courseRecorder?.onSessionBegin(it) }
+        }
+
+    /** Essai court ou séance de test, boîte noire coupée : la session en cours ou la suivante. */
+    fun recordTestSession() {
+        courseRecorder?.armManual(race.journal.sessionId)
+        updateRawTap()
+    }
+
+    /** État d'une course pour le bouton « Partager ma course » : taille, durée, manquants, statut. */
+    data class ShareStatus(val status: String, val file: java.io.File? = null, val bytes: Long = 0, val durationMs: Long = 0, val missing: List<String> = emptyList(), val ok: Boolean = false)
+
+    /**
+     * « Partager ma course » : finalise la session si elle est terminée, assemble le ZIP complet hors du fil principal,
+     * le rouvre pour le vérifier. [ids] : une course, ou plusieurs pour une séance. Rien n'est envoyé : l'application
+     * ouvre ensuite la feuille de partage Android.
+     */
+    suspend fun shareCourse(ids: List<String>): ShareStatus = withContext(Dispatchers.IO) {
+        val s = storage ?: return@withContext ShareStatus("Archive indisponible")
+        val out = blackBoxExports ?: return@withContext ShareStatus("Boîte noire indisponible")
+        runCatching {
+            val bb = courseRecorder
+            // Finaliser : la course choisie est terminée mais la session est encore ouverte (retour au stand, podium).
+            if (bb != null && bb.currentSessionId in ids && race.raceFinished) {
+                bb.onSessionEnd(bb.currentSessionId!!, finished = true)
+            }
+            bb?.sync()
+            val records = s.loadSessions().associateBy { it.id }
+            val courses = ids.map { id ->
+                val meta = bb?.meta(id)
+                val r = records[id]
+                com.gt7pitwall.core.blackbox.BlackBoxPack.Course(
+                    sessionId = id, record = r, events = SessionJournal.load(s, id), traceSegments = meta?.segments.orEmpty(), meta = meta,
+                    carName = r?.context?.carCode?.let { database.car(it)?.fullName },
+                    trackName = r?.context?.rules?.trackId?.let { t -> database.course(t)?.name },
+                )
+            }
+            out.mkdirs()
+            // Seuls les 3 derniers packs restent dans le dossier de partage.
+            out.listFiles { f -> f.name.endsWith(".zip") }.orEmpty().sortedByDescending { it.lastModified() }.drop(2).forEach { it.delete() }
+            val first = courses.first()
+            val start = first.record?.startedAtMs ?: first.events.firstOrNull()?.timeMs ?: System.currentTimeMillis()
+            val name = if (courses.size > 1) com.gt7pitwall.core.blackbox.BlackBoxPack.seanceName(start, courses.size) else {
+                val day = java.time.Instant.ofEpochMilli(start).atZone(java.time.ZoneId.systemDefault()).toLocalDate()
+                val index = records.values.filter {
+                    java.time.Instant.ofEpochMilli(it.startedAtMs).atZone(java.time.ZoneId.systemDefault()).toLocalDate() == day &&
+                        it.context.rules.trackId == first.record?.context?.rules?.trackId && it.startedAtMs <= start
+                }.size.coerceAtLeast(1)
+                com.gt7pitwall.core.blackbox.BlackBoxPack.fileName(start, first.trackName, com.gt7pitwall.core.blackbox.BlackBoxPack.kindLabel(first), index)
+            }
+            val res = com.gt7pitwall.core.blackbox.BlackBoxPack.write(java.io.File(out, name), courses, deviceInfo())
+            ShareStatus(
+                if (res.verification.ok) "Prêt : ${res.verification.status}" else "Export à vérifier : ${res.verification.status}",
+                res.file, res.bytes, res.durationMs, res.missing.filterNot { it.startsWith("secteurs") || it.startsWith("version de GT7") || it.startsWith("aucun son") || it.startsWith("pénalités") },
+                res.verification.ok,
+            )
+        }.getOrElse { ShareStatus("Export impossible : ${it.message ?: it.javaClass.simpleName}") }
     }
 
     // ------------------------------------------------------------------ Trace télémétrique réelle (#41 P1)
@@ -629,6 +732,7 @@ class PitwallEngine(
     @Synchronized
     fun stop() {
         if (recorder.running) stopTrace()
+        courseRecorder?.onTelemetryStopped()
         client.stop()
         collectJob?.cancel()
         collectJob = null
