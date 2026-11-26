@@ -88,7 +88,7 @@ def scan(root: Path):
                 if br and br != "HEAD":
                     s["branches"][br] += 1
                 t = d.get("type")
-                if t == "system" and d.get("subtype") == "compact_boundary" or d.get("isCompactSummary"):
+                if t == "system" and d.get("subtype") == "compact_boundary":
                     s["compactions"] += 1
                 msg = d.get("message") if isinstance(d.get("message"), dict) else {}
                 if t == "assistant":

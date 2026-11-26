@@ -27,6 +27,11 @@ chaque mission**, sinon la mesure est perdue (notée « indisponible », jamais 
 Constats de la session d'outillage : ≈ 91 k tokens de charge fixe par appel, avant tout travail ; les plus gros
 résultats d'outils sont des sorties Bash et des listes de PR complètes (à filtrer : `fields`, `head`, `grep`).
 
+Comparaison de charge fixe (même dépôt, même `CLAUDE.md`, 26/11) : session cloud avec tous les connecteurs claude.ai
+chargés ≈ **91 k** ; session Claude Code lancée sans ces connecteurs (tests du hook) ≈ **43–45 k**. Les connecteurs
+sans rapport avec Pitwall (courses, messagerie, agenda…) pèsent donc environ la moitié de chaque appel : les
+désactiver pour les sessions Pitwall est le levier le plus fort mesuré, à confirmer sur une vraie mission.
+
 ## Validation sur deux missions (hypothèse −20 à −35 %, non acquise)
 Critères, à qualité égale : CI verte, zéro régression, revue d'agents maintenue, aucune décision oubliée, aucune perte
 de contexte bloquante, total traité par PR validée en baisse. Missions passées sans journal : comparer d'abord la
