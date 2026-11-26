@@ -4,5 +4,20 @@
     "serena",
     "deepwiki",
     "duckdb"
-  ]
+  ],
+  "autoCompactWindow": 400000,
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-state.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
 }

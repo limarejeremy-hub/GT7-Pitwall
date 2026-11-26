@@ -97,3 +97,12 @@ Ingénieur de course Android natif (Galaxy Fold) pour Gran Turismo 7 sur PS5 : t
 - Utiliser les agents spécialisés (`.claude/agents/`) seulement quand la tâche le demande ; leur donner un objectif
   précis et les fichiers concernés plutôt que « analyse tout ».
 - Préférer `Grep` ciblé et la lecture de sections à la lecture de fichiers entiers (RaceController ≈ 4 500 lignes).
+- **Une mission = une nouvelle session.** Au début, lire `docs/SESSION_STATE.md` (rechargé automatiquement après
+  compaction) ; le mettre à jour à chaque jalon : décisions, résultats, limites, prochaine action.
+- Compacter (`/compact <ce qu'il faut garder>`) aux jalons (après tests verts, après revue), pas en plein diagnostic.
+- Sorties de tests condensées (`| tail`, `grep -E 'FAIL|error|tests completed'`) ; garder en entier les erreurs et
+  ce qui sert au diagnostic.
+- GitHub MCP : `fields`/`minimal_output` ; journaux CI par job en échec seulement.
+- Connecteurs pertinents seulement, avec preuve d'utilisation dans le compte rendu. Ne jamais alléger une revue
+  d'agents pour économiser : objectif et fichiers précis, mais même exigence.
+- Fin de mission : `python3 tools/token-meter.py`, agrégats dans `docs/TOKENS.md` (jamais de journal brut).
