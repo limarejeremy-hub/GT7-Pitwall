@@ -230,6 +230,8 @@ class BlackBoxTest {
             assertEquals(1500, manifest.getJSONArray("sessions").getJSONObject(0).getInt("frames"))
             // Télémétrie rejouable telle quelle.
             assertEquals(1500, TelemetryTrace.replay(z.getInputStream(z.getEntry("telemetry.gt7trace"))).decoded)
+            // Lisible sans décoder le binaire : première ligne au moins 100 ms après la précédente (ici tous les 7 paquets de 16 ms).
+            assertTrue(text("telemetry_10hz.csv").lines().size in 200..260)
             // C. Le gain pendant l'arrêt n'est pas un dépassement ; le gain en roulant n'est pas prouvé.
             val race = JSONObject(text("race.json"))
             val changes = race.getJSONObject("changements_de_position").getJSONArray("liste")

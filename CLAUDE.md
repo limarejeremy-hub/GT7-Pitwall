@@ -24,7 +24,8 @@ Ingénieur de course Android natif (Galaxy Fold) pour Gran Turismo 7 sur PS5 : t
   Compilé seulement par la CI (pas de SDK Android dans les sessions cloud).
 - `lab/` : Pitwall Lab (rejeu de traces, hors APK). `tools/pitwall-lab-mcp/` : serveur MCP du Lab.
 - Docs de référence : `docs/V511_AUDIT.md` (état, matrice, P0-P2), `docs/UDP_FIELDS.md`, `docs/POSITION_RADIO.md`,
-  `docs/DEV_ECOSYSTEM.md` (outils et agents), `docs/LE_MANS_2026.md` (Le Mans 14 tours), `docs/V512_LE_MANS.md` (analyse de la course du 23/11, lots V512), `docs/V512_LOT2.md` (carburant, stands, radio, pneus).
+  `docs/DEV_ECOSYSTEM.md` (outils et agents), `docs/LE_MANS_2026.md` (Le Mans 14 tours), `docs/V512_LE_MANS.md` (analyse de la course du 23/11, lots V512), `docs/V512_LOT2.md` (carburant, stands, radio, pneus), `docs/BLACK_BOX.md` (boîte noire, pack ZIP de course,
+  `lab import-course`).
 
 ## Commandes (sans SDK Android)
 - Tests du cœur et du Lab : `./gradlew -p lab/standalone :core:test :lab:test`

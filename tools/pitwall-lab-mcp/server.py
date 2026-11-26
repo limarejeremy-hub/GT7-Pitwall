@@ -8,6 +8,7 @@ Outils :
   lab_anomalies    -> incohérences de télémétrie et événements suspects (MESURE)
   lab_endurance    -> bilan d'une course longue (tours, carburant, arrêts, flux) et contrôle du règlement (Le Mans)
   lab_vega         -> banc vega-golden : questions à Véga sur des états reconstitués (moteur déterministe)
+  lab_import_course -> pack de course Black Box (.zip) : vérification, rejeu, EN_COURSE contre SIMULATION, manquants
   lab_compare      -> même trace rejouée par deux versions du moteur : différences de résultats, alertes, messages,
                       décisions et positions (lab/compare.sh, worktrees git, aucune branche modifiée)
 
@@ -57,6 +58,13 @@ TOOLS = [
                        "incohérents en course, peloton en hausse, carburant en hausse en roulant, télémétrie figée, "
                        "chrono absent. Gravité info (transition normale de GT7) ou suspect (à examiner).",
         "inputSchema": {"type": "object", "properties": {"trace": {"type": "string"}}, "required": ["trace"]},
+    },
+    {
+        "name": "lab_import_course",
+        "description": "Importe un pack de course Black Box (.zip, « Partager ma course ») : vérifie manifeste et SHA-256, "
+                       "rejoue la télémétrie dans le moteur actuel, compare ce qui a été émis en course (EN_COURSE) à ce "
+                       "que le moteur recalcule (SIMULATION) et liste les données manquantes.",
+        "inputSchema": {"type": "object", "properties": {"pack": {"type": "string"}}, "required": ["pack"]},
     },
     {
         "name": "lab_endurance",
@@ -113,6 +121,17 @@ def resolve_trace(path):
     raise ValueError("trace introuvable ou extension différente de .gt7trace : %s" % os.path.basename(path))
 
 
+def resolve_pack(path):
+    candidates = [path]
+    base = os.environ.get("PITWALL_TRACES")
+    if base and not os.path.isabs(path):
+        candidates.insert(0, os.path.join(base, path))
+    for c in candidates:
+        if c.endswith(".zip") and os.path.isfile(c):
+            return os.path.abspath(c)
+    raise ValueError("pack introuvable ou extension différente de .zip : %s" % os.path.basename(path))
+
+
 def resolve_lab_json(name, sub):
     """Fichier JSON du dépôt sous lab/ uniquement (règlement, scénarios) : jamais un chemin arbitraire."""
     lab = os.path.realpath(os.path.join(ROOT, "lab"))
@@ -148,6 +167,8 @@ def call(name, a):
         return run_lab(args)
     if name == "lab_anomalies":
         return run_lab(["anomalies", resolve_trace(a["trace"])])
+    if name == "lab_import_course":
+        return run_lab(["import-course", resolve_pack(a["pack"])])
     if name == "lab_endurance":
         args = ["endurance", resolve_trace(a["trace"])]
         if a.get("regles"):

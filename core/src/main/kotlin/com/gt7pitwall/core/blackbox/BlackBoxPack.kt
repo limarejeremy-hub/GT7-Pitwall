@@ -288,7 +288,7 @@ object BlackBoxPack {
         val positionAt = HashMap<Long, Triple<Float, Float, Float>>()
 
         private var lastAt: Int? = null
-        private var lastCsv = Int.MIN_VALUE
+        private var lastCsv = -1_000_000
         private var lastPos = 0
         private var lastCars = 0
         private var lastLap = -1
