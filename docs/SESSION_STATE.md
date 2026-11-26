@@ -6,7 +6,20 @@
 
 ## PR en cours
 - #96 V515.1 (brouillon, non fusionnée). Rapport : `docs/V5151.md`.
-- Mission outillage : branche `claude/pitwall-token-optimization-l58g31` (base #96), PR brouillon #97.
+- Mission outillage : branche `claude/pitwall-token-optimization-l58g31` (base #96), PR brouillon #97 (CI verte).
+- **Mission Black Box (en cours)** : branche `claude/black-box` (base #97). Rapport : `docs/BLACK_BOX.md`.
+
+## Mission Black Box — jalons
+1. [fait] Inventaire de l'existant (`docs/BLACK_BOX.md` § 1). Décision : réutiliser journal + archive + recorder, pas de
+   second moteur de journal ; format `.gt7trace` inchangé.
+2. [à faire] Recorder : tous les paquets en 60 Hz, vidage gzip périodique (crash), segments, pré-enregistrement.
+3. [à faire] Black Box core (cycle de vie, rétention, reprise) + assembleur ZIP + vérification.
+4. [à faire] App : réglage persistant, « Partager ma course », FileProvider. 5. [à faire] `lab import-course`.
+6. [à faire] Tests bout en bout, CI, compte rendu connecteurs, token-meter.
+
+Session : dépôt Pitwall attaché en cours de session (le dépôt principal du conteneur est un autre projet) : les
+serveurs MCP du dépôt (`pitwall-lab`, Serena, DeepWiki, DuckDB) et les agents `.claude/agents/` ne sont **pas
+chargés** ; le Lab est utilisé en ligne de commande.
 
 ## Mission
 Réduire la consommation de tokens des sessions Claude Code sans perte de qualité. Hors périmètre : moteurs carburant,
