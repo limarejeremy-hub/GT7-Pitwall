@@ -6,7 +6,7 @@
 
 ## PR en cours
 - #96 V515.1 (brouillon, non fusionnée). Rapport : `docs/V5151.md`.
-- Mission outillage : branche `claude/pitwall-token-optimization-l58g31` (base #96), PR brouillon « Efficacité Claude Code ».
+- Mission outillage : branche `claude/pitwall-token-optimization-l58g31` (base #96), PR brouillon #97.
 
 ## Mission
 Réduire la consommation de tokens des sessions Claude Code sans perte de qualité. Hors périmètre : moteurs carburant,
