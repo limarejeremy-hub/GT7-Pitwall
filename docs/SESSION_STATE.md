@@ -19,6 +19,8 @@ pneus, stands, Véga, UDP (aucune modification).
 - Une mission = une nouvelle session ; consignes d'économie dans `CLAUDE.md` ; ce fichier rechargé après compaction
   (hook SessionStart `compact`) ; mesure par `tools/token-meter.py`, agrégats seulement dans `docs/TOKENS.md`.
 - Gain de 20 à 35 % : hypothèse, à vérifier sur les deux prochaines missions.
+- 400 k conservé pour les deux prochaines missions, puis ajusté selon les mesures (pilote, 26/11).
+- Écart de charge fixe dû aux connecteurs (≈ 48 k) : NON conclu ; test A/B requis sur deux sessions équivalentes.
 
 ## Résultats démontrés
 - V515.1 (PC, pas PS5/Fold) : core 1039 tests 0 échec, lab 27 0 échec ; rejeu des 4 traces réelles identique à V515.
@@ -35,5 +37,6 @@ pneus, stands, Véga, UDP (aucune modification).
   gain des pneus neufs (`docs/V5151.md` § 10).
 
 ## Prochaine action
+Mission outillage terminée quand la CI de #97 est verte. Reprise du développement dans une nouvelle session.
 Prochaine mission dans une nouvelle session, partant de la dernière branche ; en fin de mission, lancer
 `python3 tools/token-meter.py` et reporter la ligne agrégée dans `docs/TOKENS.md`.

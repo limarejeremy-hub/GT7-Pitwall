@@ -30,7 +30,19 @@ résultats d'outils sont des sorties Bash et des listes de PR complètes (à fil
 Comparaison de charge fixe (même dépôt, même `CLAUDE.md`, 26/11) : session cloud avec tous les connecteurs claude.ai
 chargés ≈ **91 k** ; session Claude Code lancée sans ces connecteurs (tests du hook) ≈ **43–45 k**. Les connecteurs
 sans rapport avec Pitwall (courses, messagerie, agenda…) pèsent donc environ la moitié de chaque appel : les
-désactiver pour les sessions Pitwall est le levier le plus fort mesuré, à confirmer sur une vraie mission.
+désactiver pour les sessions Pitwall est une piste, **non conclue** : l'écart vient de sessions différentes
+(session cloud contre session imbriquée sans connecteurs).
+
+## Test A/B des connecteurs (requis avant toute conclusion)
+Deux sessions cloud neuves, même dépôt, même branche, même premier message (par ex. « Lis `CLAUDE.md` et
+`docs/SESSION_STATE.md`, puis résume l'état en 5 lignes ») : **A** avec tous les connecteurs claude.ai, **B** sans les
+connecteurs hors Pitwall (Gmail, Agenda, Carrefour, Drive, Sheets). Dans chacune, lancer `tools/token-meter.py` et
+comparer le contexte min (charge fixe) et le médian. Conclure seulement si l'écart se reproduit.
+
+| Session | Connecteurs | Ctx min | Médian | Écart A − B |
+|---|---|---|---|---|
+| A | tous | | | |
+| B | Pitwall seulement | | | |
 
 ## Validation sur deux missions (hypothèse −20 à −35 %, non acquise)
 Critères, à qualité égale : CI verte, zéro régression, revue d'agents maintenue, aucune décision oubliée, aucune perte
