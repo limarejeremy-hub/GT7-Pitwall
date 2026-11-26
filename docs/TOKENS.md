@@ -22,7 +22,8 @@ chaque mission**, sinon la mesure est perdue (notée « indisponible », jamais 
 
 | Date | Mission (branche) | PR | Validée | Appels | Entrée | Sortie | Cache lu | Cache écrit | Ctx min | Médian | P95 | Compactions |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| 26/11 | pitwall-token-optimization (outillage, session complète hors tests imbriqués) | #97 | CI en cours | 54 | 112 | 35 527 | 7 624 155 | 119 170 | 91 529 | 146 500 | 181 030 | 0 |
+| 26/11 | pitwall-token-optimization (outillage, session complète hors tests imbriqués) | #97 | CI verte | 54 | 112 | 35 527 | 7 624 155 | 119 170 | 91 529 | 146 500 | 181 030 | 0 |
+| 26/11 | black-box (mission complète, relevé avant la fin de la CI) | #98 | CI en cours | 89 | 174 | 120 535 | 20 386 134 | 267 611 | 93 420 | 256 397 | 324 648 | 0 |
 
 Constats de la session d'outillage : ≈ 91 k tokens de charge fixe par appel, avant tout travail ; les plus gros
 résultats d'outils sont des sorties Bash et des listes de PR complètes (à filtrer : `fields`, `head`, `grep`).
@@ -32,6 +33,13 @@ chargés ≈ **91 k** ; session Claude Code lancée sans ces connecteurs (tests 
 sans rapport avec Pitwall (courses, messagerie, agenda…) pèsent donc environ la moitié de chaque appel : les
 désactiver pour les sessions Pitwall est une piste, **non conclue** : l'écart vient de sessions différentes
 (session cloud contre session imbriquée sans connecteurs).
+
+Constats de la mission Black Box : charge fixe ≈ 93 k (comme l'outillage : connecteurs claude.ai tous chargés) ;
+contexte max ≈ 332 k sans compaction ; plus gros résultats : sorties Bash (lecture de code, journaux Gradle).
+**Mission non comparable pour la fenêtre de 400 k** : la session a démarré dans un autre dépôt (Pitwall attaché en
+cours de session), donc `.claude/settings.json` de Pitwall (fenêtre 400 k, hook de compaction) et `.mcp.json` n'ont
+pas été chargés, et `/context` n'est pas accessible à l'agent. La comparaison des 400 k reste à faire sur deux
+sessions démarrées **dans** le dépôt Pitwall.
 
 ## Test A/B des connecteurs (requis avant toute conclusion)
 Deux sessions cloud neuves, même dépôt, même branche, même premier message (par ex. « Lis `CLAUDE.md` et
@@ -53,5 +61,6 @@ et noter ici la raison et les chiffres.
 
 | Mission | PR | CI | Régressions | Revue agents | Contexte perdu | Total / PR | Verdict |
 |---|---|---|---|---|---|---|---|
+| 1 | | | | | | | (Black Box #98 écartée : session démarrée hors du dépôt, réglage 400 k non chargé) |
 | 1 | | | | | | | |
 | 2 | | | | | | | |
